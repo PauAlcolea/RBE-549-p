@@ -27,38 +27,42 @@ def main():
     # Args = Parser.parse_args()
     # NumFeatures = Args.NumFeatures
 
-    """
+	"""
     Read a set of images for Panorama stitching
     """
 
-    """
+	"""
 	Corner Detection
 	Save Corner detection output as corners.png
 	"""
 
-    """
+	"""
 	Perform ANMS: Adaptive Non-Maximal Suppression
 	Save ANMS output as anms.png
 	"""
 
-    """
+	"""
 	Feature Descriptors
 	Save Feature Descriptor output as FD.png
 	"""
 
-    """
+	"""
 	Feature Matching
 	Save Feature Matching output as matching.png
 	"""
 
-    """
-	Refine: RANSAC, Estimate Homography
 	"""
+	Refine: RANSAC, Estimate Homography
+	"""	
+    
 
-    """
+	"""
 	Image Warping + Blending
 	Save Panorama output as mypano.png
 	"""
+
+	print(np.pi)
+	return
 
 
 if __name__ == "__main__":
