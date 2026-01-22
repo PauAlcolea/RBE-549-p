@@ -13,7 +13,6 @@ Worcester Polytechnic Institute
 """
 
 # Code starts here:
-
 import numpy as np
 import cv2
 
