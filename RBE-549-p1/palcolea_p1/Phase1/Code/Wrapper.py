@@ -73,19 +73,75 @@ def corner_detection(images_color: list[np.array], images_gray: list[np.array]) 
 	
 	return images_cornered, scores
 
+"""
+This function will take a dense score image and extract the best corners
+@param cimg is the score for an image, its a 2d matrix size (H, W)
+@returns the x and y coordinates of the local maxima corners
+@returns strengths which are the scores of each of the corners
+"""
+def local_maxima(cimg: np.array):
+	Xs =[]
+	Ys = []
+	strengths = []
+
+	#dilate the image, which means that each pixel gets replaced with the max value of its neighborhood, 3x3 neighborhood default
+	#then when the values of the original are the same as the dilated, that original was a local max
+	#local_max is just a boolean mask
+	dilated = cv2.dilate(cimg, None)
+	local_max = (cimg == dilated)
+	
+	#get rid of really small peaks 
+	#calculate the threshold with a percentage of the maximum score
+	threshold = 0.01 * cimg.max()
+	local_max &= (cimg > threshold)
+
+	# x,y for local maxima are inverted
+	# get x and y coordinates
+	Ys, Xs = np.where(local_max)
+	strengths = cimg[Ys, Xs]
+
+	return Xs, Ys, strengths
 
 """
-This function will
+This function will get the Nbest corners in the image based on their strength and their distance to another strong corner
 @param corner_images is a list with all np.arrays (each array is the score for corners as a 2D mask for one photo)
 @param Nbest is the number of best corners needed
 @return the coordinates of all of the final corners in list
 this will all be in a list that contains all of the corners for all the imgs
 """
 def anms(corner_images: list[np.array], Nbest: int):
+	# list with a list of tuples, each tuple being the coordinates and the sublist being an image
+	final_corners_images = []
+
 	for cimg in corner_images:
-		break
-	
-	return
+		# each image has to be filtered to only keep the local maxima so any pixel with a value is not considered a corner
+		# keep all of their coordinates
+		corner_xs, corner_ys, strengths = local_maxima(cimg)
+		Nstrong = len(strengths)
+		
+		# if no strong corners go to next image
+		if Nstrong == 0:
+			final_corners_images.append([])
+			continue
+
+		# make a list of size Nstrong with np.infinity to compare
+		r = np.full(Nstrong, np.inf)
+
+		# iterate through all of the local maxima corners
+		for i in range(Nstrong):
+			for j in range(Nstrong):
+				# if a stronger corner found, calcualte ED
+				if strengths[j] > strengths[i]:
+					ED = (corner_xs[j] - corner_xs[i])**2 + (corner_ys[j] - corner_ys[i])**2
+					if ED < r[i]:
+						r[i] = ED
+
+		# get the indices of what would be the corners if sorted in descending
+		sorted_indexes = np.argsort(-r)	
+		best_indexes = sorted_indexes[:Nbest]
+		best_corners = list(zip(corner_xs[best_indexes], corner_ys[best_indexes]))
+		final_corners_images.append(best_corners)
+	return final_corners_images
 
 
 def main():
@@ -111,8 +167,8 @@ def main():
 	Perform ANMS: Adaptive Non-Maximal Suppression
 	Save ANMS output as anms.png
 	"""
-	anms(scores, 40)
-
+	final_corners = anms(scores, 40)
+	
 	"""
 	Feature Descriptors
 	Save Feature Descriptor output as FD.png
