@@ -51,11 +51,15 @@ used the opencv2 documentation: https://docs.opencv.org/4.x/dc/d0d/tutorial_py_f
 @returns one list of images with the corners
 """
 def corner_detection(images_color: list[np.array], images_gray: list[np.array]) -> list[np.array]:
+	scores = []
+	
 	# iterate through all of the images in the set
 	for index, img_gray in enumerate(images_gray):
 		
 		# (H,W) array with all of the scores
+		# block size = 2, ksize = 3, Harris detector free parameter = 0.02
 		change_score = cv2.cornerHarris(img_gray, 2, 3, 0.04)
+		scores.append(change_score)
 
 		# make a boolean mask if any score is more than 1% of the maximum corner score
 		# wherever the mask is true (corner), change the pixel to 0,0,255 (aka red)
@@ -67,7 +71,22 @@ def corner_detection(images_color: list[np.array], images_gray: list[np.array]) 
 		# if cv2.waitKey(0) & 0xff == 27:
 		# 	cv2.destroyAllWindows()
 	
-	return images_cornered
+	return images_cornered, scores
+
+
+"""
+This function will
+@param corner_images is a list with all np.arrays (each array is the score for corners as a 2D mask for one photo)
+@param Nbest is the number of best corners needed
+@return the coordinates of all of the final corners in list
+this will all be in a list that contains all of the corners for all the imgs
+"""
+def anms(corner_images: list[np.array], Nbest: int):
+	for cimg in corner_images:
+		break
+	
+	return
+
 
 def main():
     # Add any Command Line arguments here
@@ -86,12 +105,13 @@ def main():
 	Corner Detection
 	Save Corner detection output as corners.png
 	"""
-	corners = corner_detection(images, images_gray)
+	corners, scores = corner_detection(images, images_gray)
 
 	"""
 	Perform ANMS: Adaptive Non-Maximal Suppression
 	Save ANMS output as anms.png
 	"""
+	anms(scores, 40)
 
 	"""
 	Feature Descriptors
