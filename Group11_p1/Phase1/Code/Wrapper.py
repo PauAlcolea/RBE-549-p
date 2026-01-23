@@ -49,6 +49,33 @@ def ANMS(C_img, N_best):
     return sorted_coords[best_indices]
 
 
+def encode_feature_points(image, corners):
+    descriptors = []
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    H, W = gray.shape
+    PATCH_RADIUS = 20
+    for y, x in corners:
+        # extract 40x40 patch around corner
+        if (
+            x - PATCH_RADIUS < 0
+            or x + PATCH_RADIUS >= W
+            or y - PATCH_RADIUS < 0
+            or y + PATCH_RADIUS >= H
+        ):
+            continue
+        patch = gray[
+            y - PATCH_RADIUS : y + PATCH_RADIUS, x - PATCH_RADIUS : x + PATCH_RADIUS
+        ]
+        patch = cv2.GaussianBlur(patch, (5, 5), sigmaX=0)
+        # downsample, normalize, and flatten
+        small_patch = cv2.resize(patch, (8, 8), interpolation=cv2.INTER_AREA)
+        std = max(np.std(small_patch), 1e-5)
+        norm_patch = (small_patch - np.mean(small_patch)) / std
+        descriptor = norm_patch.flatten()
+        descriptors.append(descriptor)
+    return np.array(descriptors)
+
+
 def main():
     # get path to current directory
     curr_dir = os.path.dirname(os.path.abspath(__file__))
@@ -97,6 +124,7 @@ def main():
     Feature Descriptors
     Save Feature Descriptor output as FD.png
     """
+    fd = encode_feature_points(image1, anms_corners)
 
     """
     Feature Matching
