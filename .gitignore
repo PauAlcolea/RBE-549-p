@@ -1,3 +1,2 @@
-# Unzipped data directories
-RBE-549-p1/Group11_p1/Phase2/Data/Train/
-RBE-549-p1/Group11_p1/Phase2/Data/Val/
+# Large data files and numerous images
+Group11_p1/Phase2/Data/*
