@@ -235,20 +235,17 @@ def RANSAC_homography(
     return H_final, best_inlier_matches
 
 
-def get_panorama_dimensions(image1, image2, H):
+def get_panorama_dimensions(images, H_list):
     # get first image corners and transform to panorama frame
-    h1, w1 = image1.shape[:2]
-    corners1 = np.float32([[0, 0], [0, h1], [w1, h1], [w1, 0]])
-    corners1_transformed = cv2.perspectiveTransform(corners1.reshape(-1, 1, 2), H)
-
-    # get second image corners (reference frame)
-    h2, w2 = image2.shape[:2]
-    corners2 = np.float32([[0, 0], [0, h2], [w2, h2], [w2, 0]])
+    all_corners = []
+    for img, H in zip(images, H_list):
+        h, w = img.shape[:2]
+        corners = np.float32([[0, 0], [0, h], [w, h], [w, 0]]).reshape(-1, 1, 2)
+        corners_transformed = cv2.perspectiveTransform(corners, H)
+        all_corners.append(corners_transformed)
 
     # combine all corners to find panorama bounds
-    all_corners = np.concatenate(
-        (corners1_transformed, corners2.reshape(-1, 1, 2)), axis=0
-    )
+    all_corners = np.concatenate(all_corners, axis=0)
     [x_min, y_min] = np.int32(all_corners.min(axis=0).ravel() - 0.5)
     [x_max, y_max] = np.int32(all_corners.max(axis=0).ravel() + 0.5)
 
@@ -256,11 +253,10 @@ def get_panorama_dimensions(image1, image2, H):
     H_translation = np.array(
         [[1, 0, -x_min], [0, 1, -y_min], [0, 0, 1]], dtype=np.float32
     )
-
     return (x_max - x_min, y_max - y_min), H_translation
 
 
-def create_mask(img):
+def _create_mask(img):
     # create binary mask where image is non-zero
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     mask = (gray > 0).astype(np.uint8)
@@ -273,8 +269,8 @@ def create_mask(img):
 
 def blend_images(img1, img2):
     # create weight masks
-    w1 = create_mask(img1)
-    w2 = create_mask(img2)
+    w1 = _create_mask(img1)
+    w2 = _create_mask(img2)
 
     sum_weights = np.maximum(w1 + w2, 1e-8)
 
@@ -306,13 +302,12 @@ def main():
     Read a set of images for Panorama stitching
     """
     images = []
-    for filename in os.listdir(input_dir):
+    for filename in sorted(os.listdir(input_dir)):
         if filename.endswith(".jpg"):
             img = cv2.imread(os.path.join(input_dir, filename))
             if img is not None:
                 images.append(img)
     print(f"Read {len(images)} images from {input_dir}")
-    images = images[:2]  # only use first two images for now
     """
     Corner Detection
     Save Corner detection output as corners.png
@@ -345,59 +340,82 @@ def main():
     Feature Matching
     Save Feature Matching output as matching.png
     """
-    match_indices = match_features(fd[0], fd[1])
-    # perform conversions for visualization
-    draw_matches(
-        images[0],
-        images[1],
-        match_indices,
-        valid_corners,
-        window_name="Feature Matches",
-    )
+    match_indices = []
+    for i in range(len(images) - 1):
+        match_indices_i = match_features(fd[i], fd[i + 1])
+        match_indices.append(match_indices_i)
+
+        draw_matches(
+            images[i],
+            images[i + 1],
+            match_indices_i,
+            (valid_corners[i], valid_corners[i + 1]),
+            window_name=f"Feature Matches {i}->{i+1}",
+        )
 
     """
     Refine: RANSAC, Estimate Homography
     """
-    H, inlier_matches = RANSAC_homography(np.array(match_indices), valid_corners)
-    print(f"Found {len(inlier_matches)}/{len(match_indices)} inliers")
-    # refine valid_corners using inliers
-    inlier_indices_1, inlier_indices_2 = zip(*inlier_matches)
-    inlier_corners = (
-        valid_corners[0][list(inlier_indices_1)],
-        valid_corners[1][list(inlier_indices_2)],
-    )
-    # create matches with sequential indices for the filtered corners
-    remapped_inlier_matches = [(i, i) for i in range(len(inlier_matches))]
+    pairwise_H = []
+    for i in range(len(images) - 1):
+        H_i, inliers_i = RANSAC_homography(
+            np.array(match_indices[i]), (valid_corners[i], valid_corners[i + 1])
+        )
+        pairwise_H.append(H_i)
+        print(f"Found {len(inliers_i)}/{len(match_indices[i])} inliers")
+        # refine valid_corners using inliers
+        inlier_indices_1, inlier_indices_2 = zip(*inliers_i)
+        inlier_corners = (
+            valid_corners[i][list(inlier_indices_1)],
+            valid_corners[i + 1][list(inlier_indices_2)],
+        )
+        # create matches with sequential indices for the filtered corners
+        remapped_inlier_matches = [(i, i) for i in range(len(inlier_corners[0]))]
 
-    draw_matches(
-        images[0],
-        images[1],
-        remapped_inlier_matches,
-        inlier_corners,
-        window_name="Inlier Matches",
-    ),
+        draw_matches(
+            images[i],
+            images[i + 1],
+            remapped_inlier_matches,
+            (inlier_corners[0], inlier_corners[1]),
+            window_name=f"Inlier Matches {i}->{i+1}",
+        )
 
     """
     Image Warping + Blending
     Save Panorama output as mypano.png
     """
-    # determine panorama size and translation
-    pano_size, H_translation = get_panorama_dimensions(images[0], images[1], H)
+    # use middle image as reference
+    n = len(images)
+    ref_idx = n // 2
+    # compute homographies to reference frame
+    H_to_ref = [np.eye(3, dtype=np.float32) for _ in range(n)]
+    # left of reference (i < ref_idx)
+    for j in range(ref_idx - 1, -1, -1):
+        H_to_ref[j] = H_to_ref[j + 1] @ pairwise_H[j]
+    # right of reference (i > ref_idx); use inverse H
+    for j in range(ref_idx + 1, n):
+        H_to_ref[j] = H_to_ref[j - 1] @ np.linalg.inv(pairwise_H[j - 1])
 
-    # transform image 1 to panorama frame using H_translation and H
-    warped_image1 = cv2.warpPerspective(
-        images[0], H_translation @ H, pano_size, flags=cv2.INTER_LANCZOS4
+    # determine panorama size and translations
+    pano_size, H_translation = get_panorama_dimensions(images, H_to_ref)
+
+    # transform reference image to panorama frame using H_translation
+    ref_img = cv2.warpPerspective(
+        images[ref_idx],
+        H_translation @ H_to_ref[ref_idx],
+        pano_size,
+        flags=cv2.INTER_LANCZOS4,
     )
 
-    # transform image 2 to panorama frame using H_translation
-    warped_image2 = cv2.warpPerspective(
-        images[1], H_translation, pano_size, flags=cv2.INTER_LANCZOS4
-    )
+    # transform and blend remaining images into the panorama
+    for i in range(n):
+        if i == ref_idx:
+            continue
+        warped_i = cv2.warpPerspective(
+            images[i], H_translation @ H_to_ref[i], pano_size, flags=cv2.INTER_LANCZOS4
+        )
+        panorama = blend_images(ref_img, warped_i)
 
-    # Blend the two warped images
-    panorama = blend_images(warped_image1, warped_image2)
-
-    # Save the panorama
     cv2.imshow("Panorama", panorama)
 
     cv2.waitKey(0)
