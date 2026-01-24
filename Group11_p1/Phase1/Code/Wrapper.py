@@ -46,7 +46,7 @@ def ANMS(C_img, N_best):
 
     # select N_best corners with largest radii
     best_indices = np.argsort(-radii)[:N_best]
-    return sorted_coords[best_indices]
+    return sorted_coords[best_indices][:, [1, 0]]  # swap from (y,x) to (x,y)
 
 
 def encode_feature_points(image, corners):
@@ -55,7 +55,7 @@ def encode_feature_points(image, corners):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     H, W = gray.shape
     PATCH_RADIUS = 20
-    for y, x in corners:
+    for x, y in corners:
         # extract 41x41 patch around corner
         if (
             x - PATCH_RADIUS < 0
@@ -77,7 +77,7 @@ def encode_feature_points(image, corners):
         norm_patch = (small_patch - np.mean(small_patch)) / std
         descriptor = norm_patch.flatten()
         descriptors.append(descriptor)
-        valid_corners.append((y, x))
+        valid_corners.append((x, y))
     # encoded feature descriptors, corresponding corner locations
     return np.array(descriptors), np.array(valid_corners)
 
@@ -101,9 +101,9 @@ def match_features(desc1, desc2, ratio_thresh=0.7):
 
 
 def _corners_to_keypoints(corners):
-    # convert corner coordinates (y,x) to cv2.KeyPoint objects
+    # convert corner coordinates (x,y) to cv2.KeyPoint objects
     keypoints = []
-    for y, x in corners:
+    for x, y in corners:
         kp = cv2.KeyPoint(x=float(x), y=float(y), size=5)
         keypoints.append(kp)
     return keypoints
@@ -166,7 +166,7 @@ def main():
     Save ANMS output as anms.png
     """
     anms_corners = [ANMS(corners, 100) for corners in raw_corners]
-    # for y, x in anms_corners:
+    # for x, y in anms_corners:
     #     cv2.circle(image1, (x, y), 3, (0, 0, 255), -1)
     # cv2.imshow("ANMS Corners", image1)
     # cv2.waitKey(0)
