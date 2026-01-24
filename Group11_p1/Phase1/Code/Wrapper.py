@@ -400,7 +400,7 @@ def main():
     pano_size, H_translation = get_panorama_dimensions(images, H_to_ref)
 
     # transform reference image to panorama frame using H_translation
-    ref_img = cv2.warpPerspective(
+    panorama = cv2.warpPerspective(
         images[ref_idx],
         H_translation @ H_to_ref[ref_idx],
         pano_size,
@@ -414,7 +414,7 @@ def main():
         warped_i = cv2.warpPerspective(
             images[i], H_translation @ H_to_ref[i], pano_size, flags=cv2.INTER_LANCZOS4
         )
-        panorama = blend_images(ref_img, warped_i)
+        panorama = blend_images(panorama, warped_i)
 
     cv2.imshow("Panorama", panorama)
 
