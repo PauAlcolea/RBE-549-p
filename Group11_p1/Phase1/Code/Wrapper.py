@@ -235,6 +235,57 @@ def RANSAC_homography(
     return H_final, best_inlier_matches
 
 
+def get_panorama_dimensions(image1, image2, H):
+    # get first image corners and transform to panorama frame
+    h1, w1 = image1.shape[:2]
+    corners1 = np.float32([[0, 0], [0, h1], [w1, h1], [w1, 0]])
+    corners1_transformed = cv2.perspectiveTransform(corners1.reshape(-1, 1, 2), H)
+
+    # get second image corners (reference frame)
+    h2, w2 = image2.shape[:2]
+    corners2 = np.float32([[0, 0], [0, h2], [w2, h2], [w2, 0]])
+
+    # combine all corners to find panorama bounds
+    all_corners = np.concatenate(
+        (corners1_transformed, corners2.reshape(-1, 1, 2)), axis=0
+    )
+    [x_min, y_min] = np.int32(all_corners.min(axis=0).ravel() - 0.5)
+    [x_max, y_max] = np.int32(all_corners.max(axis=0).ravel() + 0.5)
+
+    # calculate translation to shift panorama to positive coordinates
+    H_translation = np.array(
+        [[1, 0, -x_min], [0, 1, -y_min], [0, 0, 1]], dtype=np.float32
+    )
+
+    return (x_max - x_min, y_max - y_min), H_translation
+
+
+def create_mask(img):
+    # create binary mask where image is non-zero
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    mask = (gray > 0).astype(np.uint8)
+
+    # compute weights, i.e. distance from the nearest zero pixel (the edge)
+    weights = cv2.distanceTransform(src=mask, distanceType=cv2.DIST_L2, maskSize=5)
+    weights = weights / np.max(weights)
+    return weights
+
+
+def blend_images(img1, img2):
+    # create weight masks
+    w1 = create_mask(img1)
+    w2 = create_mask(img2)
+
+    sum_weights = np.maximum(w1 + w2, 1e-8)
+
+    # fix dimensions and perform weighted average
+    w1 = w1[:, :, np.newaxis]
+    w2 = w2[:, :, np.newaxis]
+    sum_weights = sum_weights[:, :, np.newaxis]
+    blended = (img1 * w1 + img2 * w2) / sum_weights
+    return blended.astype(np.uint8)
+
+
 def main():
     # get path to current directory
     curr_dir = os.path.dirname(os.path.abspath(__file__))
@@ -330,6 +381,24 @@ def main():
     Image Warping + Blending
     Save Panorama output as mypano.png
     """
+    # determine panorama size and translation
+    pano_size, H_translation = get_panorama_dimensions(images[0], images[1], H)
+
+    # transform image 1 to panorama frame using H_translation and H
+    warped_image1 = cv2.warpPerspective(
+        images[0], H_translation @ H, pano_size, flags=cv2.INTER_LANCZOS4
+    )
+
+    # transform image 2 to panorama frame using H_translation
+    warped_image2 = cv2.warpPerspective(
+        images[1], H_translation, pano_size, flags=cv2.INTER_LANCZOS4
+    )
+
+    # Blend the two warped images
+    panorama = blend_images(warped_image1, warped_image2)
+
+    # Save the panorama
+    cv2.imshow("Panorama", panorama)
 
     cv2.waitKey(0)
     cv2.destroyAllWindows()
