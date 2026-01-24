@@ -27,7 +27,7 @@ def locate_corners(image):
     return C_img
 
 
-def ANMS(C_img, N_best):
+def ANMS(C_img, N_best=1000):
     # find local maxima
     coordinates = corner_peaks(C_img, min_distance=5, threshold_rel=0.01)
     # sort corners by corner strength (descending)
@@ -82,11 +82,16 @@ def encode_feature_points(image, corners):
     return np.array(descriptors), np.array(valid_corners)
 
 
-def match_features(desc1, desc2, ratio_thresh=0.7):
-    matches = []
-    for i, d1 in enumerate(desc1):
-        # compute sum of square difference with all descriptors in desc2
-        distances = np.sum((desc2 - d1) ** 2, axis=1)
+def _ssd(point, points):
+    # compute sum of squared distance from point to all points"""
+    return np.sum((points - point) ** 2, axis=1)
+
+
+def match_features(fd1, fd2, ratio_thresh=0.7):
+    match_indices = []
+    for i, d1 in enumerate(fd1):
+        # compute sum of square difference with all descriptors in fd2
+        distances = _ssd(d1, fd2)
         # find the two closest matches
         best_match_idx = np.argmin(distances)
         dist_best = distances[best_match_idx]
@@ -96,8 +101,8 @@ def match_features(desc1, desc2, ratio_thresh=0.7):
         dist_second_best = distances[np.argmin(distances)]
         # apply ratio test
         if dist_best / dist_second_best < ratio_thresh:
-            matches.append((i, best_match_idx))
-    return matches  # list of (index in desc1, index in desc2)
+            match_indices.append((i, best_match_idx))
+    return match_indices  # list of (index in fd1, index in fd2)
 
 
 def _corners_to_keypoints(corners):
@@ -118,14 +123,116 @@ def _matches_to_dmatches(matches):
     return dmatches
 
 
-def draw_matches(image1, image2, matches, keypoints):
-    kp1 = _corners_to_keypoints(keypoints[0])
-    kp2 = _corners_to_keypoints(keypoints[1])
+def draw_matches(image1, image2, matches, corners, window_name="Matches"):
+    kp1 = _corners_to_keypoints(corners[0])
+    kp2 = _corners_to_keypoints(corners[1])
     dmatches = _matches_to_dmatches(matches)
     img_matches = cv2.drawMatches(image1, kp1, image2, kp2, dmatches, None)
-    cv2.imshow("Feature Matches", img_matches)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    cv2.imshow(window_name, img_matches)
+    return img_matches
+
+
+def _pairs_from_matches(matches, corners):
+    # get ((x1,y1), (x2,y2)) pairs of corner coordinates from match indices
+    pairs = []
+    for i1, i2 in matches:
+        pairs.append((corners[0][i1], corners[1][i2]))
+    return np.array(pairs)  # Nx2 arrays of (x,y) coordinates
+
+
+def _normalize_points(points):
+    points = np.asarray(points)
+
+    # shift points to have mean at origin
+    mean = np.mean(points, axis=0)
+    shifted = points - mean
+
+    # scale so mean distance is sqrt(2)
+    dists = np.linalg.norm(shifted, axis=1)
+    mean_dist = np.mean(dists)
+    scale = np.sqrt(2) / mean_dist
+
+    # construct normalization matrix and normalize
+    T = np.array(
+        [[scale, 0, -scale * mean[0]], [0, scale, -scale * mean[1]], [0, 0, 1]]
+    )
+    points_h = np.hstack([points, np.ones((points.shape[0], 1))])
+    points_norm_h = (T @ points_h.T).T
+    points_norm = points_norm_h[:, :2]
+
+    return points_norm, T  # normalized points, normalization matrix
+
+
+def _form_A_matrix(pairs):
+    """
+    Form the A matrix for homography estimation
+    A = [x1 y1 1 0 0 0 -x2*x1 -x2*y1 -x2
+         0 0 0 x1 y1 1 -y2*x1 -y2*y1 -y2]
+    for each correspondence (x1,y1) <-> (x2,y2).
+    A is expanded from rearranging
+    [x2 y2 w2]^T = H [x1 y1 1]^T
+    =>
+    A*h = 0
+    where w2 is scale factor that gets divided out
+    """
+    A = []
+    for (x1, y1), (x2, y2) in pairs:
+        A.append([x1, y1, 1, 0, 0, 0, -x2 * x1, -x2 * y1, -x2])
+        A.append([0, 0, 0, x1, y1, 1, -y2 * x1, -y2 * y1, -y2])
+    return np.array(A)  # 2nx9 matrix
+
+
+def _compute_homography(pairs):
+    # normalize points
+    points1_norm, T1 = _normalize_points(pairs[:, 0])
+    points2_norm, T2 = _normalize_points(pairs[:, 1])
+    norm_pairs = np.array(list(zip(points1_norm, points2_norm)))
+    # form A matrix and solve A*h=0 using SVD
+    A = _form_A_matrix(norm_pairs)
+    _, _, Vt = np.linalg.svd(A)
+    h = Vt[-1, :]  # last row of Vt is null space of A, i.e. solution h
+    H = h.reshape((3, 3)) / h[-1]
+    # denormalize H
+    H = np.linalg.inv(T2) @ H @ T1
+    return H
+
+
+def RANSAC_homography(
+    match_indices, valid_corners, n_iterations=10000, inlier_thresh=90.0
+):
+    best_inlier_matches = []
+
+    for _ in range(n_iterations):
+        # select four feature pairs at random
+        random_indices = np.random.choice(len(match_indices), size=(4,), replace=False)
+        random_matches = match_indices[random_indices]
+        pairs = _pairs_from_matches(random_matches, valid_corners)
+
+        H = _compute_homography(pairs)
+
+        # use H to map all points from image1 to image2, counting inliers
+        inlier_matches = []
+        for i1, i2 in match_indices:
+            x1, y1 = valid_corners[0][i1]
+            x2, y2 = valid_corners[1][i2]
+            p1 = np.array([x1, y1, 1]).reshape((3, 1))
+            p2_est = H @ p1
+            p2_est = (p2_est[:2] / max(p2_est[2], 1e-8)).flatten()
+            dist = np.linalg.norm(p2_est - np.array([x2, y2]), ord=1)
+            if dist < inlier_thresh:
+                inlier_matches.append((i1, i2))
+
+        if len(inlier_matches) > len(best_inlier_matches):
+            best_inlier_matches = inlier_matches
+
+        if len(inlier_matches) > 0.85 * len(match_indices):
+            print(f"Early stopping RANSAC with {len(inlier_matches)} inliers")
+            break
+
+    # recompute homography using all inliers
+    inlier_pairs = _pairs_from_matches(best_inlier_matches, valid_corners)
+    H_final = _compute_homography(inlier_pairs)
+    return H_final, best_inlier_matches
 
 
 def main():
@@ -154,7 +261,7 @@ def main():
             if img is not None:
                 images.append(img)
     print(f"Read {len(images)} images from {input_dir}")
-
+    images = images[:2]  # only use first two images for now
     """
     Corner Detection
     Save Corner detection output as corners.png
@@ -165,7 +272,7 @@ def main():
     Perform ANMS: Adaptive Non-Maximal Suppression
     Save ANMS output as anms.png
     """
-    anms_corners = [ANMS(corners, 100) for corners in raw_corners]
+    anms_corners = [ANMS(corners) for corners in raw_corners]
     # for x, y in anms_corners:
     #     cv2.circle(image1, (x, y), 3, (0, 0, 255), -1)
     # cv2.imshow("ANMS Corners", image1)
@@ -176,7 +283,7 @@ def main():
     Feature Descriptors
     Save Feature Descriptor output as FD.png
     """
-    fd, keypoints = zip(
+    fd, valid_corners = zip(
         *[
             encode_feature_points(image, corners)
             for image, corners in zip(images, anms_corners)
@@ -187,19 +294,45 @@ def main():
     Feature Matching
     Save Feature Matching output as matching.png
     """
-    matches = match_features(fd[0], fd[1])
+    match_indices = match_features(fd[0], fd[1])
     # perform conversions for visualization
-    draw_matches(images[0], images[1], matches, keypoints)
+    draw_matches(
+        images[0],
+        images[1],
+        match_indices,
+        valid_corners,
+        window_name="Feature Matches",
+    )
 
     """
     Refine: RANSAC, Estimate Homography
     """
+    H, inlier_matches = RANSAC_homography(np.array(match_indices), valid_corners)
+    print(f"Found {len(inlier_matches)}/{len(match_indices)} inliers")
+    # refine valid_corners using inliers
+    inlier_indices_1, inlier_indices_2 = zip(*inlier_matches)
+    inlier_corners = (
+        valid_corners[0][list(inlier_indices_1)],
+        valid_corners[1][list(inlier_indices_2)],
+    )
+    # create matches with sequential indices for the filtered corners
+    remapped_inlier_matches = [(i, i) for i in range(len(inlier_matches))]
+
+    draw_matches(
+        images[0],
+        images[1],
+        remapped_inlier_matches,
+        inlier_corners,
+        window_name="Inlier Matches",
+    ),
 
     """
     Image Warping + Blending
     Save Panorama output as mypano.png
     """
 
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
     return
 
 
