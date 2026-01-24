@@ -17,6 +17,29 @@ import numpy as np
 import cv2
 import os
 import copy
+from sklearn.preprocessing import StandardScaler
+
+
+"""
+Draws ANMS corners on each image and shows them using cv2.imshow.
+@param images_color: list of RGB images
+@param anms_corners: list of list of the tuples (x, y) from ANMS
+"""
+def visualize_anms(images_color: list[np.array], anms_corners: list[list[tuple]]):
+    for idx, img in enumerate(images_color):
+        # Make a copy and convert RGB to BGR to display in OpenCV
+        img_copy = cv2.cvtColor(img.copy(), cv2.COLOR_RGB2BGR)
+        corners = anms_corners[idx]
+
+        # Draw a small red circle for each corner
+        for (x, y) in corners:
+            cv2.circle(img_copy, (x, y), radius=3, color=(0, 0, 255), thickness=-1)
+
+        # Show the image
+        cv2.imshow(f"ANMS Corners Image {idx+1}", img_copy)
+        cv2.waitKey(0) 
+        cv2.destroyAllWindows()
+
 
 """
 This function takes a path where a set of images to be made panorama is
@@ -109,7 +132,7 @@ This function will get the Nbest corners in the image based on their strength an
 @return the coordinates of all of the final corners in list
 this will all be in a list that contains all of the corners for all the imgs
 """
-def anms(corner_images: list[np.array], Nbest: int):
+def anms(corner_images: list[np.array], Nbest: int) -> list[list[tuple[int, int]]]:
 	# list with a list of tuples, each tuple being the coordinates and the sublist being an image
 	final_corners_images = []
 
@@ -144,6 +167,45 @@ def anms(corner_images: list[np.array], Nbest: int):
 	return final_corners_images
 
 
+"""
+This function will take the different corners acquired by the anms and encode them into feature vectors to be identified in other images
+@param images are the gray images, this will be used for size 
+@param final_corners are the are the coordinates of the corners
+@return a list of all of the feature vectors (64 x 1) inside a list for each image
+"""
+def feature_descriptor(images_gray: list[np.array], final_corners: list[list[tuple[int, int]]]) -> list[list[np.array]]:
+	feature_vectors = []
+	for i, image in enumerate(final_corners):
+		image_vectors = []
+		for corner in image:
+			x = corner[0]
+			y = corner[1]
+			a = 20 #this is to make the patch of size 41x41 (range(1+20:1-20) -> 41)
+			h, w = images_gray[i].shape
+
+			# if out of bounds go to next corner
+			if (x < a) or (y < a) or (x >= w - a) or (y >= h - a):
+				continue
+
+			# make a patch by slicing the gray image, add one becuase slicing excludes the final value
+			# y and then x because the array is different like this
+			patch = images_gray[i][(y-a):(y+a+1), (x-a):(x+a+1)]
+
+			blurred_patch = cv2.GaussianBlur(patch, ksize=(5,5), sigmaX=1, sigmaY=1)
+			patch_8x8 = cv2.resize(blurred_patch,(8,8), interpolation=cv2.INTER_LINEAR)
+			vector = patch_8x8.reshape(64,)
+
+			# standardize
+			scaler = StandardScaler()
+			standardized_vector = scaler.fit_transform(vector)
+
+			image_vectors.append(standardized_vector)
+
+		feature_vectors.append(image_vectors)	
+	
+	return feature_vectors
+
+
 def main():
     # Add any Command Line arguments here
     # Parser = argparse.ArgumentParser()
@@ -168,11 +230,13 @@ def main():
 	Save ANMS output as anms.png
 	"""
 	final_corners = anms(scores, 40)
+	# visualize_anms(images, final_corners)
 	
 	"""
 	Feature Descriptors
 	Save Feature Descriptor output as FD.png
 	"""
+	feature_descriptor(images_gray, final_corners)
 
 	"""
 	Feature Matching
