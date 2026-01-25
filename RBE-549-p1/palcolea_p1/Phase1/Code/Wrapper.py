@@ -126,15 +126,39 @@ def local_maxima(cimg: np.array):
 	return Xs, Ys, strengths
 
 """
+this function goes over all of the corners produced by anms and removes the ones that are too close to the border for the feature descriptor
+"""
+def remove_corners(all_corners, images_gray, patch_radius=20):
+    good_corners_all_images = []
+
+	#iterate through every image
+    for i, image in enumerate(all_corners):
+        h, w = images_gray[i].shape
+        good_corners = []
+
+        for (x, y) in image:
+            if (
+                x >= patch_radius and
+                y >= patch_radius and
+                x < w - patch_radius and
+                y < h - patch_radius
+            ):
+                good_corners.append((x, y))
+
+        good_corners_all_images.append(good_corners)
+
+    return good_corners_all_images
+
+"""
 This function will get the Nbest corners in the image based on their strength and their distance to another strong corner
 @param corner_images is a list with all np.arrays (each array is the score for corners as a 2D mask for one photo)
 @param Nbest is the number of best corners needed
 @return the coordinates of all of the final corners in list
 this will all be in a list that contains all of the corners for all the imgs
 """
-def anms(corner_images: list[np.array], Nbest: int) -> list[list[tuple[int, int]]]:
+def anms(corner_images: list[np.array], Nbest: int, gray_images) -> list[list[tuple[int, int]]]:
 	# list with a list of tuples, each tuple being the coordinates and the sublist being an image
-	final_corners_images = []
+	corners_images = []
 
 	for cimg in corner_images:
 		# each image has to be filtered to only keep the local maxima so any pixel with a value is not considered a corner
@@ -163,7 +187,10 @@ def anms(corner_images: list[np.array], Nbest: int) -> list[list[tuple[int, int]
 		sorted_indexes = np.argsort(-r)	
 		best_indexes = sorted_indexes[:Nbest]
 		best_corners = list(zip(corner_xs[best_indexes], corner_ys[best_indexes]))
-		final_corners_images.append(best_corners)
+		corners_images.append(best_corners)
+	
+		#remove the corners that are too close to the edges
+		final_corners_images = copy.deepcopy(remove_corners(corners_images, gray_images))
 	return final_corners_images
 
 
@@ -184,8 +211,8 @@ def feature_descriptor(images_gray: list[np.array], final_corners: list[list[tup
 			h, w = images_gray[i].shape
 
 			# if out of bounds go to next corner
-			if (x < a) or (y < a) or (x >= w - a) or (y >= h - a):
-				continue
+			# if (x < a) or (y < a) or (x >= w - a) or (y >= h - a):
+			# 	continue
 
 			# make a patch by slicing the gray image, add one becuase slicing excludes the final value
 			# y and then x because the array is different like this
@@ -193,7 +220,7 @@ def feature_descriptor(images_gray: list[np.array], final_corners: list[list[tup
 
 			blurred_patch = cv2.GaussianBlur(patch, ksize=(5,5), sigmaX=1, sigmaY=1)
 			patch_8x8 = cv2.resize(blurred_patch,(8,8), interpolation=cv2.INTER_LINEAR)
-			vector = patch_8x8.reshape(64,)
+			vector = patch_8x8.reshape(64,1)
 
 			# standardize
 			scaler = StandardScaler()
@@ -204,6 +231,59 @@ def feature_descriptor(images_gray: list[np.array], final_corners: list[list[tup
 		feature_vectors.append(image_vectors)	
 	
 	return feature_vectors
+
+"""
+this function is meant to take all of the feature vectors in an image and match them (is possible) to the feature vector in a different picture
+@param feature_vectors1 and feature_vectors2: are lists with vectors, one for each image in the comparison
+"""
+def feature_matching_2_imgs(feature_vect1: list[np.array], feature_vect2: list[np.array]):		
+	#will be a list of tuples between these two images
+	matches = []
+	
+	# go through each vector in the first image and then inside of that iterate through all of the vectors on the second image
+	for i, vector1 in enumerate(feature_vect1):
+		
+		#initialize the best and second best matches
+		#match is where the pair is going to go, 
+		best_match = np.inf
+		second_best = np.inf
+		j_best = -1
+		match = [[],[]]
+		
+		for j, vector2 in enumerate(feature_vect2):
+			#square of differences between the two vectors
+			sum_sq_diff = np.sum((vector2 - vector1)**2)
+
+			#update bests as you go
+			if sum_sq_diff < best_match:
+				second_best = best_match
+				best_match = sum_sq_diff
+				j_best = j
+				match[0] = copy.deepcopy(vector1)
+				match[1] = copy.deepcopy(vector2)
+
+		#check that there is some match
+		#check if the distances for the matches are significant or not with a threshold
+		#if they are, accept the match by making a 
+		#i and j_best are the indices into keypoints for one image each
+		if j_best!=-1 and best_match/second_best < 0.7:
+			matches.append(cv2.DMatch(i ,j_best , best_match))
+
+	return(matches)
+		
+
+"""
+helper function to put corners into cv2 KeyPoint objects for the visualization of the feature matching
+"""
+def corners_to_keypnts_one_img(final_corners: list[tuple[int, int]]):
+	keypoints = []
+
+	# go through all of coordinate tuples in an image
+	for (x, y) in final_corners:
+		kp = cv2.KeyPoint(x=float(x), y=float(y), size=1)
+		keypoints.append(kp)
+	return keypoints
+
 
 
 def main():
@@ -229,19 +309,40 @@ def main():
 	Perform ANMS: Adaptive Non-Maximal Suppression
 	Save ANMS output as anms.png
 	"""
-	final_corners = anms(scores, 40)
+	final_corners = anms(scores, 40, images_gray)
 	# visualize_anms(images, final_corners)
 	
 	"""
 	Feature Descriptors
 	Save Feature Descriptor output as FD.png
 	"""
-	feature_descriptor(images_gray, final_corners)
+	feature_vectors = feature_descriptor(images_gray, final_corners)
 
 	"""
 	Feature Matching
 	Save Feature Matching output as matching.png
 	"""
+	#feature vectors for each image
+	vectors1 = feature_vectors[0]
+	vectors2 = feature_vectors[1]
+
+	#original images in question
+	image1 = images[0]
+	image2 = images[1]
+
+	#corners of an image after anms but in keypoint objects
+	key1 = corners_to_keypnts_one_img(final_corners[0])
+	key2 = corners_to_keypnts_one_img(final_corners[1])
+
+
+	matched_pairs = feature_matching_2_imgs(vectors1, vectors2)
+	
+	#visualization
+	matched_image = cv2.drawMatches(image1, key1, image2, key2, matched_pairs, outImg=None)
+	cv2.imshow("Feature Matches", matched_image)
+	cv2.waitKey(0)
+	cv2.destroyAllWindows()
+
 
 	"""
 	Refine: RANSAC, Estimate Homography
