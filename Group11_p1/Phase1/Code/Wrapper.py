@@ -191,14 +191,18 @@ def _compute_homography(pairs):
     A = _form_A_matrix(norm_pairs)
     _, _, Vt = np.linalg.svd(A)
     h = Vt[-1, :]  # last row of Vt is null space of A, i.e. solution h
-    H = h.reshape((3, 3)) / h[-1]
+    H = h.reshape((3, 3)) / np.max(np.abs(h))
     # denormalize H
     H = np.linalg.inv(T2) @ H @ T1
     return H
 
 
 def RANSAC_homography(
-    match_indices, valid_corners, n_iterations=10000, inlier_thresh=90.0
+    match_indices,
+    valid_corners,
+    n_iterations=10000,
+    inlier_thresh=90,
+    stop_thresh=0.85,
 ):
     best_inlier_matches = []
 
@@ -207,8 +211,15 @@ def RANSAC_homography(
         random_indices = np.random.choice(len(match_indices), size=(4,), replace=False)
         random_matches = match_indices[random_indices]
         pairs = _pairs_from_matches(random_matches, valid_corners)
+        # skip iteration if selected points are degenerate
+        if np.linalg.matrix_rank(_form_A_matrix(pairs)) < 8:
+            continue
 
-        H = _compute_homography(pairs)
+        # compute homography from the four pairs; skip if SVD fails
+        try:
+            H = _compute_homography(pairs)
+        except np.linalg.LinAlgError:
+            continue
 
         # use H to map all points from image1 to image2, counting inliers
         inlier_matches = []
@@ -225,7 +236,7 @@ def RANSAC_homography(
         if len(inlier_matches) > len(best_inlier_matches):
             best_inlier_matches = inlier_matches
 
-        if len(inlier_matches) > 0.85 * len(match_indices):
+        if len(inlier_matches) > stop_thresh * len(match_indices):
             print(f"Early stopping RANSAC with {len(inlier_matches)} inliers")
             break
 
@@ -308,6 +319,7 @@ def main():
             if img is not None:
                 images.append(img)
     print(f"Read {len(images)} images from {input_dir}")
+
     """
     Corner Detection
     Save Corner detection output as corners.png
@@ -319,11 +331,6 @@ def main():
     Save ANMS output as anms.png
     """
     anms_corners = [ANMS(corners) for corners in raw_corners]
-    # for x, y in anms_corners:
-    #     cv2.circle(image1, (x, y), 3, (0, 0, 255), -1)
-    # cv2.imshow("ANMS Corners", image1)
-    # cv2.waitKey(0)
-    # cv2.destroyAllWindows()
 
     """
     Feature Descriptors
