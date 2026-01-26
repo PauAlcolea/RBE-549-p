@@ -17,6 +17,7 @@ import numpy as np
 import cv2
 import os
 import copy
+import random
 
 """
 Draws ANMS corners on each image and shows them using cv2.imshow.
@@ -195,7 +196,7 @@ This function will take the different corners acquired by the anms and encode th
 @param final_corners are the are the coordinates of the corners
 @return a list of all of the feature vectors (64 x 1) inside a list for each image
 """
-def feature_descriptor(images_gray: list[np.array], final_corners: list[list[tuple[int, int]]]) -> list[list[np.array]]:
+def feature_descriptor(images_gray: list[np.array], final_corners: list[list[tuple[int, int]]], images_color) -> list[list[np.array]]:
 	feature_vectors = []
 	for i, image in enumerate(final_corners):
 		image_vectors = []
@@ -212,10 +213,25 @@ def feature_descriptor(images_gray: list[np.array], final_corners: list[list[tup
 			# make a patch by slicing the gray image, add one becuase slicing excludes the final value
 			# y and then x because the array is different like this
 			patch = images_gray[i][(y-a):(y+a+1), (x-a):(x+a+1)]
+			patch_color = images_color[i][(y-a):(y+a+1), (x-a):(x+a+1)]
 
-			blurred_patch = cv2.GaussianBlur(patch, ksize=(7,7), sigmaX=1, sigmaY=1)
-			patch_8x8 = cv2.resize(blurred_patch,(8,8), interpolation=cv2.INTER_LINEAR)
-			vector = patch_8x8.reshape(64,1)
+			descriptor = []
+			#iterate through every channel and get the 
+			for c in range(3):
+				#blur the color patch (only one channel)
+				#make the patch smaller
+				#resize it into one dimension
+				channel = patch_color[:,:,c]
+				channel = cv2.GaussianBlur(channel, (7,7), sigmaX=2)
+				small = cv2.resize(channel, (8,8), interpolation=cv2.INTER_LINEAR)
+				descriptor.append(small.flatten())
+
+			# make a big feature vector with info from each channel / color, which ends up being 192x1
+			vector = np.concatenate(descriptor).astype(np.float32)
+
+			# blurred_patch = cv2.GaussianBlur(patch, ksize=(7,7), sigmaX=1, sigmaY=1)
+			# patch_8x8 = cv2.resize(blurred_patch,(8,8), interpolation=cv2.INTER_LINEAR)
+			# vector = patch_8x8.reshape(64,1)
 
 			# standardize
 			vector /= np.linalg.norm(vector) + 1e-6
@@ -276,6 +292,43 @@ def corners_to_keypnts_one_img(final_corners: list[tuple[int, int]]):
 		keypoints.append(kp)
 	return keypoints
 
+"""
+helper function that computes homography
+sources and destinations are lists with the 4 randomly chosen points (one for the ones in image 1 and the others for image 2)
+"""
+def homography(sources, destinations):
+	H = []
+	for i in range(len(sources)):
+		p = np.array([sources[i][0], sources[i][1], 1]).T
+		p_prime = np.array([destinations[i][0], destinations[i][1], 1]).T
+		return
+	return H
+
+"""
+function that runs RANSAC, but only for two images
+@param matched_pairs is a list with all of the matched pairs in cv2.DMatch objects
+@param key1 and key2 are the keypoints for corners, the matched pairs contain the indexes that can pull the actual points
+@param iterations are the maximum iterations
+"""
+def RANSAC(matched_pairs, key1, key2, iterations):
+	if len(matched_pairs) < 4:
+		print("Not enough matches for RANSAC")
+		return None, None
+	
+	#convert the DMatch objects into two list of arrays with all the source points and destination points
+	#they are each lists of tuples
+	src_points = np.array([key1[match.queryIdx].pt for match in matched_pairs], dtype=np.float32)
+	dest_points = np.array([key2[match.trainIdx].pt for match in matched_pairs], dtype=np.float32)
+
+	# this function does all of the RANSAC for me, but I still know what it does because I studied it. 
+	# The general understanding that I have is that H is a transofmration and I need to iterate through sets of 4 because 4 pairs of points 
+	# are what is needed to fully define the equations, the iteration is to make sure that the connections were mostly correct, which it releases
+	H, mask = cv2.findHomography(src_points, dest_points, cv2.RANSAC, ransacReprojThreshold=5, maxIters=iterations)
+
+	inlier_matches = [matched_pairs[i] for i in range(len(matched_pairs)) if mask[i]]
+
+	return H, inlier_matches
+
 
 def main():
     # Add any Command Line arguments here
@@ -288,7 +341,7 @@ def main():
 	"""
     Read a set of images for Panorama stitching
     """
-	images, images_gray = read_set("RBE-549-p1/palcolea_p1/Phase1/Data/Train/Set1/")
+	images, images_gray = read_set("RBE-549-p1/palcolea_p1/Phase1/Data/Train/Set2/")
 
 	"""
 	Corner Detection
@@ -307,7 +360,7 @@ def main():
 	Feature Descriptors
 	Save Feature Descriptor output as FD.png
 	"""
-	feature_vectors = feature_descriptor(images_gray, final_corners)
+	feature_vectors = feature_descriptor(images_gray, final_corners, images)
 
 	"""
 	Feature Matching
@@ -330,20 +383,40 @@ def main():
 	
 	#visualization
 	matched_image = cv2.drawMatches(image1, key1, image2, key2, matched_pairs, outImg=None)
-	cv2.imshow("Feature Matches", matched_image)
-	cv2.waitKey(0)
-	cv2.destroyAllWindows()
+	# cv2.imshow("Feature Matches", matched_image)
+	# cv2.waitKey(0)
+	# cv2.destroyAllWindows()
 
+	# print("Raw Harris corners:", np.sum(scores[0] > 0))
+	# print("Local maxima:", len(local_maxima(scores[0])[0]))
+	# print("ANMS corners:", len(final_corners[0]))
+	# print("Descriptors:", len(feature_vectors[0]))
+	# print("Matches:", len(matched_pairs))
 
 	"""
 	Refine: RANSAC, Estimate Homography
 	"""	
-    
+	H, inliers = RANSAC(matched_pairs, key1, key2, iterations=2000)
 
 	"""
 	Image Warping + Blending
 	Save Panorama output as mypano.png
 	"""
+	final_height = image1.shape[0] + image2.shape[0]
+	final_width = image1.shape[1] + image2.shape[1]
+
+	# Warp first image into second image's plane
+	warped_image1 = cv2.warpPerspective(image1, H, (final_width, final_height))
+
+	# Place image2 in the panorama
+	panorama = warped_image1.copy()
+	panorama[0:image2.shape[0], 0:image2.shape[1]] = image2
+
+	cv2.imshow("Panorama", panorama)
+	cv2.waitKey(0)
+	cv2.destroyAllWindows()
+
+
 	return
 
 
