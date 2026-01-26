@@ -17,8 +17,6 @@ import numpy as np
 import cv2
 import os
 import copy
-from sklearn.preprocessing import StandardScaler
-
 
 """
 Draws ANMS corners on each image and shows them using cv2.imshow.
@@ -39,7 +37,6 @@ def visualize_anms(images_color: list[np.array], anms_corners: list[list[tuple]]
         cv2.imshow(f"ANMS Corners Image {idx+1}", img_copy)
         cv2.waitKey(0) 
         cv2.destroyAllWindows()
-
 
 """
 This function takes a path where a set of images to be made panorama is
@@ -65,7 +62,6 @@ def read_set(image_set_path: str) -> tuple[list[np.array], list[np.array]]:
 			images_gray.append(img_gray)
 
 	return images, images_gray
-
 
 """
 this functin finds the corners in an image with the harris filter
@@ -168,7 +164,7 @@ def anms(corner_images: list[np.array], Nbest: int, gray_images) -> list[list[tu
 		
 		# if no strong corners go to next image
 		if Nstrong == 0:
-			final_corners_images.append([])
+			corners_images.append([])
 			continue
 
 		# make a list of size Nstrong with np.infinity to compare
@@ -192,7 +188,6 @@ def anms(corner_images: list[np.array], Nbest: int, gray_images) -> list[list[tu
 		#remove the corners that are too close to the edges
 		final_corners_images = copy.deepcopy(remove_corners(corners_images, gray_images))
 	return final_corners_images
-
 
 """
 This function will take the different corners acquired by the anms and encode them into feature vectors to be identified in other images
@@ -218,15 +213,13 @@ def feature_descriptor(images_gray: list[np.array], final_corners: list[list[tup
 			# y and then x because the array is different like this
 			patch = images_gray[i][(y-a):(y+a+1), (x-a):(x+a+1)]
 
-			blurred_patch = cv2.GaussianBlur(patch, ksize=(5,5), sigmaX=1, sigmaY=1)
+			blurred_patch = cv2.GaussianBlur(patch, ksize=(7,7), sigmaX=1, sigmaY=1)
 			patch_8x8 = cv2.resize(blurred_patch,(8,8), interpolation=cv2.INTER_LINEAR)
 			vector = patch_8x8.reshape(64,1)
 
 			# standardize
-			scaler = StandardScaler()
-			standardized_vector = scaler.fit_transform(vector)
-
-			image_vectors.append(standardized_vector)
+			vector /= np.linalg.norm(vector) + 1e-6
+			image_vectors.append(vector)
 
 		feature_vectors.append(image_vectors)	
 	
@@ -266,12 +259,11 @@ def feature_matching_2_imgs(feature_vect1: list[np.array], feature_vect2: list[n
 		#check if the distances for the matches are significant or not with a threshold
 		#if they are, accept the match by making a 
 		#i and j_best are the indices into keypoints for one image each
-		if j_best!=-1 and best_match/second_best < 0.7:
+		if j_best!=-1 and best_match/second_best < 0.5:
 			matches.append(cv2.DMatch(i ,j_best , best_match))
 
 	return(matches)
 		
-
 """
 helper function to put corners into cv2 KeyPoint objects for the visualization of the feature matching
 """
@@ -283,7 +275,6 @@ def corners_to_keypnts_one_img(final_corners: list[tuple[int, int]]):
 		kp = cv2.KeyPoint(x=float(x), y=float(y), size=1)
 		keypoints.append(kp)
 	return keypoints
-
 
 
 def main():
@@ -309,7 +300,7 @@ def main():
 	Perform ANMS: Adaptive Non-Maximal Suppression
 	Save ANMS output as anms.png
 	"""
-	final_corners = anms(scores, 40, images_gray)
+	final_corners = anms(scores, 150, images_gray)
 	# visualize_anms(images, final_corners)
 	
 	"""
@@ -324,15 +315,15 @@ def main():
 	"""
 	#feature vectors for each image
 	vectors1 = feature_vectors[0]
-	vectors2 = feature_vectors[1]
+	vectors2 = feature_vectors[2]
 
 	#original images in question
 	image1 = images[0]
-	image2 = images[1]
+	image2 = images[2]
 
 	#corners of an image after anms but in keypoint objects
 	key1 = corners_to_keypnts_one_img(final_corners[0])
-	key2 = corners_to_keypnts_one_img(final_corners[1])
+	key2 = corners_to_keypnts_one_img(final_corners[2])
 
 
 	matched_pairs = feature_matching_2_imgs(vectors1, vectors2)
