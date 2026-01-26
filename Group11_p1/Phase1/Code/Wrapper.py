@@ -305,9 +305,16 @@ def main():
         default=f"{parent_dir}/Data/Train/Set1",
         help="Directory of input images",
     )
-
+    ap.add_argument(
+        "-o",
+        "--output",
+        action="store_true",
+        help="Whether to save output images",
+    )
     args = ap.parse_args()
     input_dir = args.dir
+    save_output = args.output
+    output_dir = f"{parent_dir}/Output"
 
     """
     Read a set of images for Panorama stitching
@@ -325,12 +332,26 @@ def main():
     Save Corner detection output as corners.png
     """
     raw_corners = [locate_corners(image) for image in images]
+    if save_output:
+        for i, (image, C_img) in enumerate(zip(images, raw_corners)):
+            corners_vis = image.copy()
+            # use cv2.circle to draw corners
+            ys, xs = np.where(C_img > 0.01 * C_img.max())
+            for x, y in zip(xs, ys):
+                cv2.circle(corners_vis, (x, y), 3, (0, 0, 255), -1)
+            cv2.imwrite(os.path.join(output_dir, f"corners_{i}.png"), corners_vis)
 
     """
     Perform ANMS: Adaptive Non-Maximal Suppression
     Save ANMS output as anms.png
     """
     anms_corners = [ANMS(corners) for corners in raw_corners]
+    if save_output:
+        for i, (image, corners) in enumerate(zip(images, anms_corners)):
+            anms_vis = image.copy()
+            for x, y in corners:
+                cv2.circle(anms_vis, (x, y), 3, (0, 255, 0), -1)
+            cv2.imwrite(os.path.join(output_dir, f"anms_{i}.png"), anms_vis)
 
     """
     Feature Descriptors
@@ -342,6 +363,30 @@ def main():
             for image, corners in zip(images, anms_corners)
         ]
     )
+    # visualize some feature descriptors
+    # if save_output:
+    #     for i, (image, descriptors, corners) in enumerate(
+    #         zip(images, fd, valid_corners)
+    #     ):
+    #         fd_vis = image.copy()
+    #         for (x, y), desc in zip(corners, descriptors):
+    #             # reshape descriptor to 8x8 patch
+    #             patch = desc.reshape((8, 8))
+    #             patch = ((patch - patch.min()) / (patch.max() - patch.min()) * 255).astype(
+    #                 np.uint8
+    #             )
+    #             patch = cv2.resize(patch, (16, 16), interpolation=cv2.INTER_NEAREST)
+    #             patch_color = cv2.applyColorMap(patch, cv2.COLORMAP_JET)
+    #             # overlay patch at corner location
+    #             h, w = patch_color.shape[:2]
+    #             x_start = max(x - w // 2, 0)
+    #             y_start = max(y - h // 2, 0)
+    #             x_end = min(x_start + w, image.shape[1])
+    #             y_end = min(y_start + h, image.shape[0])
+    #             fd_vis[y_start:y_end, x_start:x_end] = patch_color[
+    #                 : y_end - y_start, : x_end - x_start
+    #             ]
+    #         cv2.imwrite(os.path.join(output_dir, f"fd_{i}.png"), fd_vis)
 
     """
     Feature Matching
@@ -359,6 +404,16 @@ def main():
             (valid_corners[i], valid_corners[i + 1]),
             window_name=f"Feature Matches {i}->{i+1}",
         )
+        if save_output:
+            img_matches = draw_matches(
+                images[i],
+                images[i + 1],
+                match_indices_i,
+                (valid_corners[i], valid_corners[i + 1]),
+            )
+            cv2.imwrite(
+                os.path.join(output_dir, f"matching_{i}_{i+1}.png"), img_matches
+            )
 
     """
     Refine: RANSAC, Estimate Homography
@@ -386,6 +441,17 @@ def main():
             (inlier_corners[0], inlier_corners[1]),
             window_name=f"Inlier Matches {i}->{i+1}",
         )
+        if save_output:
+            img_inlier_matches = draw_matches(
+                images[i],
+                images[i + 1],
+                remapped_inlier_matches,
+                (inlier_corners[0], inlier_corners[1]),
+            )
+            cv2.imwrite(
+                os.path.join(output_dir, f"inlier_matching_{i}_{i+1}.png"),
+                img_inlier_matches,
+            )
 
     """
     Image Warping + Blending
