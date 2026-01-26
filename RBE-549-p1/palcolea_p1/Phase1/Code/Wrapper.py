@@ -330,6 +330,43 @@ def RANSAC(matched_pairs, key1, key2, iterations):
 
 	return H, inlier_matches
 
+"""
+Look at the corners of the images to ensure that both images stay in view, and then use the homography to stitch one to another
+"""
+def warp(image_from, image_to, homography):
+	#get the corners for image one (actual 4 corners, not the corners we've been doing until now)
+	#shape[:2] forgets about the color channel
+	#the reshape gets separates every point so that the transform works right
+	h1, w1 = image_from.shape[:2]
+	corners1 = np.float32([[0,0],[w1,0],[w1,h1],[0,h1]]).reshape(-1, 1, 2)
+	#warp the corners from 1 with H, this is used to see where the picture will be and to ensure that all the images will be in the frame
+	warped_corners1 = cv2.perspectiveTransform(corners1, homography)
+
+	# this is to see where image 2 lies in space, no need to warp
+	h2, w2 = image_to.shape[:2]
+	corners2 = np.float32([[0,0],[w2,0],[w2,h2],[0,h2]]).reshape(-1, 1, 2)
+
+	#combine all of the corners vertically
+	all_corners = np.vstack((warped_corners1, corners2))
+	
+	#bounding box by looking at the coordinates for each corner, 
+	xmin, ymin = np.int32(all_corners.min(axis=0).ravel())
+	xmax, ymax = np.int32(all_corners.max(axis=0).ravel())
+	
+	#now we need a transformation to move everything by the minimum x and y to make that the origin so everything is in view
+	T = np.array([[1, 0, -xmin], [0, 1, -ymin], [0, 0, 1]], dtype=np.float32)
+
+	# do the actual homography application for the panorama and then the translation
+	# T @ H is matrix multiplication, combining the homographies
+	panorama = cv2.warpPerspective(image_from, T @ homography, (xmax - xmin, ymax - ymin))
+	# add image 2 to the panorama, shifting the position because of the T translation
+	panorama[-ymin : h2-ymin, -xmin : w2-xmin] = image_to
+
+	cv2.imshow("Panorama", panorama)
+	cv2.waitKey(0)
+	cv2.destroyAllWindows()
+
+	return
 
 def main():
     # Add any Command Line arguments here
@@ -402,37 +439,7 @@ def main():
 	Image Warping + Blending
 	Save Panorama output as mypano.png
 	"""
-	#get the corners for image one (actual 4 corners, not the corners we've been doing until now)
-	#shape[:2] forgets about the color channel
-	#the reshape gets separates every point so that the transform works right
-	h1, w1 = image1.shape[:2]
-	corners1 = np.float32([[0,0],[w1,0],[w1,h1],[0,h1]]).reshape(-1, 1, 2)
-	#warp the corners from 1 with H, this is used to see where the picture will be and to ensure that all the images will be in the frame
-	warped_corners1 = cv2.perspectiveTransform(corners1, H)
-
-	# this is to see where image 2 lies in space, no need to warp
-	h2, w2 = image2.shape[:2]
-	corners2 = np.float32([[0,0],[w2,0],[w2,h2],[0,h2]]).reshape(-1, 1, 2)
-
-	#combine all of the corners vertically
-	all_corners = np.vstack((warped_corners1, corners2))
-	
-	#bounding box by looking at the coordinates for each corner, 
-	xmin, ymin = np.int32(all_corners.min(axis=0).ravel())
-	xmax, ymax = np.int32(all_corners.max(axis=0).ravel())
-	
-	#now we need a transformation to move everything by the minimum x and y to make that the origin so everything is in view
-	T = np.array([[1, 0, -xmin], [0, 1, -ymin], [0, 0, 1]], dtype=np.float32)
-
-	# do the actual homography application for the panorama and then the translation
-	# T @ H is matrix multiplication, combining the homographies
-	panorama = cv2.warpPerspective(image1, T @ H, (xmax - xmin, ymax - ymin))
-	# add image 2 to the panorama, shifting the position because of the T translation
-	panorama[-ymin : h2-ymin, -xmin : w2-xmin] = image2
-
-	cv2.imshow("Panorama", panorama)
-	cv2.waitKey(0)
-	cv2.destroyAllWindows()
+	warp(image1, image2, H)
 
 	return
 
