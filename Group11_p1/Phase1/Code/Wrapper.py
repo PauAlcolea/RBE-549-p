@@ -363,30 +363,24 @@ def main():
             for image, corners in zip(images, anms_corners)
         ]
     )
-    # visualize some feature descriptors
-    # if save_output:
-    #     for i, (image, descriptors, corners) in enumerate(
-    #         zip(images, fd, valid_corners)
-    #     ):
-    #         fd_vis = image.copy()
-    #         for (x, y), desc in zip(corners, descriptors):
-    #             # reshape descriptor to 8x8 patch
-    #             patch = desc.reshape((8, 8))
-    #             patch = ((patch - patch.min()) / (patch.max() - patch.min()) * 255).astype(
-    #                 np.uint8
-    #             )
-    #             patch = cv2.resize(patch, (16, 16), interpolation=cv2.INTER_NEAREST)
-    #             patch_color = cv2.applyColorMap(patch, cv2.COLORMAP_JET)
-    #             # overlay patch at corner location
-    #             h, w = patch_color.shape[:2]
-    #             x_start = max(x - w // 2, 0)
-    #             y_start = max(y - h // 2, 0)
-    #             x_end = min(x_start + w, image.shape[1])
-    #             y_end = min(y_start + h, image.shape[0])
-    #             fd_vis[y_start:y_end, x_start:x_end] = patch_color[
-    #                 : y_end - y_start, : x_end - x_start
-    #             ]
-    #         cv2.imwrite(os.path.join(output_dir, f"fd_{i}.png"), fd_vis)
+    # plot feature descriptors in 1-D
+    if save_output:
+        plt.figure(figsize=(8, 4))
+        for i, desc in enumerate(fd):
+            mean = np.mean(desc, axis=0)
+            std = np.std(desc, axis=0)
+
+            x = np.arange(len(mean))
+            plt.plot(x, mean, label=f"Image {i}")
+            plt.fill_between(x, mean - std, mean + std, alpha=0.25)
+
+        plt.xlabel("Descriptor index")
+        plt.ylabel("Value")
+        plt.legend()
+        plt.title("Mean ± Std of Feature Descriptors")
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, "fd.png"))
+        plt.close()
 
     """
     Feature Matching
@@ -490,7 +484,8 @@ def main():
         panorama = blend_images(panorama, warped_i)
 
     cv2.imshow("Panorama", panorama)
-
+    if save_output:
+        cv2.imwrite(os.path.join(output_dir, "mypano.png"), panorama)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
     return
