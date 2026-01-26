@@ -50,7 +50,7 @@ def read_set(image_set_path: str) -> tuple[list[np.array], list[np.array]]:
 	images_gray = []
 	
 	#iterate through all of the files in the Image_set folder
-	for file in os.listdir(image_set_path):
+	for file in sorted(os.listdir(image_set_path)):
 		if file.lower().endswith(".jpg"):
 			# join the two names to make overall path of the image to then open with imread
 			# image has to be gray and a float for the harris detector
@@ -83,8 +83,9 @@ def corner_detection(images_color: list[np.array], images_gray: list[np.array]) 
 
 		# make a boolean mask if any score is more than 1% of the maximum corner score
 		# wherever the mask is true (corner), change the pixel to 0,0,255 (aka red)
-		images_color[index][change_score>0.01*change_score.max()]=[0,0,255]
-		images_cornered = copy.deepcopy(images_color)
+		img_copy = images_color[index].copy()
+		img_copy[change_score>0.01*change_score.max()]=[0,0,255]
+		images_cornered = copy.deepcopy(img_copy)
 
 		# The following code is for visualization
 		# cv2.imshow('dst',images_cornered[index])
@@ -341,7 +342,7 @@ def main():
 	"""
     Read a set of images for Panorama stitching
     """
-	images, images_gray = read_set("RBE-549-p1/palcolea_p1/Phase1/Data/Train/Set2/")
+	images, images_gray = read_set("RBE-549-p1/palcolea_p1/Phase1/Data/Train/Set3/")
 
 	"""
 	Corner Detection
@@ -368,17 +369,22 @@ def main():
 	"""
 	#feature vectors for each image
 	vectors1 = feature_vectors[0]
-	vectors2 = feature_vectors[2]
+	vectors2 = feature_vectors[1]
 
 	#original images in question
 	image1 = images[0]
-	image2 = images[2]
+	image2 = images[1]
 
 	#corners of an image after anms but in keypoint objects
 	key1 = corners_to_keypnts_one_img(final_corners[0])
-	key2 = corners_to_keypnts_one_img(final_corners[2])
+	key2 = corners_to_keypnts_one_img(final_corners[1])
 
-
+	# Visualization of the images to be stitched
+	# cv2.imshow("image1", image1)
+	# cv2.waitKey(0)
+	# cv2.imshow("image2", image2)
+	# cv2.waitKey(0)
+	# cv2.destroyAllWindows()
 	matched_pairs = feature_matching_2_imgs(vectors1, vectors2)
 	
 	#visualization
@@ -386,12 +392,6 @@ def main():
 	# cv2.imshow("Feature Matches", matched_image)
 	# cv2.waitKey(0)
 	# cv2.destroyAllWindows()
-
-	# print("Raw Harris corners:", np.sum(scores[0] > 0))
-	# print("Local maxima:", len(local_maxima(scores[0])[0]))
-	# print("ANMS corners:", len(final_corners[0]))
-	# print("Descriptors:", len(feature_vectors[0]))
-	# print("Matches:", len(matched_pairs))
 
 	"""
 	Refine: RANSAC, Estimate Homography
@@ -402,20 +402,37 @@ def main():
 	Image Warping + Blending
 	Save Panorama output as mypano.png
 	"""
-	final_height = image1.shape[0] + image2.shape[0]
-	final_width = image1.shape[1] + image2.shape[1]
+	#get the corners for image one (actual 4 corners, not the corners we've been doing until now)
+	#shape[:2] forgets about the color channel
+	#the reshape gets separates every point so that the transform works right
+	h1, w1 = image1.shape[:2]
+	corners1 = np.float32([[0,0],[w1,0],[w1,h1],[0,h1]]).reshape(-1, 1, 2)
+	#warp the corners from 1 with H, this is used to see where the picture will be and to ensure that all the images will be in the frame
+	warped_corners1 = cv2.perspectiveTransform(corners1, H)
 
-	# Warp first image into second image's plane
-	warped_image1 = cv2.warpPerspective(image1, H, (final_width, final_height))
+	# this is to see where image 2 lies in space, no need to warp
+	h2, w2 = image2.shape[:2]
+	corners2 = np.float32([[0,0],[w2,0],[w2,h2],[0,h2]]).reshape(-1, 1, 2)
 
-	# Place image2 in the panorama
-	panorama = warped_image1.copy()
-	panorama[0:image2.shape[0], 0:image2.shape[1]] = image2
+	#combine all of the corners vertically
+	all_corners = np.vstack((warped_corners1, corners2))
+	
+	#bounding box by looking at the coordinates for each corner, 
+	xmin, ymin = np.int32(all_corners.min(axis=0).ravel())
+	xmax, ymax = np.int32(all_corners.max(axis=0).ravel())
+	
+	#now we need a transformation to move everything by the minimum x and y to make that the origin so everything is in view
+	T = np.array([[1, 0, -xmin], [0, 1, -ymin], [0, 0, 1]], dtype=np.float32)
+
+	# do the actual homography application for the panorama and then the translation
+	# T @ H is matrix multiplication, combining the homographies
+	panorama = cv2.warpPerspective(image1, T @ H, (xmax - xmin, ymax - ymin))
+	# add image 2 to the panorama, shifting the position because of the T translation
+	panorama[-ymin : h2-ymin, -xmin : w2-xmin] = image2
 
 	cv2.imshow("Panorama", panorama)
 	cv2.waitKey(0)
 	cv2.destroyAllWindows()
-
 
 	return
 
