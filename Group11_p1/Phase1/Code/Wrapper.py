@@ -514,14 +514,21 @@ def main():
     curr_start = 0
     curr_len = 1
 
+    chains = []
+    curr_chain = []
+    final_chain = []
+    
     # from this extract the right ones and then separate those images
     for i in range(len(pairwise_H)):
         if pairwise_H[i] is not None:
             curr_len += 1
+            curr_chain.append(i)
         else:
             if curr_len > best_len:
                 best_len = curr_len
                 best_start = curr_start
+            chains.append(curr_chain.copy())
+            curr_chain.clear()
             curr_start = i + 1
             curr_len = 1
     # check at the end
@@ -529,8 +536,29 @@ def main():
         best_len = curr_len
         best_start = curr_start
 
+
+    # the chains work properly, in case of TestSet2 it generated: [[0, 1], [3, 4], [6]] 
+    # this should translate to the three sets of images: [[0, 1, 2], [3, 4, 5], [6, 7]] print(chains)
+    # iterate through the chain and look at the first and lasts of each chain to make bigger ones
+    for z in range(len(chains)):
+        for q in range(z + 1, len(chains)):
+            #check the last with the first of another one
+            last_img_ind = chains[z][-1] + 1    #this is the last image of a chain
+            first_img_ind = chains[q][0]    #this is the first image of a chain
+            
+            match_indices2 = match_features(fd[last_img_ind], fd[first_img_ind])
+            H_i2, inliers_i2 = RANSAC_homography(np.array(match_indices2), (valid_corners[last_img_ind], valid_corners[first_img_ind]))
+            if float(len(inliers_i2) / len(match_indices2)) >= 0.30:
+                chains[z] = chains[z].copy() + chains[q].copy()
+                chains.remove(chains[q])
+                print(chains[z])
+                print(f"Images {last_img_ind} and {first_img_ind} have been seen to go together")
+            print(" next check")
+
+
     # keep only the image indices where the homography is consequent
-    valid_images_indices = list(range(best_start, best_start + best_len))
+    # valid_images_indices = list(range(best_start, best_start + best_len))
+    valid_images_indices = max(chains, key=len)
 
     # readjust images to be only the good images, same thing with the homographies, remove the nones and only keep one chain
     images = [images[i] for i in valid_images_indices]
