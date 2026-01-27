@@ -21,6 +21,43 @@ from matplotlib import pyplot as plt
 from skimage.feature import corner_peaks
 
 
+def cylindrical_warp(flat_image, cylinder_radius):
+    """
+    warp a flat image onto a cylindrical surface.
+    used to mitigate distortion of image sets with large FOV
+    """
+    height, width = flat_image.shape[:2]
+
+    # create (x,y) coordinate grid for cylinder image
+    y_on_cylinder, x_on_cylinder = np.indices((height, width))
+    center_x = width / 2
+    center_y = height / 2
+
+    # set of angles from center to each pixel
+    theta = (x_on_cylinder - center_x) / cylinder_radius
+
+    # set of height offsets from center to each pixel
+    height_offset = (y_on_cylinder - center_y) / cylinder_radius
+
+    # get flat image coordinates for each theta on cylinder
+    x_on_flat_image = np.tan(theta) * cylinder_radius + center_x
+
+    # get flat image coordinates for each height offset on cylinder
+    y_on_flat_image = (
+        height_offset * np.sqrt(1 + np.tan(theta) ** 2) * cylinder_radius + center_y
+    )
+
+    # use maps to fill in cylinder image with corresponding pixels from flat image
+    warped_image = cv2.remap(
+        src=flat_image,
+        map1=x_on_flat_image.astype(np.float32),
+        map2=y_on_flat_image.astype(np.float32),
+        interpolation=cv2.INTER_LINEAR,
+    )
+
+    return warped_image
+
+
 def locate_corners(image):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     C_img = cv2.cornerHarris(gray, blockSize=2, ksize=3, k=0.06)
@@ -324,6 +361,8 @@ def main():
         if filename.endswith(".jpg"):
             img = cv2.imread(os.path.join(input_dir, filename))
             if img is not None:
+                if "Train" in input_dir and "Set3" in input_dir:
+                    img = cylindrical_warp(img, cylinder_radius=img.shape[1])
                 images.append(img)
     print(f"Read {len(images)} images from {input_dir}")
 
