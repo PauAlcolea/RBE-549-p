@@ -23,13 +23,13 @@ from skimage.feature import corner_peaks
 
 def locate_corners(image):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    C_img = cv2.cornerHarris(gray, blockSize=2, ksize=3, k=0.04)
+    C_img = cv2.cornerHarris(gray, blockSize=2, ksize=3, k=0.06)
     return C_img
 
 
 def ANMS(C_img, N_best=1000):
     # find local maxima
-    coordinates = corner_peaks(C_img, min_distance=5, threshold_rel=0.01)
+    coordinates = corner_peaks(C_img, min_distance=5)
     # sort corners by corner strength (descending)
     values = C_img[coordinates[:, 0], coordinates[:, 1]]
     sorted_indices = np.argsort(-values)
@@ -201,7 +201,7 @@ def RANSAC_homography(
     match_indices,
     valid_corners,
     n_iterations=10000,
-    inlier_thresh=90,
+    inlier_thresh=10,
     stop_thresh=0.85,
 ):
     best_inlier_matches = []
@@ -247,7 +247,7 @@ def RANSAC_homography(
 
 
 def get_panorama_dimensions(images, H_list):
-    # get first image corners and transform to panorama frame
+    # transform each image's corners to panorama frame
     all_corners = []
     for img, H in zip(images, H_list):
         h, w = img.shape[:2]
