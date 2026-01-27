@@ -344,6 +344,7 @@ def main():
     """
     Perform ANMS: Adaptive Non-Maximal Suppression
     Save ANMS output as anms.png
+    This function will get the Nbest corners in the image based on their strength and their distance to another strong corner
     """
     anms_corners = [ANMS(corners) for corners in raw_corners]
     if save_output:
@@ -412,13 +413,26 @@ def main():
     """
     Refine: RANSAC, Estimate Homography
     """
+    # list of homographies between consecutive images
+    # valid_images keeps track of what pairs of images are usable for the panorama, rejects the ones that aren't
     pairwise_H = []
+    valid_images = []
+    #iterate through adjacent images, looking at i and comparing it to i+1 for the H_i calculation
     for i in range(len(images) - 1):
         H_i, inliers_i = RANSAC_homography(
             np.array(match_indices[i]), (valid_corners[i], valid_corners[i + 1])
         )
+        
+        print(f"Found {len(inliers_i)}/{len(match_indices[i])} inliers between images {i} and {i+1}")
+        # should make sure that if the number of inliers is too low, don't append that Homogrpahy, there are not enough matching features)
+        if float(len(inliers_i)/len(match_indices[i])) < 0.30:
+            print(f"Images {i} and {i+1} shouldn't go next to each other, SKIPPING this homography")
+            pairwise_H.append(None)
+            continue
         pairwise_H.append(H_i)
-        print(f"Found {len(inliers_i)}/{len(match_indices[i])} inliers")
+        #only add i to the images but we can know that it goes with i+1
+        valid_images.append(i)
+        
         # refine valid_corners using inliers
         inlier_indices_1, inlier_indices_2 = zip(*inliers_i)
         inlier_corners = (
@@ -451,6 +465,34 @@ def main():
     Image Warping + Blending
     Save Panorama output as mypano.png
     """
+    # while making a panorama, keep track of all of the chains and then only keep the largest one, a valid chain occurs if it contains valid homographies
+    best_start = 0
+    best_len = 1
+    curr_start = 0
+    curr_len = 1
+
+    #from this extract the right ones and then separate those images
+    for i in range(len(pairwise_H)):
+        if pairwise_H[i] is not None:
+            curr_len += 1
+        else: 
+            if curr_len > best_len:
+                best_len = curr_len
+                best_start = curr_start
+            curr_start = i + 1
+            curr_len = 1
+    #check at the end
+    if curr_len > best_len:
+        best_len = curr_len
+        best_start = curr_start
+
+    # keep only the image indices where the homography is consequent
+    valid_images_indices = list(range(best_start, best_start + best_len))
+
+    #readjust images to be only the good images, same thing with the homographies, remove the nones and only keep one chain
+    images = [images[i] for i in valid_images_indices]
+    pairwise_H = [ pairwise_H[i] for i in range(best_start, best_start + best_len - 1)]
+
     # use middle image as reference
     n = len(images)
     ref_idx = n // 2
