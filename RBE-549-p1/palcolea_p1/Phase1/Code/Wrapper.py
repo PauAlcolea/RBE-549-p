@@ -94,6 +94,26 @@ def corner_detection(images_color: list[np.array], images_gray: list[np.array]) 
 	
 	return images_cornered, scores
 
+def corner_detection_single(image_color: np.array, image_gray: np.array):
+	scores = []
+	
+	# (H,W) array with all of the scores
+	# block size = 2, ksize = 3, Harris detector free parameter = 0.02
+	change_score = cv2.cornerHarris(image_gray, 2, 3, 0.04)
+
+	# make a boolean mask if any score is more than 1% of the maximum corner score
+	# wherever the mask is true (corner), change the pixel to 0,0,255 (aka red)
+	img_copy = image_color.copy()
+	img_copy[change_score>0.01*change_score.max()]=[0,0,255]
+	images_cornered = copy.deepcopy(img_copy)
+
+	# The following code is for visualization
+	# cv2.imshow('dst',images_cornered[index])
+	# if cv2.waitKey(0) & 0xff == 27:
+	# 	cv2.destroyAllWindows()
+	
+	return images_cornered, change_score
+
 """
 This function will take a dense score image and extract the best corners
 @param cimg is the score for an image, its a 2d matrix size (H, W)
@@ -191,6 +211,54 @@ def anms(corner_images: list[np.array], Nbest: int, gray_images) -> list[list[tu
 		final_corners_images = copy.deepcopy(remove_corners(corners_images, gray_images))
 	return final_corners_images
 
+def remove_corners_single(corners, image_gray, patch_radius=20):
+	h, w = image_gray.shape
+	good_corners = []
+
+	for (x, y) in corners:
+		if (
+			x >= patch_radius and
+			y >= patch_radius and
+			x < w - patch_radius and
+			y < h - patch_radius
+		):
+			good_corners.append((x, y))
+	
+	return good_corners
+
+def anms_single(corner_image: np.array, Nbest: int, gray_image) -> list[tuple[int, int]]:
+
+	# each image has to be filtered to only keep the local maxima so any pixel with a value is not considered a corner
+	# keep all of their coordinates
+	corner_xs, corner_ys, strengths = local_maxima(corner_image)
+	Nstrong = len(strengths)
+	
+	# if no strong corners go to next image
+	if Nstrong == 0:
+		return None
+
+	# make a list of size Nstrong with np.infinity to compare
+	r = np.full(Nstrong, np.inf)
+
+	# iterate through all of the local maxima corners
+	for i in range(Nstrong):
+		for j in range(Nstrong):
+			# if a stronger corner found, calcualte ED
+			if strengths[j] > strengths[i]:
+				ED = (corner_xs[j] - corner_xs[i])**2 + (corner_ys[j] - corner_ys[i])**2
+				if ED < r[i]:
+					r[i] = ED
+
+	# get the indices of what would be the corners if sorted in descending
+	sorted_indexes = np.argsort(-r)	
+	best_indexes = sorted_indexes[:Nbest]
+	# list of tuples, each tuple being the coordinates
+	best_corners = list(zip(corner_xs[best_indexes], corner_ys[best_indexes]))
+	
+	#remove the corners that are too close to the edges
+	final_corners = copy.deepcopy(remove_corners_single(best_corners, gray_image))
+	return final_corners
+
 """
 This function will take the different corners acquired by the anms and encode them into feature vectors to be identified in other images
 @param images are the gray images, this will be used for size 
@@ -241,6 +309,42 @@ def feature_descriptor(images_gray: list[np.array], final_corners: list[list[tup
 		feature_vectors.append(image_vectors)	
 	
 	return feature_vectors
+
+def feature_descriptor_single(final_corners: list[tuple[int, int]], image_color) -> list[list[np.array]]:
+	image_vectors = []
+	for corner in final_corners:
+		x = corner[0]
+		y = corner[1]
+		a = 20 #this is to make the patch of size 41x41 (range(1+20:1-20) -> 41)
+
+		# make a patch by slicing the gray image, add one becuase slicing excludes the final value
+		# y and then x because the array is different like this
+		# patch = image_gray[(y-a):(y+a+1), (x-a):(x+a+1)]
+		patch_color = image_color[(y-a):(y+a+1), (x-a):(x+a+1)]
+
+		descriptor = []
+		#iterate through every channel and get the 
+		for c in range(3):
+			#blur the color patch (only one channel)
+			#make the patch smaller
+			#resize it into one dimension
+			channel = patch_color[:,:,c]
+			channel = cv2.GaussianBlur(channel, (7,7), sigmaX=2)
+			small = cv2.resize(channel, (8,8), interpolation=cv2.INTER_LINEAR)
+			descriptor.append(small.flatten())
+
+		# make a big feature vector with info from each channel / color, which ends up being 192x1
+		vector = np.concatenate(descriptor).astype(np.float32)
+
+		# blurred_patch = cv2.GaussianBlur(patch, ksize=(7,7), sigmaX=1, sigmaY=1)
+		# patch_8x8 = cv2.resize(blurred_patch,(8,8), interpolation=cv2.INTER_LINEAR)
+		# vector = patch_8x8.reshape(64,1)
+
+		# standardize
+		vector /= np.linalg.norm(vector) + 1e-6
+		image_vectors.append(vector)	
+	
+	return image_vectors
 
 """
 this function is meant to take all of the feature vectors in an image and match them (is possible) to the feature vector in a different picture
@@ -362,11 +466,14 @@ def warp(image_from, image_to, homography):
 	# add image 2 to the panorama, shifting the position because of the T translation
 	panorama[-ymin : h2-ymin, -xmin : w2-xmin] = image_to
 
-	cv2.imshow("Panorama", panorama)
-	cv2.waitKey(0)
-	cv2.destroyAllWindows()
+	#crop any excess black pixels around the stitehced panorama so that you can view it properly
+	gray = cv2.cvtColor(panorama, cv2.COLOR_BGR2GRAY)
+	return_val, threshold = cv2.threshold(gray, 1, 255, cv2.THRESH_BINARY)
+	# bounding rectangle with the threshold
+	x, y, w, h = cv2.boundingRect(threshold)
+	panorama_cropped = panorama[y:y+h, x:x+w]
 
-	return
+	return panorama_cropped
 
 def main():
     # Add any Command Line arguments here
@@ -380,6 +487,64 @@ def main():
     Read a set of images for Panorama stitching
     """
 	images, images_gray = read_set("RBE-549-p1/palcolea_p1/Phase1/Data/Train/Set3/")
+
+	#begin with panorama as image one to stitch things to, calculate everything accordingly
+	panorama = images[1]
+
+	# go through all of the images 
+	for x in range(len(images) - 1):
+		if x > 0:
+			img1 = panorama
+			img_gray1 = cv2.cvtColor(panorama, cv2.COLOR_BGR2GRAY)
+		else:
+			img1 = images[x]
+			img_gray1 = images_gray[x]
+
+		img2 = images[x+1]
+		img_gray2 = images_gray[x+1]
+
+		img_corners1, scores1 = corner_detection_single(img1, img_gray1)
+		img_corners2, scores2 = corner_detection_single(img2, img_gray2)
+		final_corners1 = anms_single(scores1, 200, img_gray1)
+		final_corners2 = anms_single(scores2, 200, img_gray2)
+
+		# visualize_anms([img1, img2],[final_corners1, final_corners2])
+
+		feature_vectors1 = feature_descriptor_single(final_corners1, img1)
+		feature_vectors2 = feature_descriptor_single(final_corners2, img2)
+
+		key1 = corners_to_keypnts_one_img(final_corners1)
+		key2 = corners_to_keypnts_one_img(final_corners2)
+
+		matched_pairs = feature_matching_2_imgs(feature_vectors1, feature_vectors2)
+
+		matched_image = cv2.drawMatches(img1, key1, img2, key2, matched_pairs, outImg=None)
+		cv2.imshow("Feature Matches", matched_image)
+		cv2.waitKey(0)
+		cv2.destroyAllWindows()
+		
+		H, inliers = RANSAC(matched_pairs, key1, key2, iterations=2000)
+		
+		print("inliers: ", len(inliers))
+		if H is None:
+			print("Bad Homography between these two images, skip to next pairing")
+			cv2.imshow("image1 problem", img1)
+			cv2.waitKey(0)
+			cv2.imshow("image2 problem", img2)
+			cv2.waitKey(0)
+			cv2.destroyAllWindows()
+			continue
+
+		panorama = warp(img1, img2, H)
+		cv2.imshow("Final Panorama", panorama)
+		cv2.waitKey(0)
+		cv2.destroyAllWindows()
+
+	panorama_bgr = cv2.cvtColor(panorama, cv2.COLOR_RGB2BGR)
+	cv2.imshow("Final Panorama", panorama_bgr)
+	cv2.waitKey(0)
+	cv2.destroyAllWindows()
+	return
 
 	"""
 	Corner Detection
