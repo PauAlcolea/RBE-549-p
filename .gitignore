@@ -4,4 +4,8 @@ Group11_p1/Phase2/Data/*
 # Figures for paper
 Group11_p1/Phase1/Output/*
 
-.DS_Store
+# Virtual environment
+.venv/*
+
+#.DS_Store
+**/.DS_Store
