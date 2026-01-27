@@ -474,20 +474,17 @@ def main():
 		if indexL != 0:
 			H_left[indexL] = H_left[indexL-1] @ H_left[indexL]
 
-	# panorama = images[middle_index]
-
+	# make a list with the images and their corresponding homography in relation to the middle one
+	# middle image is identity because it is the reference image
 	image_H_pairs = []
-
-	# middle image is identity
 	image_H_pairs.append((images[middle_index], np.eye(3)))
 
-	# RIGHT side
+	# populate the list of all of the images and their corresponding homography to use later
 	for i in range(len(H_right)):
 		H = H_right[i]
 		# H = H / H[2,2]
 		image_H_pairs.append((images[middle_index + i + 1], H))
 
-	# LEFT side
 	for i in range(len(H_left)):
 		H = H_left[i]
 		# H = H / H[2,2]
