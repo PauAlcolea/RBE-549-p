@@ -290,7 +290,7 @@ def blend_images(img1, img2):
     w2 = w2[:, :, np.newaxis]
     sum_weights = sum_weights[:, :, np.newaxis]
     blended = (img1 * w1 + img2 * w2) / sum_weights
-    return blended.astype(np.uint8)
+    return blended.astype(np.uint8), (sum_weights * 255).astype(np.uint8)
 
 
 def main():
@@ -481,7 +481,12 @@ def main():
         warped_i = cv2.warpPerspective(
             images[i], H_translation @ H_to_ref[i], pano_size, flags=cv2.INTER_LANCZOS4
         )
-        panorama = blend_images(panorama, warped_i)
+        panorama, vis_weights = blend_images(panorama, warped_i)
+        if save_output and i == n - 1:
+            cv2.imwrite(
+                os.path.join(output_dir, f"weightmask.png"),
+                vis_weights,
+            )
 
     cv2.imshow("Panorama", panorama)
     if save_output:
