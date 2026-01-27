@@ -486,7 +486,7 @@ def main():
 	"""
     Read a set of images for Panorama stitching
     """
-	images, images_gray = read_set("RBE-549-p1/palcolea_p1/Phase1/Data/Train/Set3/")
+	images, images_gray = read_set("RBE-549-p1/palcolea_p1/Phase1/Data/Test/TestSet4/")
 
 	#begin with panorama as image one to stitch things to, calculate everything accordingly
 	panorama = images[1]
@@ -526,7 +526,7 @@ def main():
 		H, inliers = RANSAC(matched_pairs, key1, key2, iterations=2000)
 		
 		print("inliers: ", len(inliers))
-		if H is None:
+		if (H is None) or (len(inliers) < 10):
 			print("Bad Homography between these two images, skip to next pairing")
 			cv2.imshow("image1 problem", img1)
 			cv2.waitKey(0)
