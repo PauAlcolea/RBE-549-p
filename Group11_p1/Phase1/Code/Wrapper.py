@@ -21,6 +21,43 @@ from matplotlib import pyplot as plt
 from skimage.feature import corner_peaks
 
 
+def cylindrical_warp(flat_image, cylinder_radius):
+    """
+    warp a flat image onto a cylindrical surface.
+    used to mitigate distortion of image sets with large FOV
+    """
+    height, width = flat_image.shape[:2]
+
+    # create (x,y) coordinate grid for cylinder image
+    y_on_cylinder, x_on_cylinder = np.indices((height, width))
+    center_x = width / 2
+    center_y = height / 2
+
+    # set of angles from center to each pixel
+    theta = (x_on_cylinder - center_x) / cylinder_radius
+
+    # set of height offsets from center to each pixel
+    height_offset = (y_on_cylinder - center_y) / cylinder_radius
+
+    # get flat image coordinates for each theta on cylinder
+    x_on_flat_image = np.tan(theta) * cylinder_radius + center_x
+
+    # get flat image coordinates for each height offset on cylinder
+    y_on_flat_image = (
+        height_offset * np.sqrt(1 + np.tan(theta) ** 2) * cylinder_radius + center_y
+    )
+
+    # use maps to fill in cylinder image with corresponding pixels from flat image
+    warped_image = cv2.remap(
+        src=flat_image,
+        map1=x_on_flat_image.astype(np.float32),
+        map2=y_on_flat_image.astype(np.float32),
+        interpolation=cv2.INTER_LINEAR,
+    )
+
+    return warped_image
+
+
 def locate_corners(image):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     C_img = cv2.cornerHarris(gray, blockSize=2, ksize=3, k=0.06)
@@ -324,6 +361,8 @@ def main():
         if filename.endswith(".jpg"):
             img = cv2.imread(os.path.join(input_dir, filename))
             if img is not None:
+                if "Train" in input_dir and "Set3" in input_dir:
+                    img = cylindrical_warp(img, cylinder_radius=img.shape[1])
                 images.append(img)
     print(f"Read {len(images)} images from {input_dir}")
 
@@ -417,22 +456,26 @@ def main():
     # valid_images keeps track of what pairs of images are usable for the panorama, rejects the ones that aren't
     pairwise_H = []
     valid_images = []
-    #iterate through adjacent images, looking at i and comparing it to i+1 for the H_i calculation
+    # iterate through adjacent images, looking at i and comparing it to i+1 for the H_i calculation
     for i in range(len(images) - 1):
         H_i, inliers_i = RANSAC_homography(
             np.array(match_indices[i]), (valid_corners[i], valid_corners[i + 1])
         )
-        
-        print(f"Found {len(inliers_i)}/{len(match_indices[i])} inliers between images {i} and {i+1}")
+
+        print(
+            f"Found {len(inliers_i)}/{len(match_indices[i])} inliers between images {i} and {i+1}"
+        )
         # should make sure that if the number of inliers is too low, don't append that Homogrpahy, there are not enough matching features)
-        if float(len(inliers_i)/len(match_indices[i])) < 0.30:
-            print(f"Images {i} and {i+1} shouldn't go next to each other, SKIPPING this homography")
+        if float(len(inliers_i) / len(match_indices[i])) < 0.30:
+            print(
+                f"Images {i} and {i+1} shouldn't go next to each other, SKIPPING this homography"
+            )
             pairwise_H.append(None)
             continue
         pairwise_H.append(H_i)
-        #only add i to the images but we can know that it goes with i+1
+        # only add i to the images but we can know that it goes with i+1
         valid_images.append(i)
-        
+
         # refine valid_corners using inliers
         inlier_indices_1, inlier_indices_2 = zip(*inliers_i)
         inlier_corners = (
@@ -471,17 +514,17 @@ def main():
     curr_start = 0
     curr_len = 1
 
-    #from this extract the right ones and then separate those images
+    # from this extract the right ones and then separate those images
     for i in range(len(pairwise_H)):
         if pairwise_H[i] is not None:
             curr_len += 1
-        else: 
+        else:
             if curr_len > best_len:
                 best_len = curr_len
                 best_start = curr_start
             curr_start = i + 1
             curr_len = 1
-    #check at the end
+    # check at the end
     if curr_len > best_len:
         best_len = curr_len
         best_start = curr_start
@@ -489,9 +532,9 @@ def main():
     # keep only the image indices where the homography is consequent
     valid_images_indices = list(range(best_start, best_start + best_len))
 
-    #readjust images to be only the good images, same thing with the homographies, remove the nones and only keep one chain
+    # readjust images to be only the good images, same thing with the homographies, remove the nones and only keep one chain
     images = [images[i] for i in valid_images_indices]
-    pairwise_H = [ pairwise_H[i] for i in range(best_start, best_start + best_len - 1)]
+    pairwise_H = [pairwise_H[i] for i in range(best_start, best_start + best_len - 1)]
 
     # use middle image as reference
     n = len(images)
