@@ -3,3 +3,6 @@ Group11_p1/Phase2/Data/*
 
 # Figures for paper
 Group11_p1/Phase1/Output/*
+
+# Virtual environment
+.venv/*
