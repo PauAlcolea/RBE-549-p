@@ -364,6 +364,7 @@ def compute_global_bbox(image_H_pairs):
     xmax, ymax = np.int32(all_corners.max(axis=0).ravel())
 
     return xmin, ymin, xmax, ymax
+
 def simple_blend(base, new):
     mask = (new.sum(axis=2) > 0)
 
@@ -391,6 +392,9 @@ def main():
 	n = len(images)
 	middle_index = (n // 2)
 
+	H_to_middle = [None] * n
+	H_to_middle[middle_index] = np.eye(3, dtype=np.float32)
+
 	# These two for loops are intended to go through every image and getting the homography between an image and the middle image
 	# this is a list with all of the homographies to the RIGHT of the middle index (if it is 2 and there's 5 images, it would be H23, H34)
 	H_right = []
@@ -416,14 +420,16 @@ def main():
 		key1 = corners_to_keypnts_one_img(final_corners1)
 		key2 = corners_to_keypnts_one_img(final_corners2)
 
-		matched_pairs = feature_matching_2_imgs(feature_vectors1, feature_vectors2)
+		#in here, feature vectors 2 and 1 are switched so that the homographies point towards the middle image
+		matched_pairs = feature_matching_2_imgs(feature_vectors2, feature_vectors1)
 
 		# matched_image = cv2.drawMatches(img1, key1, img2, key2, matched_pairs, outImg=None)
 		# cv2.imshow("Feature Matches", matched_image)
 		# cv2.waitKey(0)
 		# cv2.destroyAllWindows()
 		
-		H, inliers = RANSAC(matched_pairs, key1, key2, iterations=2000)
+		# key 2 and 1 are switched so that the homographies point towards the middle imgae
+		H, inliers = RANSAC(matched_pairs, key2, key1, iterations=2000)
 		H_right.append(H)
 
 	# this is a list with all of the homographies to the LEFT of the middle index (if middle index is 2 and there's 5 images, it would be H21, H10)
@@ -447,31 +453,78 @@ def main():
 		key3 = corners_to_keypnts_one_img(final_corners3)
 		key4 = corners_to_keypnts_one_img(final_corners4)
 
-		matched_pairs = feature_matching_2_imgs(feature_vectors3, feature_vectors4)
+		matched_pairs = feature_matching_2_imgs(feature_vectors4, feature_vectors3)
 
-		# matched_image = cv2.drawMatches(img3, key3, img4, key4, matched_pairs, outImg=None)
+		# matched_image = cv2.drawMatches(img4, key4, img3, key3, matched_pairs, outImg=None)
 		# cv2.imshow("Feature Matches", matched_image)
 		# cv2.waitKey(0)
 		# cv2.destroyAllWindows()
 		
-		H2, inliers = RANSAC(matched_pairs, key3, key4, iterations=2000)
+		H2, inliers = RANSAC(matched_pairs, key4, key3, iterations=2000)
 		H_left.append(H2)
-	
-	H_right_copy = copy.deepcopy(H_right)
-	H_left_copy = copy.deepcopy(H_left)
 
 	# this iterates through all of the homographies, for the right and for the left
 	# each of the homographies that is not directly going to the reference image (the one in the middle) 
 	# gets recalculated to be in reference to that image
-	for index in range(len(H_right)):
-		if index != 0:
-			H_right[index] = H_right[index-1] @ H_right[index]
+	for indexR in range(len(H_right)):
+		if indexR != 0:
+			H_right[indexR] =  H_right[indexR-1] @ H_right[indexR]
 
 	for indexL in range(len(H_left)):
 		if indexL != 0:
 			H_left[indexL] = H_left[indexL-1] @ H_left[indexL]
 
-	panorama = images[middle_index]
+	# panorama = images[middle_index]
+
+	image_H_pairs = []
+
+	# middle image is identity
+	image_H_pairs.append((images[middle_index], np.eye(3)))
+
+	# RIGHT side
+	for i in range(len(H_right)):
+		H = H_right[i]
+		# H = H / H[2,2]
+		image_H_pairs.append((images[middle_index + i + 1], H))
+
+	# LEFT side
+	for i in range(len(H_left)):
+		H = H_left[i]
+		# H = H / H[2,2]
+		image_H_pairs.append((images[middle_index - i - 1], H))
+
+	#make a canvas that will fit all of the homographies and images for the final panorama
+	#empty canvas, all zeroes
+	xmin, ymin, xmax, ymax = compute_global_bbox(image_H_pairs)
+	canvas_w = xmax - xmin
+	canvas_h = ymax - ymin
+	panorama = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
+
+	#This translation is used for the warping
+	T = np.array([[1, 0, -xmin],
+				[0, 1, -ymin],
+				[0, 0, 1]], dtype=np.float32)
+	
+	# calculate the warped view of the image and then mix it together nicely with the simple_blend helper function
+	for img, H in image_H_pairs:
+		warped = cv2.warpPerspective(img, T @ H, (canvas_w, canvas_h))
+		panorama = simple_blend(panorama, warped)
+		panorama_bgr = cv2.cvtColor(panorama, cv2.COLOR_RGB2BGR)
+		cv2.imshow("Final Panorama", panorama_bgr)
+		cv2.waitKey(0)
+		cv2.destroyAllWindows()
+
+	#visualize but first change color
+	panorama_bgr = cv2.cvtColor(panorama, cv2.COLOR_RGB2BGR)
+	cv2.imshow("Final Panorama", panorama_bgr)
+	cv2.waitKey(0)
+	cv2.destroyAllWindows()
+
+	return
+	
+
+
+
 
 	# now that all fo the homographies are ready and have been made in relation to the middle image we can stitch
 	# for i in range(len(H_right)):
@@ -482,56 +535,6 @@ def main():
 	# 	H_left[i] = np.linalg.inv(H_left[i])
 	# 	panorama = warp(images[middle_index - i - 1], panorama, H_left[i])
 
-	image_H_pairs = []
-
-	# middle image is identity
-	image_H_pairs.append((images[middle_index], np.eye(3)))
-
-	# RIGHT side
-	for i in range(len(H_right)):
-		H = H_right[i]
-		H = H / H[2,2]
-		H = np.linalg.inv(H)   # map → middle
-		image_H_pairs.append((images[middle_index + i + 1], H))
-
-	# LEFT side
-	for i in range(len(H_left)):
-		H = H_left[i]
-		H = H / H[2,2]
-		H = np.linalg.inv(H)   # map → middle
-		image_H_pairs.append((images[middle_index - i - 1], H))
-
-
-	# ================================
-	# Build ONE global canvas
-	# ================================
-
-	xmin, ymin, xmax, ymax = compute_global_bbox(image_H_pairs)
-
-	T = np.array([[1, 0, -xmin],
-				[0, 1, -ymin],
-				[0, 0, 1]], dtype=np.float32)
-
-	canvas_w = xmax - xmin
-	canvas_h = ymax - ymin
-
-	panorama = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
-
-
-	for img, H in image_H_pairs:
-		warped = cv2.warpPerspective(img, T @ H, (canvas_w, canvas_h))
-		panorama = simple_blend(panorama, warped)
-
-
-	#visualize but first change color
-	panorama_bgr = cv2.cvtColor(panorama, cv2.COLOR_RGB2BGR)
-	cv2.imshow("Final Panorama", panorama_bgr)
-	cv2.waitKey(0)
-	cv2.destroyAllWindows()
-
-
-	return
-	
 	a = [4, 5, 6]
 	b = [3, 2, 1]
 	b.reverse()
