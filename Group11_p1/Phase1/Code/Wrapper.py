@@ -137,7 +137,7 @@ def match_features(fd1, fd2, ratio_thresh=0.7):
         )  # exclude the nearest neighbor to find the second nearest
         dist_second_best = distances[np.argmin(distances)]
         # apply ratio test
-        if dist_best / dist_second_best < ratio_thresh:
+        if dist_best / max(dist_second_best, 1e-8) < ratio_thresh:
             match_indices.append((i, best_match_idx))
     return match_indices  # list of (index in fd1, index in fd2)
 
@@ -279,7 +279,11 @@ def RANSAC_homography(
 
     # recompute homography using all inliers
     inlier_pairs = _pairs_from_matches(best_inlier_matches, valid_corners)
-    H_final = _compute_homography(inlier_pairs)
+    try:
+        H_final = _compute_homography(inlier_pairs)
+    except np.linalg.LinAlgError:
+        H_final = None
+        best_inlier_matches = []
     return H_final, best_inlier_matches
 
 
@@ -361,10 +365,12 @@ def main():
         if filename.endswith(".jpg"):
             img = cv2.imread(os.path.join(input_dir, filename))
             if img is not None:
-                if "Train" in input_dir and "Set3" in input_dir:
-                    img = cylindrical_warp(img, cylinder_radius=img.shape[1])
                 images.append(img)
     print(f"Read {len(images)} images from {input_dir}")
+    if len(images) > 8:
+        images = [
+            cylindrical_warp(img, cylinder_radius=img.shape[1] + 100) for img in images
+        ]
 
     """
     Corner Detection
