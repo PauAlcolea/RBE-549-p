@@ -20,6 +20,35 @@ import os
 from matplotlib import pyplot as plt
 from skimage.feature import corner_peaks
 
+# get path to current directory
+curr_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(curr_dir)
+
+ap = argparse.ArgumentParser()
+ap.add_argument(
+    "--dir",
+    type=str,
+    default=f"{parent_dir}/Data/Train/Set1",
+    help="Directory of input images",
+)
+ap.add_argument(
+    "-o",
+    "--output",
+    action="store_true",
+    help="Whether to save output images",
+)
+ap.add_argument(
+    "-g",
+    "--graph",
+    action="store_true",
+    help="Form homography graph to stitch images in optimal order. Slow, but effective for out-of-order image sets.",
+)
+args = ap.parse_args()
+input_dir = args.dir
+save_output = args.output
+output_dir = f"{parent_dir}/Output"
+graph_mode = args.graph
+
 
 def cylindrical_warp(flat_image, cylinder_radius):
     """
@@ -175,8 +204,6 @@ def visualize_matches(
     matches,
     corners,
     window_name,
-    save_output,
-    output_dir,
     filename,
 ):
     img_matches = _draw_matches(
@@ -196,20 +223,6 @@ def _pairs_from_matches(matches, corners):
     for i1, i2 in matches:
         pairs.append((corners[0][i1], corners[1][i2]))
     return np.array(pairs)  # Nx2 arrays of (x,y) coordinates
-
-
-def inlier_corners_and_remapped_matches(valid_corners_pair, inlier_matches):
-    # given full valid corners and inlier (idx1, idx2) pairs, return
-    # the inlier corner subsets and sequentially remapped matches
-    inlier_indices_1, inlier_indices_2 = zip(*inlier_matches)
-    inlier_corners = (
-        valid_corners_pair[0][list(inlier_indices_1)],
-        valid_corners_pair[1][list(inlier_indices_2)],
-    )
-    remapped_inlier_matches = [
-        (k, k) for k in range(len(inlier_corners[0]))
-    ]  # matches are now 0..N-1
-    return inlier_corners, remapped_inlier_matches
 
 
 def _normalize_points(points):
@@ -269,7 +282,7 @@ def _compute_homography(pairs):
     return H
 
 
-def RANSAC_homography(
+def _RANSAC_homography(
     match_indices,
     valid_corners,
     n_iterations=2000,
@@ -320,6 +333,105 @@ def RANSAC_homography(
         H_final = None
         best_inlier_matches = []
     return H_final, best_inlier_matches
+
+
+def _get_inlier_corners_and_remapped_matches(valid_corners_pair, inlier_matches):
+    # given full valid corners and inlier (idx1, idx2) pairs, return
+    # the inlier corner subsets and sequentially remapped matches
+    inlier_indices_1, inlier_indices_2 = zip(*inlier_matches)
+    inlier_corners = (
+        valid_corners_pair[0][list(inlier_indices_1)],
+        valid_corners_pair[1][list(inlier_indices_2)],
+    )
+    remapped_inlier_matches = [
+        (k, k) for k in range(len(inlier_corners[0]))
+    ]  # matches are now 0..N-1
+    return inlier_corners, remapped_inlier_matches
+
+
+def refine_matches(images, pairwise_matches, valid_corners, graph_mode):
+    """
+    use RANSAC to refine feature matches and estimate pairwise homographies
+    """
+    pairwise_H = {} if graph_mode else []  # (i, j) -> H
+
+    if graph_mode:
+        pairwise_inliers = {}  # (i, j) -> inlier count
+
+        for (i, j), matches in pairwise_matches.items():
+            if len(matches) < 4:
+                continue
+            print("Evaluating matches between images", i, "and", j)
+            H_ij, inliers_ij = _RANSAC_homography(
+                np.array(matches), (valid_corners[i], valid_corners[j])
+            )
+
+            inlier_ratio = len(inliers_ij) / len(matches)
+
+            if inlier_ratio < 0.30:
+                continue
+
+            pairwise_H[(i, j)] = H_ij
+            pairwise_inliers[(i, j)] = len(inliers_ij)
+
+            print(f"Images {i} <-> {j}: {len(inliers_ij)} inliers")
+
+            # refine valid_corners using inliers
+            inlier_corners, remapped_inlier_matches = (
+                _get_inlier_corners_and_remapped_matches(
+                    (valid_corners[i], valid_corners[j]), inliers_ij
+                )
+            )
+            visualize_matches(
+                images[i],
+                images[j],
+                remapped_inlier_matches,
+                (inlier_corners[0], inlier_corners[1]),
+                window_name=f"Inlier Matches {i}->{j}",
+                filename=f"inlier_matching_{i}_{j}.png",
+            )
+    else:
+        # valid_images keeps track of what pairs of images are usable for the panorama, rejects the ones that aren't
+        valid_images = []
+        # iterate through adjacent images, looking at i and comparing it to i+1 for the H_i calculation
+        for i in range(len(images) - 1):
+            H_i, inliers_i = _RANSAC_homography(
+                np.array(pairwise_matches[i]), (valid_corners[i], valid_corners[i + 1])
+            )
+
+            print(
+                f"Found {len(inliers_i)}/{len(pairwise_matches[i])} inliers between images {i} and {i+1}"
+            )
+            # should make sure that if the number of inliers is too low, don't append that Homogrpahy, there are not enough matching features)
+            if float(len(inliers_i) / len(pairwise_matches[i])) < 0.15:
+                print(
+                    f"Images {i} and {i+1} shouldn't go next to each other, SKIPPING this homography"
+                )
+                pairwise_H.append(None)
+                continue
+            pairwise_H.append(H_i)
+            # only add i to the images but we can know that it goes with i+1
+            valid_images.append(i)
+
+            # refine valid_corners using inliers
+            inlier_corners, remapped_inlier_matches = (
+                _get_inlier_corners_and_remapped_matches(
+                    (valid_corners[i], valid_corners[i + 1]), inliers_i
+                )
+            )
+            visualize_matches(
+                images[i],
+                images[i + 1],
+                remapped_inlier_matches,
+                (inlier_corners[0], inlier_corners[1]),
+                window_name=f"Inlier Matches {i}->{i+1}",
+                filename=f"inlier_matching_{i}_{i+1}.png",
+            )
+
+    if graph_mode:
+        return pairwise_H, pairwise_inliers
+    else:
+        return pairwise_H, None
 
 
 def walk_graph(graph, start):
@@ -393,35 +505,6 @@ def blend_images(img1, img2):
 
 
 def main():
-    # get path to current directory
-    curr_dir = os.path.dirname(os.path.abspath(__file__))
-    parent_dir = os.path.dirname(curr_dir)
-
-    ap = argparse.ArgumentParser()
-    ap.add_argument(
-        "--dir",
-        type=str,
-        default=f"{parent_dir}/Data/Train/Set1",
-        help="Directory of input images",
-    )
-    ap.add_argument(
-        "-o",
-        "--output",
-        action="store_true",
-        help="Whether to save output images",
-    )
-    ap.add_argument(
-        "-g",
-        "--graph",
-        action="store_true",
-        help="Form homography graph to stitch images in optimal order. Slow, but effective for out-of-order image sets.",
-    )
-    args = ap.parse_args()
-    input_dir = args.dir
-    save_output = args.output
-    output_dir = f"{parent_dir}/Output"
-    graph_mode = args.graph
-
     """
     Read a set of images for Panorama stitching
     """
@@ -510,8 +593,6 @@ def main():
                     matches_ij,
                     (valid_corners[i], valid_corners[j]),
                     window_name=f"Feature Matches {i}->{j}",
-                    save_output=save_output,
-                    output_dir=output_dir,
                     filename=f"matching_{i}_{j}.png",
                 )
     else:
@@ -524,8 +605,6 @@ def main():
                 match_indices_i,
                 (valid_corners[i], valid_corners[i + 1]),
                 window_name=f"Feature Matches {i}->{i+1}",
-                save_output=save_output,
-                output_dir=output_dir,
                 filename=f"matching_{i}_{i+1}.png",
             )
 
@@ -533,116 +612,43 @@ def main():
     Refine: RANSAC, Estimate Homography
     """
     # list of homographies between consecutive images
-    pairwise_H = {} if graph_mode else []  # (i, j) -> H
+    pairwise_H, pairwise_inliers = refine_matches(
+        images, pairwise_matches, valid_corners, graph_mode
+    )
 
     if graph_mode:
-        pairwise_inliers = {}  # (i, j) -> inlier count
-
-        for (i, j), matches in pairwise_matches.items():
-            if len(matches) < 4:
-                continue
-            print("Evaluating matches between images", i, "and", j)
-            H_ij, inliers_ij = RANSAC_homography(
-                np.array(matches), (valid_corners[i], valid_corners[j])
-            )
-
-            inlier_ratio = len(inliers_ij) / len(matches)
-
-            if inlier_ratio < 0.30:
-                continue
-
-            pairwise_H[(i, j)] = H_ij
-            pairwise_inliers[(i, j)] = len(inliers_ij)
-
-            print(f"Images {i} <-> {j}: {len(inliers_ij)} inliers")
-
-            # refine valid_corners using inliers
-            inlier_corners, remapped_inlier_matches = (
-                inlier_corners_and_remapped_matches(
-                    (valid_corners[i], valid_corners[j]), inliers_ij
-                )
-            )
-            visualize_matches(
-                images[i],
-                images[j],
-                remapped_inlier_matches,
-                (inlier_corners[0], inlier_corners[1]),
-                window_name=f"Inlier Matches {i}->{j}",
-                save_output=save_output,
-                output_dir=output_dir,
-                filename=f"inlier_matching_{i}_{j}.png",
-            )
-    else:
-        # valid_images keeps track of what pairs of images are usable for the panorama, rejects the ones that aren't
-        valid_images = []
-        # iterate through adjacent images, looking at i and comparing it to i+1 for the H_i calculation
-        for i in range(len(images) - 1):
-            H_i, inliers_i = RANSAC_homography(
-                np.array(pairwise_matches[i]), (valid_corners[i], valid_corners[i + 1])
-            )
-
-            print(
-                f"Found {len(inliers_i)}/{len(pairwise_matches[i])} inliers between images {i} and {i+1}"
-            )
-            # should make sure that if the number of inliers is too low, don't append that Homogrpahy, there are not enough matching features)
-            if float(len(inliers_i) / len(pairwise_matches[i])) < 0.15:
-                print(
-                    f"Images {i} and {i+1} shouldn't go next to each other, SKIPPING this homography"
-                )
-                pairwise_H.append(None)
-                continue
-            pairwise_H.append(H_i)
-            # only add i to the images but we can know that it goes with i+1
-            valid_images.append(i)
-
-            # refine valid_corners using inliers
-            inlier_corners, remapped_inlier_matches = (
-                inlier_corners_and_remapped_matches(
-                    (valid_corners[i], valid_corners[i + 1]), inliers_i
-                )
-            )
-            visualize_matches(
-                images[i],
-                images[i + 1],
-                remapped_inlier_matches,
-                (inlier_corners[0], inlier_corners[1]),
-                window_name=f"Inlier Matches {i}->{i+1}",
-                save_output=save_output,
-                output_dir=output_dir,
-                filename=f"inlier_matching_{i}_{i+1}.png",
-            )
-
-    if graph_mode:
+        # build graph from pairwise inliers
         graph = {i: [] for i in range(len(images))}
         for (i, j), k in pairwise_inliers.items():
             graph[i].append((j, k))
             graph[j].append((i, k))
         endpoints = [i for i in graph if len(graph[i]) == 1]
 
+        # if no endpoints (e.g., graph is a cycle or disconnected),
+        # fall back to a reasonable starting node so graph mode still works
+        if not endpoints:
+            print(
+                "Warning: no endpoints found in homography graph; "
+                "graph may be cyclic or disconnected. Choosing a start node heuristically."
+            )
+            # nodes that have at least one edge
+            non_isolated = [i for i in graph if len(graph[i]) > 0]
+            # if even this is empty, there are no valid homography connections at all
+            if not non_isolated:
+                print(
+                    "No valid homography connections in graph mode; "
+                    "cannot form a panorama."
+                )
+                return
+            # pick node with highest degree as a reasonable start
+            endpoints = [max(non_isolated, key=lambda i: len(graph[i]))]
+
     """
     Image Warping + Blending
     Save Panorama output as mypano.png
     """
-
-    # build a valid contiguous chain from the start
-    valid_indices = [0]
-    for idx, H in enumerate(pairwise_H):
-        if H is None:
-            break  # stop the chain here
-        valid_indices.append(idx + 1)
-
-    # if nothing usable, bail out
-    if len(valid_indices) < 2:
-        print(
-            "Not enough valid sequential homographies to form a panorama.\nTry running with -g to sort out of order images."
-        )
-        return
-
-    # restrict images and homographies to this chain
-    images = [images[i] for i in valid_indices]
-    pairwise_H = [H for H in pairwise_H[: len(valid_indices) - 1]]
-
     if graph_mode:
+        # walk the graph to determine stitching order
         start = endpoints[0]
         order = walk_graph(graph, start)
         print("Stitching order:", order)
@@ -655,6 +661,24 @@ def main():
             elif (b, a) in pairwise_H:
                 ordered_pairwise_H.append(np.linalg.inv(pairwise_H[(b, a)]))
         pairwise_H = ordered_pairwise_H
+    else:
+        # build a valid contiguous chain from the start
+        valid_indices = [0]
+        for idx, H in enumerate(pairwise_H):
+            if H is None:
+                break  # stop the chain here
+            valid_indices.append(idx + 1)
+
+        # if nothing usable, bail out
+        if len(valid_indices) < 2:
+            print(
+                "Not enough valid sequential homographies to form a panorama.\nTry running with -g to sort out of order images."
+            )
+            return
+
+        # restrict images and homographies to this chain
+        images = [images[i] for i in valid_indices]
+        pairwise_H = [H for H in pairwise_H[: len(valid_indices) - 1]]
 
     # use middle image as reference
     n = len(images)
