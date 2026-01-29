@@ -414,7 +414,7 @@ def main():
         "-g",
         "--graph",
         action="store_true",
-        help="Whether to form graph of homographies (Warning: slow!)",
+        help="Form homography graph to stitch images in optimal order. Slow, but effective for out-of-order image sets.",
     )
     args = ap.parse_args()
     input_dir = args.dir
@@ -432,7 +432,7 @@ def main():
             if img is not None:
                 images.append(img)
     print(f"Read {len(images)} images from {input_dir}")
-    if len(images) > 8:
+    if len(images) >= 8:
         images = [
             cylindrical_warp(img, cylinder_radius=img.shape[1] + 100) for img in images
         ]
@@ -623,6 +623,24 @@ def main():
     Image Warping + Blending
     Save Panorama output as mypano.png
     """
+
+    # build a valid contiguous chain from the start
+    valid_indices = [0]
+    for idx, H in enumerate(pairwise_H):
+        if H is None:
+            break  # stop the chain here
+        valid_indices.append(idx + 1)
+
+    # if nothing usable, bail out
+    if len(valid_indices) < 2:
+        print(
+            "Not enough valid sequential homographies to form a panorama.\nTry running with -g to sort out of order images."
+        )
+        return
+
+    # restrict images and homographies to this chain
+    images = [images[i] for i in valid_indices]
+    pairwise_H = [H for H in pairwise_H[: len(valid_indices) - 1]]
 
     if graph_mode:
         start = endpoints[0]
