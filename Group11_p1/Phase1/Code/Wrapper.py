@@ -187,7 +187,7 @@ def _normalize_points(points):
     # scale so mean distance is sqrt(2)
     dists = np.linalg.norm(shifted, axis=1)
     mean_dist = np.mean(dists)
-    scale = np.sqrt(2) / mean_dist
+    scale = np.sqrt(2) / max(mean_dist, 1e-8)
 
     # construct normalization matrix and normalize
     T = np.array(
@@ -375,10 +375,17 @@ def main():
         action="store_true",
         help="Whether to save output images",
     )
+    ap.add_argument(
+        "-g",
+        "--graph",
+        action="store_true",
+        help="Whether to form graph of homographies (Warning: slow!)",
+    )
     args = ap.parse_args()
     input_dir = args.dir
     save_output = args.output
     output_dir = f"{parent_dir}/Output"
+    graph_mode = args.graph
 
     """
     Read a set of images for Panorama stitching
@@ -455,52 +462,52 @@ def main():
     Feature Matching
     Save Feature Matching output as matching.png
     """
-    # match_indices = []
-    # for i in range(len(images) - 1):
-    #     match_indices_i = match_features(fd[i], fd[i + 1])
-    #     match_indices.append(match_indices_i)
+    pairwise_matches = {} if graph_mode else []
 
-    #     draw_matches(
-    #         images[i],
-    #         images[i + 1],
-    #         match_indices_i,
-    #         (valid_corners[i], valid_corners[i + 1]),
-    #         window_name=f"Feature Matches {i}->{i+1}",
-    #     )
-    #     if save_output:
-    #         img_matches = draw_matches(
-    #             images[i],
-    #             images[i + 1],
-    #             match_indices_i,
-    #             (valid_corners[i], valid_corners[i + 1]),
-    #         )
-    #         cv2.imwrite(
-    #             os.path.join(output_dir, f"matching_{i}_{i+1}.png"), img_matches
-    #         )
+    if graph_mode:
+        for i in range(len(images)):
+            for j in range(i + 1, len(images)):
+                matches_ij = match_features(fd[i], fd[j])
+                pairwise_matches[(i, j)] = matches_ij
 
-    pairwise_matches = {}
-
-    for i in range(len(images)):
-        for j in range(i + 1, len(images)):
-            matches_ij = match_features(fd[i], fd[j])
-            pairwise_matches[(i, j)] = matches_ij
-
-            draw_matches(
-                images[i],
-                images[j],
-                matches_ij,
-                (valid_corners[i], valid_corners[j]),
-                window_name=f"Feature Matches {i}->{j}",
-            )
-            if save_output:
-                img_matches = draw_matches(
+                draw_matches(
                     images[i],
                     images[j],
                     matches_ij,
                     (valid_corners[i], valid_corners[j]),
+                    window_name=f"Feature Matches {i}->{j}",
+                )
+                if save_output:
+                    img_matches = draw_matches(
+                        images[i],
+                        images[j],
+                        matches_ij,
+                        (valid_corners[i], valid_corners[j]),
+                    )
+                    cv2.imwrite(
+                        os.path.join(output_dir, f"matching_{i}_{j}.png"), img_matches
+                    )
+    else:
+        for i in range(len(images) - 1):
+            match_indices_i = match_features(fd[i], fd[i + 1])
+            pairwise_matches.append(match_indices_i)
+
+            draw_matches(
+                images[i],
+                images[i + 1],
+                match_indices_i,
+                (valid_corners[i], valid_corners[i + 1]),
+                window_name=f"Feature Matches {i}->{i+1}",
+            )
+            if save_output:
+                img_matches = draw_matches(
+                    images[i],
+                    images[i + 1],
+                    match_indices_i,
+                    (valid_corners[i], valid_corners[i + 1]),
                 )
                 cv2.imwrite(
-                    os.path.join(output_dir, f"matching_{i}_{j}.png"), img_matches
+                    os.path.join(output_dir, f"matching_{i}_{i+1}.png"), img_matches
                 )
 
     """
@@ -508,81 +515,133 @@ def main():
     """
     # list of homographies between consecutive images
     # valid_images keeps track of what pairs of images are usable for the panorama, rejects the ones that aren't
-    pairwise_H = {}  # (i, j) -> H
-    pairwise_inliers = {}  # (i, j) -> inlier count
+    pairwise_H = {} if graph_mode else []  # (i, j) -> H
 
-    for (i, j), matches in pairwise_matches.items():
-        if len(matches) < 4:
-            continue
-        print("Evaluating matches between images", i, "and", j)
-        H_ij, inliers_ij = RANSAC_homography(
-            np.array(matches), (valid_corners[i], valid_corners[j])
-        )
+    if graph_mode:
+        pairwise_inliers = {}  # (i, j) -> inlier count
 
-        inlier_ratio = len(inliers_ij) / len(matches)
+        for (i, j), matches in pairwise_matches.items():
+            if len(matches) < 4:
+                continue
+            print("Evaluating matches between images", i, "and", j)
+            H_ij, inliers_ij = RANSAC_homography(
+                np.array(matches), (valid_corners[i], valid_corners[j])
+            )
 
-        if inlier_ratio < 0.30:
-            continue
+            inlier_ratio = len(inliers_ij) / len(matches)
 
-        pairwise_H[(i, j)] = H_ij
-        pairwise_inliers[(i, j)] = len(inliers_ij)
+            if inlier_ratio < 0.30:
+                continue
 
-        print(f"Images {i} <-> {j}: {len(inliers_ij)} inliers")
+            pairwise_H[(i, j)] = H_ij
+            pairwise_inliers[(i, j)] = len(inliers_ij)
 
-        # refine valid_corners using inliers
-        inlier_indices_1, inlier_indices_2 = zip(*inliers_ij)
-        inlier_corners = (
-            valid_corners[i][list(inlier_indices_1)],
-            valid_corners[j][list(inlier_indices_2)],
-        )
-        # create matches with sequential indices for the filtered corners
-        inlier_matches = inliers_ij  # already (idx_i, idx_j)
+            print(f"Images {i} <-> {j}: {len(inliers_ij)} inliers")
 
+            # refine valid_corners using inliers
+            inlier_indices_1, inlier_indices_2 = zip(*inliers_ij)
+            inlier_corners = (
+                valid_corners[i][list(inlier_indices_1)],
+                valid_corners[j][list(inlier_indices_2)],
+            )
+            # create matches with sequential indices for the filtered corners
+            inlier_matches = inliers_ij  # already (idx_i, idx_j)
 
-        remapped_inlier_matches = [(i, i) for i in range(len(inlier_corners[0]))]
+            remapped_inlier_matches = [(i, i) for i in range(len(inlier_corners[0]))]
 
-        draw_matches(
-            images[i],
-            images[j],
-            remapped_inlier_matches,
-            (inlier_corners[0], inlier_corners[1]),
-            window_name=f"Inlier Matches {i}->{j}",
-        )
-        if save_output:
-            img_inlier_matches = draw_matches(
+            draw_matches(
                 images[i],
                 images[j],
                 remapped_inlier_matches,
                 (inlier_corners[0], inlier_corners[1]),
+                window_name=f"Inlier Matches {i}->{j}",
             )
-            cv2.imwrite(
-                os.path.join(output_dir, f"inlier_matching_{i}_{j}.png"),
-                img_inlier_matches,
+            if save_output:
+                img_inlier_matches = draw_matches(
+                    images[i],
+                    images[j],
+                    remapped_inlier_matches,
+                    (inlier_corners[0], inlier_corners[1]),
+                )
+                cv2.imwrite(
+                    os.path.join(output_dir, f"inlier_matching_{i}_{j}.png"),
+                    img_inlier_matches,
+                )
+    else:
+        valid_images = []
+        # iterate through adjacent images, looking at i and comparing it to i+1 for the H_i calculation
+        for i in range(len(images) - 1):
+            H_i, inliers_i = RANSAC_homography(
+                np.array(pairwise_matches[i]), (valid_corners[i], valid_corners[i + 1])
             )
 
-    graph = {i: [] for i in range(len(images))}
-    for (i, j), k in pairwise_inliers.items():
-        graph[i].append((j, k))
-        graph[j].append((i, k))
-    endpoints = [i for i in graph if len(graph[i]) == 1]
+            print(
+                f"Found {len(inliers_i)}/{len(pairwise_matches[i])} inliers between images {i} and {i+1}"
+            )
+            # should make sure that if the number of inliers is too low, don't append that Homogrpahy, there are not enough matching features)
+            if float(len(inliers_i) / len(pairwise_matches[i])) < 0.30:
+                print(
+                    f"Images {i} and {i+1} shouldn't go next to each other, SKIPPING this homography"
+                )
+                pairwise_H.append(None)
+                continue
+            pairwise_H.append(H_i)
+            # only add i to the images but we can know that it goes with i+1
+            valid_images.append(i)
+
+            # refine valid_corners using inliers
+            inlier_indices_1, inlier_indices_2 = zip(*inliers_i)
+            inlier_corners = (
+                valid_corners[i][list(inlier_indices_1)],
+                valid_corners[i + 1][list(inlier_indices_2)],
+            )
+            # create matches with sequential indices for the filtered corners
+            remapped_inlier_matches = [(i, i) for i in range(len(inlier_corners[0]))]
+
+            draw_matches(
+                images[i],
+                images[i + 1],
+                remapped_inlier_matches,
+                (inlier_corners[0], inlier_corners[1]),
+                window_name=f"Inlier Matches {i}->{i+1}",
+            )
+            if save_output:
+                img_inlier_matches = draw_matches(
+                    images[i],
+                    images[i + 1],
+                    remapped_inlier_matches,
+                    (inlier_corners[0], inlier_corners[1]),
+                )
+                cv2.imwrite(
+                    os.path.join(output_dir, f"inlier_matching_{i}_{i+1}.png"),
+                    img_inlier_matches,
+                )
+
+    if graph_mode:
+        graph = {i: [] for i in range(len(images))}
+        for (i, j), k in pairwise_inliers.items():
+            graph[i].append((j, k))
+            graph[j].append((i, k))
+        endpoints = [i for i in graph if len(graph[i]) == 1]
 
     """
     Image Warping + Blending
     Save Panorama output as mypano.png
     """
 
-    start = endpoints[0]
-    order = walk_graph(graph, start)
-    print("Stitching order:", order)
-    images = [images[i] for i in order]
-    ordered_pairwise_H = []
+    if graph_mode:
+        start = endpoints[0]
+        order = walk_graph(graph, start)
+        print("Stitching order:", order)
+        images = [images[i] for i in order]
+        ordered_pairwise_H = []
 
-    for a, b in zip(order[:-1], order[1:]):
-        if (a, b) in pairwise_H:
-            ordered_pairwise_H.append(pairwise_H[(a, b)])
-        elif (b, a) in pairwise_H:
-            ordered_pairwise_H.append(np.linalg.inv(pairwise_H[(b, a)]))
-    pairwise_H = ordered_pairwise_H
+        for a, b in zip(order[:-1], order[1:]):
+            if (a, b) in pairwise_H:
+                ordered_pairwise_H.append(pairwise_H[(a, b)])
+            elif (b, a) in pairwise_H:
+                ordered_pairwise_H.append(np.linalg.inv(pairwise_H[(b, a)]))
+        pairwise_H = ordered_pairwise_H
 
     # use middle image as reference
     n = len(images)
