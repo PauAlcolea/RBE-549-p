@@ -105,7 +105,7 @@ def encode_feature_points(image, corners):
             y - PATCH_RADIUS : y + PATCH_RADIUS + 1,
             x - PATCH_RADIUS : x + PATCH_RADIUS + 1,
         ]
-        patch = cv2.GaussianBlur(patch, (0, 0), sigmaX=2)
+        patch = cv2.GaussianBlur(patch, (5, 5), sigmaX=0)
         # downsample, normalize, and flatten
         small_patch = cv2.resize(patch, (8, 8), interpolation=cv2.INTER_AREA).astype(
             np.float32
@@ -237,7 +237,7 @@ def _compute_homography(pairs):
 def RANSAC_homography(
     match_indices,
     valid_corners,
-    n_iterations=10000,
+    n_iterations=2000,
     inlier_thresh=10,
     stop_thresh=0.85,
 ):
