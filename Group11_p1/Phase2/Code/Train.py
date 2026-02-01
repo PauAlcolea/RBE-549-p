@@ -35,14 +35,14 @@ def train(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=4,
+        num_workers=2,
         pin_memory=True,
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=4,
+        num_workers=2,
         pin_memory=True,
     )
 
@@ -55,6 +55,8 @@ def train(
     writer = SummaryWriter(log_dir)
 
     global_step = 0
+    best_val_loss = float("inf")
+    epochs_no_improve = 0
 
     for epoch in range(num_epochs):
         #### train ####
@@ -121,25 +123,26 @@ def train(
 
         #### checkpoint ####
         # save best model
-        if val_loss < best_val_loss and epoch >= 10:
-            best_val_loss = val_loss
-            epochs_no_improve = 0
+        if epoch > 25:
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                epochs_no_improve = 0
 
-            torch.save(
-                {
-                    "epoch": epoch,
-                    "model_state_dict": model.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "val_loss": val_loss,
-                },
-                os.path.join(checkpoint_dir, "best_model.pt"),
-            )
+                torch.save(
+                    {
+                        "epoch": epoch,
+                        "model_state_dict": model.state_dict(),
+                        "optimizer_state_dict": optimizer.state_dict(),
+                        "val_loss": val_loss,
+                    },
+                    os.path.join(checkpoint_dir, "best_model.pt"),
+                )
 
-            print(f"✓ New best model saved (val_loss={val_loss:.4f})")
+                print(f"✓ New best model saved (val_loss={val_loss:.4f})")
 
-        else:
-            epochs_no_improve += 1
-            print(f"No improvement for {epochs_no_improve}/{patience} epochs")
+            else:
+                epochs_no_improve += 1
+                print(f"No improvement for {epochs_no_improve}/{patience} epochs")
 
         #### early stopping ####
         if epochs_no_improve >= patience:
