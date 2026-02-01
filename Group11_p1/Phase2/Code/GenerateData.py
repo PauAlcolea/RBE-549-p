@@ -18,31 +18,53 @@ def read_images(directory, num_images):
     return images
 
 
-def _get_random_patch(image, patch_size=128, margin=32):
+def _get_random_patch(image, patch_size=128, margin=32, max_tries=200):
     h, w = image.shape[:2]
-    points_invalid = True
-    while points_invalid:
+    for i in range(max_tries):
         try:
             x1 = random.randint(margin, w - margin - patch_size)
             y1 = random.randint(margin, h - margin - patch_size)
-            points_invalid = False
+            break
         except ValueError:
+            if i == max_tries - 1:
+                return None, None
             continue
     x2 = x1 + patch_size
     y2 = y1 + patch_size
     return image[y1:y2, x1:x2], np.array(((x1, y1), (x2, y1), (x2, y2), (x1, y2)))
 
 
-def _shift_corners(corners, max_shift=32):
-    shifts = np.random.randint(-max_shift, max_shift + 1, size=corners.shape)
-    return corners + shifts, shifts
+def _shift_corners(corners, image_shape, max_shift=32, max_tries=100):
+    h, w = image_shape
+
+    for _ in range(max_tries):
+        shifts = np.random.randint(-max_shift, max_shift + 1, size=corners.shape)
+        translation = np.random.randint(-max_shift, max_shift + 1, size=(1, 2))
+        shifts += translation
+        C_B = corners + shifts
+
+        if (
+            np.all(C_B[:, 0] >= 0)
+            and np.all(C_B[:, 0] < w)
+            and np.all(C_B[:, 1] >= 0)
+            and np.all(C_B[:, 1] < h)
+        ):
+            return C_B, shifts
+
+    return None, None
 
 
 def generate_data_point(image_A):
     # cut random square P_A from safe region of image_A
     P_A, C_A = _get_random_patch(image_A)
+    if P_A is None or C_A is None:
+        print("Failed to get random patch.")
+        return None, None
     # calculate random corner shifts
-    C_B, shifts = _shift_corners(C_A)
+    C_B, shifts = _shift_corners(C_A, image_A.shape[:2])
+    if C_B is None:
+        print("Failed to shift corners.")
+        return None, None
     # warp image_A to get image_B using inverse of corner shifts
     H = cv2.getPerspectiveTransform(C_B.astype(np.float32), C_A.astype(np.float32))
     image_B = cv2.warpPerspective(
@@ -94,6 +116,9 @@ def main():
     with open(labels_path, "w") as f:
         for idx, img in enumerate(images):
             P, shifts = generate_data_point(img)
+            if P is None or shifts is None:
+                print(f"Skipping image {idx} due to failure in data point generation.")
+                continue
             datapoint_name = f"data_{idx:06d}"
             np.save(os.path.join(output_dir, datapoint_name + ".npy"), P)
 
