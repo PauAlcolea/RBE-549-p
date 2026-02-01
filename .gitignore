@@ -12,3 +12,7 @@ Group11_p1/Phase1/Output/*
 
 # log files
 Group11_p1/Phase2/Code/logs
+
+# Slurm output
+*.out
+*.err
