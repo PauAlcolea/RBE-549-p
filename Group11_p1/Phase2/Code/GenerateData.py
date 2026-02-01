@@ -10,7 +10,7 @@ def read_images(directory, num_images):
     images = []
     for filename in os.listdir(directory):
         if filename.endswith(".jpg"):
-            img = cv2.imread(os.path.join(directory, filename), cv2.IMREAD_UNCHANGED)
+            img = cv2.imread(os.path.join(directory, filename), cv2.IMREAD_COLOR)
             if img is not None:
                 images.append(img)
                 if len(images) >= num_images:
@@ -115,15 +115,16 @@ def main():
     labels_path = os.path.join(output_dir, "labels.txt")
     with open(labels_path, "w") as f:
         for idx, img in enumerate(images):
-            P, shifts = generate_data_point(img)
-            if P is None or shifts is None:
-                print(f"Skipping image {idx} due to failure in data point generation.")
-                continue
-            datapoint_name = f"data_{idx:06d}"
-            np.save(os.path.join(output_dir, datapoint_name + ".npy"), P)
+            for i in range(2):  # generate 2 data points per image
+                P, shifts = generate_data_point(img)
+                if P is None or shifts is None:
+                    print(f"Skipping image {idx} due to failure in data point generation.")
+                    break
+                datapoint_name = f"data_{idx:06d}_{i}"
+                np.save(os.path.join(output_dir, datapoint_name + ".npy"), P)
 
-            line = datapoint_name + ".npy " + " ".join(str(int(v)) for v in shifts)
-            f.write(line + "\n")
+                line = datapoint_name + ".npy " + " ".join(str(int(v)) for v in shifts)
+                f.write(line + "\n")
 
 
 if __name__ == "__main__":
