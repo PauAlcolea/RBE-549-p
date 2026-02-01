@@ -40,6 +40,10 @@ class HomographyDataset(Dataset):
             patch_a = np.stack([pa] * 3, axis=-1)
             patch_b = np.stack([pb] * 3, axis=-1)
 
+        # normalize to [0, 1]
+        patch_a = patch_a / 255.0
+        patch_b = patch_b / 255.0
+
         # convert to tensors
         patch_a = (
             torch.from_numpy(patch_a)
