@@ -100,11 +100,12 @@ class SupervisedNet(nn.Module):
             nn.BatchNorm2d(num_features=128),
             nn.ReLU(),
         )
-        self.fc = nn.Sequential(
-            nn.Linear(in_features=128 * 16 * 16, out_features=1024),
-            nn.Dropout(p=0.5),
-            nn.Linear(in_features=1024, out_features=OutputSize),
-        )
+        # self.fc = nn.Sequential(
+        #     nn.Linear(in_features=128 * 16 * 16, out_features=1024),
+        #     nn.Dropout(p=0.5),
+        #     nn.Linear(in_features=1024, out_features=OutputSize),
+        # )
+        self.fc = nn.Linear(in_features=128, out_features=OutputSize)
         self.features = nn.Sequential(
             self.conv1,
             self.conv2,
@@ -115,8 +116,8 @@ class SupervisedNet(nn.Module):
             self.conv7,
             self.conv8,
         )
-        nn.init.zeros_(self.fc[-1].weight)
-        nn.init.zeros_(self.fc[-1].bias)
+        nn.init.zeros_(self.fc.weight)
+        nn.init.zeros_(self.fc.bias)
 
     def forward(self, xa, xb):
         """
@@ -128,7 +129,8 @@ class SupervisedNet(nn.Module):
         """
         x = torch.cat([xa, xb], dim=1)
         x = self.features(x)
-        x = x.view(x.size(0), -1)
+        # x = x.view(x.size(0), -1)
+        x = torch.mean(x, dim=[2, 3]) # global average pooling
         out = self.fc(x)
         return out
 
