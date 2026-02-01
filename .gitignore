@@ -9,3 +9,6 @@ Group11_p1/Phase1/Output/*
 
 #.DS_Store
 **/.DS_Store
+
+# log files
+Group11_p1/Phase2/Code/logs
