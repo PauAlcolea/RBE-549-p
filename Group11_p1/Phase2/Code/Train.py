@@ -35,15 +35,15 @@ def train(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=2,
-        pin_memory=True,
+        num_workers=0,
+        pin_memory=False,
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=2,
-        pin_memory=True,
+        num_workers=0,
+        pin_memory=False,
     )
 
     # model
@@ -51,6 +51,11 @@ def train(
     optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9)
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=15, gamma=0.1)
     loss_fn = torch.nn.SmoothL1Loss()
+
+    # clear contents of log_dir
+    if os.path.exists(log_dir):
+        for f in os.listdir(log_dir):
+            os.remove(os.path.join(log_dir, f))
 
     writer = SummaryWriter(log_dir)
 

@@ -29,17 +29,32 @@ class HomographyDataset(Dataset):
         # load stacked patches
         P = np.load(os.path.join(self.data_dir, fname))
 
-        # handle both (H, W, 2) and (2, H, W)
-        if P.shape[0] == 2:
-            patch_a = P[0]
-            patch_b = P[1]
-        else:
-            patch_a = P[:, :, 0]
-            patch_b = P[:, :, 1]
+        if P.shape[2] == 6:
+            # two RGB patches
+            patch_a = P[:, :, :3]
+            patch_b = P[:, :, 3:6]
+        elif P.shape[2] == 2:
+            # two grayscale patches; split then replicate to 3 channels
+            pa = P[:, :, 0]
+            pb = P[:, :, 1]
+            patch_a = np.stack([pa] * 3, axis=-1)
+            patch_b = np.stack([pb] * 3, axis=-1)
 
         # convert to tensors
-        patch_a = torch.from_numpy(patch_a).float().unsqueeze(0)
-        patch_b = torch.from_numpy(patch_b).float().unsqueeze(0)
-        shifts = torch.from_numpy(shifts).float()
+        patch_a = (
+            torch.from_numpy(patch_a)
+            .permute(2, 0, 1)
+            .contiguous()
+            .float()
+            .clone()
+        )
+        patch_b = (
+            torch.from_numpy(patch_b)
+            .permute(2, 0, 1)
+            .contiguous()
+            .float()
+            .clone()
+        )
+        shifts = torch.from_numpy(shifts).float().clone()
 
         return patch_a, patch_b, shifts

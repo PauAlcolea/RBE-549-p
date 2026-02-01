@@ -57,7 +57,7 @@ class SupervisedNet(nn.Module):
         """
         super().__init__()
         self.conv1 = nn.Sequential(
-            nn.Conv2d(in_channels=2, out_channels=64, kernel_size=3, padding=1),
+            nn.Conv2d(in_channels=6, out_channels=64, kernel_size=3, padding=1),
             nn.BatchNorm2d(num_features=64),
             nn.ReLU(),
         )
