@@ -1,17 +1,4 @@
 #!/usr/bin/env python
-
-"""
-RBE/CS Fall 2022: Classical and Deep Learning Approaches for
-Geometric Computer Vision
-Project 1: MyAutoPano: Phase 2 Starter Code
-
-
-Author(s):
-Lening Li (lli4@wpi.edu)
-Teaching Assistant in Robotics Engineering,
-Worcester Polytechnic Institute
-"""
-
 import os
 import torch
 from torch.utils.data import DataLoader
@@ -32,7 +19,11 @@ def train(
     lr=1e-4,
     log_dir="logs",
     device="cuda",
+    patience=10,
+    checkpoint_dir="checkpoints",
 ):
+    os.makedirs(checkpoint_dir, exist_ok=True)
+
     # dataset and dataloader
     train_dataset = HomographyDataset(train_data_dir, train_label_file)
     val_dataset = HomographyDataset(val_data_dir, val_label_file)
@@ -53,7 +44,8 @@ def train(
 
     # model
     model = SupervisedHomographyModel().to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9)
+    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=15, gamma=0.1)
     loss_fn = torch.nn.SmoothL1Loss()
 
     writer = SummaryWriter(log_dir)
@@ -82,6 +74,7 @@ def train(
             global_step += 1
 
         train_loss /= len(train_loader)
+        lr_scheduler.step()
 
         #### validation ####
         model.eval()
@@ -122,7 +115,12 @@ def train(
             writer.add_images("val/patch_a", patch_a, epoch)
             writer.add_images("val/patch_b", patch_b, epoch)
 
-        if (epoch + 1) % 10 == 0:
+        #### checkpoint ####
+        # save best model
+        if val_loss < best_val_loss and epoch >= 10:
+            best_val_loss = val_loss
+            epochs_no_improve = 0
+
             torch.save(
                 {
                     "epoch": epoch,
@@ -130,8 +128,19 @@ def train(
                     "optimizer_state_dict": optimizer.state_dict(),
                     "val_loss": val_loss,
                 },
-                f"checkpoint_epoch_{epoch}.pt",
+                os.path.join(checkpoint_dir, "best_model.pt"),
             )
+
+            print(f"✓ New best model saved (val_loss={val_loss:.4f})")
+
+        else:
+            epochs_no_improve += 1
+            print(f"No improvement for {epochs_no_improve}/{patience} epochs")
+
+        #### early stopping ####
+        if epochs_no_improve >= patience:
+            print(f"Early stopping triggered after {epochs_no_improve} epochs.")
+            break
 
     writer.close()
 
@@ -154,9 +163,6 @@ def main():
         train_label_file=f"{train_data_dir}/labels.txt",
         val_data_dir=val_data_dir,
         val_label_file=f"{val_data_dir}/labels.txt",
-        num_epochs=50,
-        batch_size=32,
-        lr=1e-4,
         device=device,
     )
 
