@@ -122,8 +122,7 @@ def main():
             datapoint_name = f"data_{idx:06d}"
             np.save(os.path.join(output_dir, datapoint_name + ".npy"), P)
 
-            shifts_flat = shifts.reshape(-1)
-            line = datapoint_name + ".npy " + " ".join(str(int(v)) for v in shifts_flat)
+            line = datapoint_name + ".npy " + " ".join(str(int(v)) for v in shifts)
             f.write(line + "\n")
 
 
