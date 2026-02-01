@@ -44,6 +44,11 @@ class HomographyDataset(Dataset):
         patch_a = patch_a / 255.0
         patch_b = patch_b / 255.0
 
+        # Random brightness shift [-0.1, 0.1]
+        delta_brightness = (np.random.rand() - 0.5) * 0.2
+        patch_a = np.clip(patch_a + delta_brightness, 0, 1)
+        patch_b = np.clip(patch_b + delta_brightness, 0, 1)
+
         # convert to tensors
         patch_a = (
             torch.from_numpy(patch_a)
