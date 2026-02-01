@@ -115,6 +115,8 @@ class SupervisedNet(nn.Module):
             self.conv7,
             self.conv8,
         )
+        nn.init.zeros_(self.fc[-1].weight)
+        nn.init.zeros_(self.fc[-1].bias)
 
     def forward(self, xa, xb):
         """
