@@ -18,10 +18,52 @@ def read_images(directory, num_images):
     return images
 
 
+def _get_random_patch(image, patch_size=128, margin=32):
+    h, w = image.shape[:2]
+    points_invalid = True
+    while points_invalid:
+        try:
+            x1 = random.randint(margin, w - margin - patch_size)
+            y1 = random.randint(margin, h - margin - patch_size)
+            points_invalid = False
+        except ValueError:
+            continue
+    x2 = x1 + patch_size
+    y2 = y1 + patch_size
+    return image[y1:y2, x1:x2], np.array(((x1, y1), (x2, y1), (x2, y2), (x1, y2)))
+
+
+def _shift_corners(corners, max_shift=32):
+    shifts = np.random.randint(-max_shift, max_shift + 1, size=corners.shape)
+    return corners + shifts, shifts
+
+
+def generate_data_point(image_A):
+    # cut random square P_A from safe region of image_A
+    P_A, C_A = _get_random_patch(image_A)
+    # calculate random corner shifts
+    C_B, shifts = _shift_corners(C_A)
+    # warp image_A to get image_B using inverse of corner shifts
+    H = cv2.getPerspectiveTransform(C_B.astype(np.float32), C_A.astype(np.float32))
+    image_B = cv2.warpPerspective(
+        image_A, H, dsize=(image_A.shape[1], image_A.shape[0])
+    )
+    # cut square P_B from image_B
+    P_B = image_B[C_A[0, 1] : C_A[2, 1], C_A[0, 0] : C_A[2, 0]]
+    # stack patches depth-wise
+    P = np.dstack((P_A, P_B))
+    return P, shifts.reshape(
+        -1
+    )  # data pair is (P_A, P_B) and label is corner shifts H_4Pt
+
+
 def main():
     ap = ArgumentParser()
     ap.add_argument(
         "-n", "--num_images", type=int, default=100, help="number of images to generate"
+    )
+    ap.add_argument(
+        "--all", action="store_true", help="read all images in the folder, ignoring -n"
     )
     ap.add_argument(
         "-t",
@@ -34,15 +76,30 @@ def main():
     args = ap.parse_args()
     num_images = args.num_images
     dataset_type = args.type
+    if args.all:
+        num_images = sys.maxsize
 
     # set up directories
     data_top_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/Data"
     input_dir = os.path.join(data_top_dir, dataset_type)
     output_dir = os.path.join(data_top_dir, "Generated", dataset_type)
+    os.makedirs(output_dir, exist_ok=True)
 
     # read images
     images = read_images(input_dir, num_images)
     print(len(images), "images read from", input_dir)
+
+    # generate data
+    labels_path = os.path.join(output_dir, "labels.txt")
+    with open(labels_path, "w") as f:
+        for idx, img in enumerate(images):
+            P, shifts = generate_data_point(img)
+            datapoint_name = f"data_{idx:06d}"
+            np.save(os.path.join(output_dir, datapoint_name + ".npy"), P)
+
+            shifts_flat = shifts.reshape(-1)
+            line = datapoint_name + ".npy " + " ".join(str(int(v)) for v in shifts_flat)
+            f.write(line + "\n")
 
 
 if __name__ == "__main__":
