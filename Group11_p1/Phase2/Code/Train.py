@@ -1,4 +1,8 @@
 #!/usr/bin/env python
+import sys
+
+sys.dont_write_bytecode = True
+
 import os
 import torch
 from torch.utils.data import DataLoader

@@ -23,9 +23,8 @@ sys.dont_write_bytecode = True
 
 
 class SupervisedHomographyModel(pl.LightningModule):
-    def __init__(self, hparams):
+    def __init__(self):
         super(SupervisedHomographyModel, self).__init__()
-        self.hparams = hparams
         self.model = SupervisedNet()
 
     def forward(self, a, b):
