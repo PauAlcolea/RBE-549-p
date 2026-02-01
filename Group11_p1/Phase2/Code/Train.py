@@ -54,8 +54,12 @@ def train(
 
     # clear contents of log_dir
     if os.path.exists(log_dir):
-        for f in os.listdir(log_dir):
-            os.remove(os.path.join(log_dir, f))
+        for root, dirs, files in os.walk(log_dir, topdown=False):
+            for name in files:
+                os.remove(os.path.join(root, name))
+            for name in dirs:
+                os.rmdir(os.path.join(root, name))
+    
 
     writer = SummaryWriter(log_dir)
 
