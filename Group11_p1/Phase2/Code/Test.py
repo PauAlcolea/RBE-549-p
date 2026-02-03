@@ -28,7 +28,7 @@ def load_images(dir):
     images = []
     for filename in os.listdir(dir):
         if filename.endswith(".jpg") or filename.endswith(".png"):
-            img = cv2.imread(os.path.join(dir, filename), cv2.IMREAD_COLOR)
+            img = cv2.imread(os.path.join(dir, filename), cv2.IMREAD_GRAYSCALE)
             if img is not None:
                 images.append(img)
     return images
@@ -181,7 +181,6 @@ def main():
     )
     parser = ArgumentParser()
     parser.add_argument(
-        "-d",
         "--dir",
         type=str,
         default="Train/CustomSet1",
@@ -209,6 +208,7 @@ def main():
             images[i], images[i + 1], pairwise_matches[i]
         )
 
+        # predict deltas with trained model
         with torch.no_grad():
             delta_preds = (
                 model(
@@ -224,8 +224,10 @@ def main():
             dst = np.array(coords) + d.reshape(4, 2)
             patch_pairs.append(list(zip(coords, dst)))
 
+        # compute homography with RANSAC
         H_i = RANSAC_homography(patch_pairs)
         pairwise_H.append(H_i)
+    images = [cv2.cvtColor(img, cv2.COLOR_GRAY2BGR) for img in images]
     panorama = form_panorama(images, pairwise_H=pairwise_H, graph_mode=False)
     cv2.imwrite("mypano.png", panorama)
 
