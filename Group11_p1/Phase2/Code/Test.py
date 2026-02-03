@@ -28,7 +28,7 @@ def load_images(dir):
     images = []
     for filename in os.listdir(dir):
         if filename.endswith(".jpg") or filename.endswith(".png"):
-            img = cv2.imread(os.path.join(dir, filename), cv2.IMREAD_GRAYSCALE)
+            img = cv2.imread(os.path.join(dir, filename))
             if img is not None:
                 images.append(img)
     return images
@@ -90,11 +90,12 @@ def extract_patches(image1, image2, matches, patch_size=128):
 def patches_to_tensor(patches):
     """
     patches: list of (H, W, 3) numpy arrays
-    returns: torch tensor (B, 6, H, W)
+    returns: torch tensor (B, 1, H, W)
     """
     tensors = []
     for p in patches:
-        p = torch.from_numpy(p).permute(2, 0, 1).float() / 255.0
+        p = cv2.cvtColor(p, cv2.COLOR_BGR2GRAY)
+        p = torch.from_numpy(p).unsqueeze(0).float() / 255.0
         tensors.append(p)
     return torch.stack(tensors)
 
@@ -227,7 +228,6 @@ def main():
         # compute homography with RANSAC
         H_i = RANSAC_homography(patch_pairs)
         pairwise_H.append(H_i)
-    images = [cv2.cvtColor(img, cv2.COLOR_GRAY2BGR) for img in images]
     panorama = form_panorama(images, pairwise_H=pairwise_H, graph_mode=False)
     cv2.imwrite("mypano.png", panorama)
 
