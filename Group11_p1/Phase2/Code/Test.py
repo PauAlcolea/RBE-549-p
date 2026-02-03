@@ -220,6 +220,8 @@ def main():
                 .numpy()
             )
 
+        delta_preds = delta_preds * 32  # scale up to original pixel coordinates
+
         patch_pairs = []
         for coords, d in zip(patch_coords, delta_preds):
             dst = np.array(coords) + d.reshape(4, 2)
