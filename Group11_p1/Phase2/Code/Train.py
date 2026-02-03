@@ -103,6 +103,9 @@ def train(
                 pred_delta = model(patch_a, patch_b)
                 loss = loss_fn(pred_delta, gt_delta)
 
+                pred_delta = pred_delta * 32
+                gt_delta = gt_delta * 32
+
                 # EPE is L2 err between predicted and ground truth corners
                 corner_err = torch.norm(pred_delta - gt_delta, p=2, dim=1).mean()
                 val_corner_err += corner_err.item()
