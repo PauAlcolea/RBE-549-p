@@ -31,6 +31,31 @@ class HomographyDataset:
     def __len__(self):
         return len(self.samples)
 
+    def _augment_data(self, patch_a, patch_b, shifts):
+        # random brightness shift [-0.1, 0.1]
+        delta_brightness = (np.random.rand() - 0.5) * 0.2
+        patch_a = np.clip(patch_a + delta_brightness, 0, 1)
+        patch_b = np.clip(patch_b + delta_brightness, 0, 1)
+
+        # randomly add noise
+        if np.random.rand() < 0.5:
+            noise_std = 0.02
+            noise = np.random.randn(*patch_a.shape) * noise_std
+            patch_a = np.clip(patch_a + noise, 0, 1)
+            patch_b = np.clip(patch_b + noise, 0, 1)
+
+        # convert to tensors
+        patch_a = (
+            torch.from_numpy(patch_a).permute(2, 0, 1).contiguous().float().clone()
+        )
+        patch_b = (
+            torch.from_numpy(patch_b).permute(2, 0, 1).contiguous().float().clone()
+        )
+
+        # normalize labels
+        shifts = shifts / 32 # max shift is 32 pixels
+        return patch_a, patch_b, shifts
+
     def _load_sample(self, fname, shifts):
         # load single data sample
 
@@ -52,18 +77,9 @@ class HomographyDataset:
         patch_a = patch_a / 255.0
         patch_b = patch_b / 255.0
 
-        # Random brightness shift [-0.1, 0.1]
-        delta_brightness = (np.random.rand() - 0.5) * 0.2
-        patch_a = np.clip(patch_a + delta_brightness, 0, 1)
-        patch_b = np.clip(patch_b + delta_brightness, 0, 1)
+        # data augmentation
+        patch_a, patch_b, shifts = self._augment_data(patch_a, patch_b, shifts)
 
-        # convert to tensors
-        patch_a = (
-            torch.from_numpy(patch_a).permute(2, 0, 1).contiguous().float().clone()
-        )
-        patch_b = (
-            torch.from_numpy(patch_b).permute(2, 0, 1).contiguous().float().clone()
-        )
         shifts = torch.from_numpy(shifts).float().clone()
 
         return patch_a, patch_b, shifts
