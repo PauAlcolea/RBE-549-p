@@ -85,6 +85,9 @@ def main():
         "-n", "--num_images", type=int, default=100, help="number of images to read"
     )
     ap.add_argument(
+        "-c", "--num_copies", type=int, default=2, help="data points to generate per image"
+    )
+    ap.add_argument(
         "--all", action="store_true", help="read all images in the folder, ignoring -n"
     )
     ap.add_argument(
@@ -115,7 +118,7 @@ def main():
     labels_path = os.path.join(output_dir, "labels.txt")
     with open(labels_path, "w") as f:
         for idx, img in enumerate(images):
-            for i in range(2):  # generate 2 data points per image
+            for i in range(args.num_copies):  # generate specified data points per image
                 P, shifts = generate_data_point(img)
                 if P is None or shifts is None:
                     print(
