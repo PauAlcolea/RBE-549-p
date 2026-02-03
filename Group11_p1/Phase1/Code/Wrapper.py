@@ -20,13 +20,15 @@ import os
 from matplotlib import pyplot as plt
 from skimage.feature import corner_peaks
 
-if os.environ.get('DISPLAY') is None:
+if os.environ.get("DISPLAY") is None:
     print("Headless mode detected. Mocking cv2.imshow...")
-    
+
     def imshow_mock(name, img):
         pass
+
     def waitkey_mock(delay=0):
         return -1
+
     def destroy_mock():
         pass
 
@@ -497,7 +499,7 @@ def build_and_walk_graph(images, pairwise_H, pairwise_inliers):
             return
         # pick node with highest degree as a reasonable start
         endpoints = [max(non_isolated, key=lambda i: len(graph[i]))]
-    
+
     # walk the graph to determine stitching order
     start = endpoints[0]
     order = _walk_graph(graph, start)
@@ -625,6 +627,7 @@ def form_panorama(images, pairwise_H, graph_mode):
         cv2.imwrite(os.path.join(output_dir, "mypano.png"), panorama)
     return panorama
 
+
 def main():
     """
     Read a set of images for Panorama stitching
@@ -743,7 +746,7 @@ def main():
     """
     if graph_mode:
         pairwise_H = build_and_walk_graph(images, pairwise_H, pairwise_inliers)
-    
+
     form_panorama(images, pairwise_H, graph_mode)
 
     cv2.waitKey(0)

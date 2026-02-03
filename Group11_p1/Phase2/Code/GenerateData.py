@@ -118,7 +118,9 @@ def main():
             for i in range(2):  # generate 2 data points per image
                 P, shifts = generate_data_point(img)
                 if P is None or shifts is None:
-                    print(f"Skipping image {idx} due to failure in data point generation.")
+                    print(
+                        f"Skipping image {idx} due to failure in data point generation."
+                    )
                     break
                 datapoint_name = f"data_{idx:06d}_{i}"
                 np.save(os.path.join(output_dir, datapoint_name + ".npy"), P)

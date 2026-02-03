@@ -59,7 +59,6 @@ def train(
                 os.remove(os.path.join(root, name))
             for name in dirs:
                 os.rmdir(os.path.join(root, name))
-    
 
     writer = SummaryWriter(log_dir)
 

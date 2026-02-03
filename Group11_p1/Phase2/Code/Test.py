@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 import sys
+
 sys.dont_write_bytecode = True
 
 import os
@@ -10,8 +11,16 @@ import numpy as np
 import cv2
 from argparse import ArgumentParser
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-from Phase1.Code.Wrapper import locate_corners, ANMS, encode_feature_points, match_features, _normalize_points, _form_A_matrix, form_panorama
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+from Phase1.Code.Wrapper import (
+    locate_corners,
+    ANMS,
+    encode_feature_points,
+    match_features,
+    _normalize_points,
+    _form_A_matrix,
+    form_panorama,
+)
 from Network.Network import SupervisedHomographyModel
 
 
@@ -54,17 +63,27 @@ def extract_patches(image1, image2, matches, patch_size=128):
     patches1_coords = []
     half_size = patch_size // 2
     for (x1, y1), (x2, y2) in matches:
-        if (x1 - half_size >= 0 and y1 - half_size >= 0 and
-            x1 + half_size <= image1.shape[1] and y1 + half_size <= image1.shape[0] and
-            x2 - half_size >= 0 and y2 - half_size >= 0 and
-            x2 + half_size <= image2.shape[1] and y2 + half_size <= image2.shape[0]):
+        if (
+            x1 - half_size >= 0
+            and y1 - half_size >= 0
+            and x1 + half_size <= image1.shape[1]
+            and y1 + half_size <= image1.shape[0]
+            and x2 - half_size >= 0
+            and y2 - half_size >= 0
+            and x2 + half_size <= image2.shape[1]
+            and y2 + half_size <= image2.shape[0]
+        ):
             p1_x1, p1_y1 = x1 - half_size, y1 - half_size
             p1_x2, p1_y2 = x1 + half_size, y1 + half_size
             patch1 = image1[p1_y1:p1_y2, p1_x1:p1_x2]
-            patch2 = image2[y2 - half_size:y2 + half_size, x2 - half_size:x2 + half_size]
+            patch2 = image2[
+                y2 - half_size : y2 + half_size, x2 - half_size : x2 + half_size
+            ]
             patches1.append(patch1)
             patches2.append(patch2)
-            patches1_coords.append(((p1_x1, p1_y1), (p1_x2, p1_y1), (p1_x2, p1_y2), (p1_x1, p1_y2)))
+            patches1_coords.append(
+                ((p1_x1, p1_y1), (p1_x2, p1_y1), (p1_x2, p1_y2), (p1_x1, p1_y2))
+            )
     return patches1, patches2, patches1_coords
 
 
@@ -78,6 +97,7 @@ def patches_to_tensor(patches):
         p = torch.from_numpy(p).permute(2, 0, 1).float() / 255.0
         tensors.append(p)
     return torch.stack(tensors)
+
 
 def _compute_homography(pairs):
     # convert to NumPy array first
@@ -115,7 +135,6 @@ def RANSAC_homography(
         # skip iteration if selected points are degenerate
         if np.linalg.matrix_rank(_form_A_matrix(random_pairs)) < 8:
             continue
-
 
         # compute homography from the four pairs; skip if SVD fails
         try:
@@ -156,19 +175,25 @@ def main():
         if torch.cuda.is_available()
         else "mps" if torch.backends.mps.is_available() else "cpu"
     )
-    data_top_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) + "/Phase1/Data/"
+    data_top_dir = (
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        + "/Phase1/Data/"
+    )
     parser = ArgumentParser()
     parser.add_argument(
         "-d",
         "--dir",
         type=str,
         default="Train/CustomSet1",
-        help="directory containing test images; relative to Phase1/Data, i.e. 'Train/Set1'")
+        help="directory containing test images; relative to Phase1/Data, i.e. 'Train/Set1'",
+    )
     args = parser.parse_args()
     test_data_dir = os.path.join(data_top_dir, args.dir)
 
     # initialize model
-    model_path = os.path.dirname(os.path.abspath(__file__)) + "/checkpoints/best_model.pt"
+    model_path = (
+        os.path.dirname(os.path.abspath(__file__)) + "/checkpoints/best_model.pt"
+    )
     model = SupervisedHomographyModel()
     checkpoint = torch.load(model_path, map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
@@ -185,8 +210,15 @@ def main():
         )
 
         with torch.no_grad():
-            delta_preds = model(patches_to_tensor(patches_a).to(device), patches_to_tensor(patches_b).to(device)).cpu().numpy()
-        
+            delta_preds = (
+                model(
+                    patches_to_tensor(patches_a).to(device),
+                    patches_to_tensor(patches_b).to(device),
+                )
+                .cpu()
+                .numpy()
+            )
+
         patch_pairs = []
         for coords, d in zip(patch_coords, delta_preds):
             dst = np.array(coords) + d.reshape(4, 2)

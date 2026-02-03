@@ -130,7 +130,7 @@ class SupervisedNet(nn.Module):
         x = torch.cat([xa, xb], dim=1)
         x = self.features(x)
         # x = x.view(x.size(0), -1)
-        x = torch.mean(x, dim=[2, 3]) # global average pooling
+        x = torch.mean(x, dim=[2, 3])  # global average pooling
         out = self.fc(x)
         return out
 

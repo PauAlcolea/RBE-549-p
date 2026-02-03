@@ -51,18 +51,10 @@ class HomographyDataset(Dataset):
 
         # convert to tensors
         patch_a = (
-            torch.from_numpy(patch_a)
-            .permute(2, 0, 1)
-            .contiguous()
-            .float()
-            .clone()
+            torch.from_numpy(patch_a).permute(2, 0, 1).contiguous().float().clone()
         )
         patch_b = (
-            torch.from_numpy(patch_b)
-            .permute(2, 0, 1)
-            .contiguous()
-            .float()
-            .clone()
+            torch.from_numpy(patch_b).permute(2, 0, 1).contiguous().float().clone()
         )
         shifts = torch.from_numpy(shifts).float().clone()
 
