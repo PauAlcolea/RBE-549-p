@@ -34,11 +34,11 @@ class HomographyDataset(Dataset):
             patch_a = P[:, :, :3]
             patch_b = P[:, :, 3:6]
         elif P.shape[2] == 2:
-            # two grayscale patches; split then replicate to 3 channels
+            # two grayscale patches
             pa = P[:, :, 0]
             pb = P[:, :, 1]
-            patch_a = np.stack([pa] * 3, axis=-1)
-            patch_b = np.stack([pb] * 3, axis=-1)
+            patch_a = np.stack([pa], axis=-1)
+            patch_b = np.stack([pb], axis=-1)
 
         # normalize to [0, 1]
         patch_a = patch_a / 255.0

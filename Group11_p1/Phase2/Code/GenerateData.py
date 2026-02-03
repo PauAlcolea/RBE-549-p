@@ -10,7 +10,7 @@ def read_images(directory, num_images):
     images = []
     for filename in os.listdir(directory):
         if filename.endswith(".jpg"):
-            img = cv2.imread(os.path.join(directory, filename), cv2.IMREAD_COLOR)
+            img = cv2.imread(os.path.join(directory, filename), cv2.IMREAD_GRAYSCALE)
             if img is not None:
                 images.append(img)
                 if len(images) >= num_images:
@@ -82,7 +82,7 @@ def generate_data_point(image_A):
 def main():
     ap = ArgumentParser()
     ap.add_argument(
-        "-n", "--num_images", type=int, default=100, help="number of images to generate"
+        "-n", "--num_images", type=int, default=100, help="number of images to read"
     )
     ap.add_argument(
         "--all", action="store_true", help="read all images in the folder, ignoring -n"
