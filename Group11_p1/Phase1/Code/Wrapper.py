@@ -20,22 +20,6 @@ import os
 from matplotlib import pyplot as plt
 from skimage.feature import corner_peaks
 
-if os.environ.get("DISPLAY") is None:
-    print("Headless mode detected. Mocking cv2.imshow...")
-
-    def imshow_mock(name, img):
-        pass
-
-    def waitkey_mock(delay=0):
-        return -1
-
-    def destroy_mock():
-        pass
-
-    cv2.imshow = imshow_mock
-    cv2.waitKey = waitkey_mock
-    cv2.destroyAllWindows = destroy_mock
-
 # get path to current directory
 curr_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(curr_dir)
@@ -210,7 +194,10 @@ def _draw_matches(image1, image2, matches, corners, window_name="Matches"):
     kp2 = _corners_to_keypoints(corners[1])
     dmatches = _matches_to_dmatches(matches)
     img_matches = cv2.drawMatches(image1, kp1, image2, kp2, dmatches, None)
-    cv2.imshow(window_name, img_matches)
+    try:
+        cv2.imshow(window_name, img_matches)
+    except cv2.error:
+        pass
     return img_matches
 
 
@@ -749,8 +736,11 @@ def main():
 
     form_panorama(images, pairwise_H, graph_mode)
 
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    try:
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+    except cv2.error:
+        pass
     return
 
 
