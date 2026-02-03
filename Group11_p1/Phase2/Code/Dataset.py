@@ -1,21 +1,29 @@
 import os
+import random
 import numpy as np
 import torch
-from torch.utils.data import Dataset
 
 
-class HomographyDataset(Dataset):
+class HomographyDataset:
+    """
+    dataset class to bypass torch.utils.data.Dataset
+    """
+
     def __init__(self, data_dir, label_file):
         """
-        data_dir: directory containing .npy files
-        label_file: path to labels.txt
+        data_dir: dir containing the generated .npy files
+        label_file: path to the label text file
         """
+
         self.data_dir = data_dir
         self.samples = []
 
         with open(label_file, "r") as f:
             for line in f:
                 parts = line.strip().split()
+                if len(parts) < 9:
+                    # Expect: filename + 8 shift values
+                    continue
                 fname = parts[0]
                 shifts = np.array(parts[1:], dtype=np.float32)
                 self.samples.append((fname, shifts))
@@ -23,8 +31,8 @@ class HomographyDataset(Dataset):
     def __len__(self):
         return len(self.samples)
 
-    def __getitem__(self, idx):
-        fname, shifts = self.samples[idx]
+    def _load_sample(self, fname, shifts):
+        # load single data sample
 
         # load stacked patches
         P = np.load(os.path.join(self.data_dir, fname))
@@ -59,3 +67,57 @@ class HomographyDataset(Dataset):
         shifts = torch.from_numpy(shifts).float().clone()
 
         return patch_a, patch_b, shifts
+
+    def get_sample(self, idx):
+        # get single sample by index
+        fname, shifts = self.samples[idx]
+        return self._load_sample(fname, shifts)
+
+    def get_random_sample(self):
+        # get single random sample
+        idx = random.randint(0, len(self.samples) - 1)
+        return self.get_sample(idx)
+
+    def get_batch(self, batch_size):
+        # return a random mini-batch of given size
+        patch_a_list = []
+        patch_b_list = []
+        shifts_list = []
+
+        for _ in range(batch_size):
+            patch_a, patch_b, shifts = self.get_random_sample()
+            patch_a_list.append(patch_a)
+            patch_b_list.append(patch_b)
+            shifts_list.append(shifts)
+
+        patch_a_batch = torch.stack(patch_a_list)
+        patch_b_batch = torch.stack(patch_b_list)
+        shifts_batch = torch.stack(shifts_list)
+
+        return patch_a_batch, patch_b_batch, shifts_batch
+
+    def get_batch_from_index(self, start_idx, batch_size):
+        # return a sequential mini-batch starting at start_idx
+
+        end_idx = min(start_idx + batch_size, len(self.samples))
+
+        patch_a_list = []
+        patch_b_list = []
+        shifts_list = []
+
+        for idx in range(start_idx, end_idx):
+            patch_a, patch_b, shifts = self.get_sample(idx)
+            patch_a_list.append(patch_a)
+            patch_b_list.append(patch_b)
+            shifts_list.append(shifts)
+
+        patch_a_batch = torch.stack(patch_a_list)
+        patch_b_batch = torch.stack(patch_b_list)
+        shifts_batch = torch.stack(shifts_list)
+
+        return patch_a_batch, patch_b_batch, shifts_batch
+
+
+def GenerateBatch(dataset, mini_batch_size):
+    # wrapper to match starter code signature
+    return dataset.get_batch(mini_batch_size)

@@ -3,13 +3,13 @@ import sys
 
 sys.dont_write_bytecode = True
 
+import math
 import os
 import torch
-from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from Dataset import HomographyDataset
+from Dataset import GenerateBatch, HomographyDataset
 from Network.Network import SupervisedHomographyModel
 
 
@@ -28,23 +28,9 @@ def train(
 ):
     os.makedirs(checkpoint_dir, exist_ok=True)
 
-    # dataset and dataloader
+    # dataset
     train_dataset = HomographyDataset(train_data_dir, train_label_file)
     val_dataset = HomographyDataset(val_data_dir, val_label_file)
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=0,
-        pin_memory=False,
-    )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=0,
-        pin_memory=False,
-    )
 
     # model
     model = SupervisedHomographyModel().to(device)
@@ -71,7 +57,12 @@ def train(
         model.train()
         train_loss = 0.0
 
-        for patch_a, patch_b, gt_delta in tqdm(train_loader, desc=f"Train {epoch}"):
+        num_train_samples = len(train_dataset)
+        num_train_iters = max(1, math.ceil(num_train_samples / batch_size))
+
+        for _ in tqdm(range(num_train_iters), desc=f"Train {epoch}"):
+            patch_a, patch_b, gt_delta = GenerateBatch(train_dataset, batch_size)
+
             patch_a = patch_a.to(device)
             patch_b = patch_b.to(device)
             gt_delta = gt_delta.to(device)
@@ -87,7 +78,7 @@ def train(
             writer.add_scalar("train/loss_iter", loss.item(), global_step)
             global_step += 1
 
-        train_loss /= len(train_loader)
+        train_loss /= num_train_iters
         lr_scheduler.step()
 
         #### validation ####
@@ -96,7 +87,15 @@ def train(
         val_corner_err = 0.0
 
         with torch.no_grad():
-            for patch_a, patch_b, gt_delta in tqdm(val_loader, desc=f"Val {epoch}"):
+            num_val_samples = len(val_dataset)
+            num_val_iters = max(1, math.ceil(num_val_samples / batch_size))
+
+            for i in tqdm(range(num_val_iters), desc=f"Val {epoch}"):
+                start_idx = i * batch_size
+                patch_a, patch_b, gt_delta = val_dataset.get_batch_from_index(
+                    start_idx, batch_size
+                )
+
                 patch_a = patch_a.to(device)
                 patch_b = patch_b.to(device)
                 gt_delta = gt_delta.to(device)
@@ -110,8 +109,8 @@ def train(
 
                 val_loss += loss.item()
 
-        val_loss /= len(val_loader)
-        val_corner_err /= len(val_loader)
+        val_loss /= num_val_iters
+        val_corner_err /= num_val_iters
 
         #### logging ####
         writer.add_scalars(
