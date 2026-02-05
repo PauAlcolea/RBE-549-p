@@ -20,35 +20,6 @@ import os
 from matplotlib import pyplot as plt
 from skimage.feature import corner_peaks
 
-# get path to current directory
-curr_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(curr_dir)
-
-ap = argparse.ArgumentParser()
-ap.add_argument(
-    "--dir",
-    type=str,
-    default=f"{parent_dir}/Data/Train/Set1",
-    help="Directory of input images",
-)
-ap.add_argument(
-    "-o",
-    "--output",
-    action="store_true",
-    help="Whether to save output images",
-)
-ap.add_argument(
-    "-g",
-    "--graph",
-    action="store_true",
-    help="Form homography graph to stitch images in optimal order. Slow, but effective for out-of-order image sets.",
-)
-args = ap.parse_args()
-input_dir = args.dir
-save_output = args.output
-output_dir = f"{parent_dir}/Output"
-graph_mode = args.graph
-
 
 def cylindrical_warp(flat_image, cylinder_radius):
     """
@@ -194,7 +165,10 @@ def _draw_matches(image1, image2, matches, corners, window_name="Matches"):
     kp2 = _corners_to_keypoints(corners[1])
     dmatches = _matches_to_dmatches(matches)
     img_matches = cv2.drawMatches(image1, kp1, image2, kp2, dmatches, None)
-    cv2.imshow(window_name, img_matches)
+    try:
+        cv2.imshow(window_name, img_matches)
+    except cv2.error:
+        pass
     return img_matches
 
 
@@ -204,6 +178,8 @@ def visualize_matches(
     matches,
     corners,
     window_name,
+    save_output,
+    output_dir,
     filename,
 ):
     img_matches = _draw_matches(
@@ -349,7 +325,14 @@ def _get_inlier_corners_and_remapped_matches(valid_corners_pair, inlier_matches)
     return inlier_corners, remapped_inlier_matches
 
 
-def refine_matches(images, pairwise_matches, valid_corners, graph_mode):
+def refine_matches(
+    images,
+    pairwise_matches,
+    valid_corners,
+    graph_mode,
+    save_output=None,
+    output_dir=None,
+):
     """
     use RANSAC to refine feature matches and estimate pairwise homographies
     """
@@ -388,6 +371,8 @@ def refine_matches(images, pairwise_matches, valid_corners, graph_mode):
                 remapped_inlier_matches,
                 (inlier_corners[0], inlier_corners[1]),
                 window_name=f"Inlier Matches {i}->{j}",
+                save_output=save_output,
+                output_dir=output_dir,
                 filename=f"inlier_matching_{i}_{j}.png",
             )
     else:
@@ -425,6 +410,8 @@ def refine_matches(images, pairwise_matches, valid_corners, graph_mode):
                 remapped_inlier_matches,
                 (inlier_corners[0], inlier_corners[1]),
                 window_name=f"Inlier Matches {i}->{i+1}",
+                save_output=save_output,
+                output_dir=output_dir,
                 filename=f"inlier_matching_{i}_{i+1}.png",
             )
 
@@ -434,7 +421,7 @@ def refine_matches(images, pairwise_matches, valid_corners, graph_mode):
         return pairwise_H, None
 
 
-def walk_graph(graph, start):
+def _walk_graph(graph, start):
     visited = set()
     order = []
 
@@ -457,7 +444,49 @@ def walk_graph(graph, start):
     return order
 
 
-def get_panorama_dimensions(images, H_list):
+def build_and_walk_graph(images, pairwise_H, pairwise_inliers):
+    # build graph from pairwise inliers
+    graph = {i: [] for i in range(len(images))}
+    for (i, j), k in pairwise_inliers.items():
+        graph[i].append((j, k))
+        graph[j].append((i, k))
+    endpoints = [i for i in graph if len(graph[i]) == 1]
+
+    # if no endpoints (e.g., graph is a cycle or disconnected),
+    # fall back to a reasonable starting node so graph mode still works
+    if not endpoints:
+        print(
+            "Warning: no endpoints found in homography graph; "
+            "graph may be cyclic or disconnected. Choosing a start node heuristically."
+        )
+        # nodes that have at least one edge
+        non_isolated = [i for i in graph if len(graph[i]) > 0]
+        # if even this is empty, there are no valid homography connections at all
+        if not non_isolated:
+            print(
+                "No valid homography connections in graph mode; "
+                "cannot form a panorama."
+            )
+            return
+        # pick node with highest degree as a reasonable start
+        endpoints = [max(non_isolated, key=lambda i: len(graph[i]))]
+
+    # walk the graph to determine stitching order
+    start = endpoints[0]
+    order = _walk_graph(graph, start)
+    print("Stitching order:", order)
+    images = [images[i] for i in order]
+    ordered_pairwise_H = []
+
+    for a, b in zip(order[:-1], order[1:]):
+        if (a, b) in pairwise_H:
+            ordered_pairwise_H.append(pairwise_H[(a, b)])
+        elif (b, a) in pairwise_H:
+            ordered_pairwise_H.append(np.linalg.inv(pairwise_H[(b, a)]))
+    return ordered_pairwise_H
+
+
+def _get_panorama_dimensions(images, H_list):
     # transform each image's corners to panorama frame
     all_corners = []
     for img, H in zip(images, H_list):
@@ -489,7 +518,7 @@ def _create_mask(img):
     return weights
 
 
-def blend_images(img1, img2):
+def _blend_images(img1, img2):
     # create weight masks
     w1 = _create_mask(img1)
     w2 = _create_mask(img2)
@@ -504,7 +533,102 @@ def blend_images(img1, img2):
     return blended.astype(np.uint8), (sum_weights * 255).astype(np.uint8)
 
 
+def form_panorama(images, pairwise_H, graph_mode, save_output=None, output_dir=None):
+    if not graph_mode:
+        # build a valid contiguous chain from the start
+        valid_indices = [0]
+        for idx, H in enumerate(pairwise_H):
+            if H is None:
+                break  # stop the chain here
+            valid_indices.append(idx + 1)
+
+        # if nothing usable, bail out
+        if len(valid_indices) < 2:
+            print(
+                "Not enough valid sequential homographies to form a panorama.\nTry running with -g to sort out of order images."
+            )
+            return
+
+        # restrict images and homographies to this chain
+        images = [images[i] for i in valid_indices]
+        pairwise_H = [H for H in pairwise_H[: len(valid_indices) - 1]]
+
+    # use middle image as reference
+    n = len(images)
+    ref_idx = n // 2
+    # compute homographies to reference frame
+    H_to_ref = [np.eye(3, dtype=np.float32) for _ in range(n)]
+    # left of reference (i < ref_idx)
+    for j in range(ref_idx - 1, -1, -1):
+        H_to_ref[j] = H_to_ref[j + 1] @ pairwise_H[j]
+    # right of reference (i > ref_idx); use inverse H
+    for j in range(ref_idx + 1, n):
+        H_to_ref[j] = H_to_ref[j - 1] @ np.linalg.inv(pairwise_H[j - 1])
+
+    # determine panorama size and translations
+    pano_size, H_translation = _get_panorama_dimensions(images, H_to_ref)
+
+    # transform reference image to panorama frame using H_translation
+    panorama = cv2.warpPerspective(
+        images[ref_idx],
+        H_translation @ H_to_ref[ref_idx],
+        pano_size,
+        flags=cv2.INTER_LANCZOS4,
+    )
+
+    # transform and blend remaining images into the panorama
+    for i in range(n):
+        if i == ref_idx:
+            continue
+        warped_i = cv2.warpPerspective(
+            images[i], H_translation @ H_to_ref[i], pano_size, flags=cv2.INTER_LANCZOS4
+        )
+        panorama, vis_weights = _blend_images(panorama, warped_i)
+        if save_output and i == n - 1:
+            cv2.imwrite(
+                os.path.join(output_dir, f"weightmask.png"),
+                vis_weights,
+            )
+
+    try:
+        cv2.imshow("Panorama", panorama)
+    except cv2.error:
+        pass  # for headless
+    if save_output:
+        cv2.imwrite(os.path.join(output_dir, "mypano.png"), panorama)
+    return panorama
+
+
 def main():
+    # get path to current directory
+    curr_dir = os.path.dirname(os.path.abspath(__file__))
+    parent_dir = os.path.dirname(curr_dir)
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument(
+        "--dir",
+        type=str,
+        default=f"{parent_dir}/Data/Train/Set1",
+        help="Directory of input images",
+    )
+    ap.add_argument(
+        "-o",
+        "--output",
+        action="store_true",
+        help="Whether to save output images",
+    )
+    ap.add_argument(
+        "-g",
+        "--graph",
+        action="store_true",
+        help="Form homography graph to stitch images in optimal order. Slow, but effective for out-of-order image sets.",
+    )
+    args = ap.parse_args()
+    input_dir = args.dir
+    save_output = args.output
+    output_dir = f"{parent_dir}/Output"
+    graph_mode = args.graph
+
     """
     Read a set of images for Panorama stitching
     """
@@ -593,6 +717,8 @@ def main():
                     matches_ij,
                     (valid_corners[i], valid_corners[j]),
                     window_name=f"Feature Matches {i}->{j}",
+                    save_output=save_output,
+                    output_dir=output_dir,
                     filename=f"matching_{i}_{j}.png",
                 )
     else:
@@ -605,6 +731,8 @@ def main():
                 match_indices_i,
                 (valid_corners[i], valid_corners[i + 1]),
                 window_name=f"Feature Matches {i}->{i+1}",
+                save_output=save_output,
+                output_dir=output_dir,
                 filename=f"matching_{i}_{i+1}.png",
             )
 
@@ -613,115 +741,23 @@ def main():
     """
     # list of homographies between consecutive images
     pairwise_H, pairwise_inliers = refine_matches(
-        images, pairwise_matches, valid_corners, graph_mode
+        images, pairwise_matches, valid_corners, graph_mode, save_output, output_dir
     )
-
-    if graph_mode:
-        # build graph from pairwise inliers
-        graph = {i: [] for i in range(len(images))}
-        for (i, j), k in pairwise_inliers.items():
-            graph[i].append((j, k))
-            graph[j].append((i, k))
-        endpoints = [i for i in graph if len(graph[i]) == 1]
-
-        # if no endpoints (e.g., graph is a cycle or disconnected),
-        # fall back to a reasonable starting node so graph mode still works
-        if not endpoints:
-            print(
-                "Warning: no endpoints found in homography graph; "
-                "graph may be cyclic or disconnected. Choosing a start node heuristically."
-            )
-            # nodes that have at least one edge
-            non_isolated = [i for i in graph if len(graph[i]) > 0]
-            # if even this is empty, there are no valid homography connections at all
-            if not non_isolated:
-                print(
-                    "No valid homography connections in graph mode; "
-                    "cannot form a panorama."
-                )
-                return
-            # pick node with highest degree as a reasonable start
-            endpoints = [max(non_isolated, key=lambda i: len(graph[i]))]
 
     """
     Image Warping + Blending
     Save Panorama output as mypano.png
     """
     if graph_mode:
-        # walk the graph to determine stitching order
-        start = endpoints[0]
-        order = walk_graph(graph, start)
-        print("Stitching order:", order)
-        images = [images[i] for i in order]
-        ordered_pairwise_H = []
+        pairwise_H = build_and_walk_graph(images, pairwise_H, pairwise_inliers)
 
-        for a, b in zip(order[:-1], order[1:]):
-            if (a, b) in pairwise_H:
-                ordered_pairwise_H.append(pairwise_H[(a, b)])
-            elif (b, a) in pairwise_H:
-                ordered_pairwise_H.append(np.linalg.inv(pairwise_H[(b, a)]))
-        pairwise_H = ordered_pairwise_H
-    else:
-        # build a valid contiguous chain from the start
-        valid_indices = [0]
-        for idx, H in enumerate(pairwise_H):
-            if H is None:
-                break  # stop the chain here
-            valid_indices.append(idx + 1)
+    form_panorama(images, pairwise_H, graph_mode, save_output, output_dir)
 
-        # if nothing usable, bail out
-        if len(valid_indices) < 2:
-            print(
-                "Not enough valid sequential homographies to form a panorama.\nTry running with -g to sort out of order images."
-            )
-            return
-
-        # restrict images and homographies to this chain
-        images = [images[i] for i in valid_indices]
-        pairwise_H = [H for H in pairwise_H[: len(valid_indices) - 1]]
-
-    # use middle image as reference
-    n = len(images)
-    ref_idx = n // 2
-    # compute homographies to reference frame
-    H_to_ref = [np.eye(3, dtype=np.float32) for _ in range(n)]
-    # left of reference (i < ref_idx)
-    for j in range(ref_idx - 1, -1, -1):
-        H_to_ref[j] = H_to_ref[j + 1] @ pairwise_H[j]
-    # right of reference (i > ref_idx); use inverse H
-    for j in range(ref_idx + 1, n):
-        H_to_ref[j] = H_to_ref[j - 1] @ np.linalg.inv(pairwise_H[j - 1])
-
-    # determine panorama size and translations
-    pano_size, H_translation = get_panorama_dimensions(images, H_to_ref)
-
-    # transform reference image to panorama frame using H_translation
-    panorama = cv2.warpPerspective(
-        images[ref_idx],
-        H_translation @ H_to_ref[ref_idx],
-        pano_size,
-        flags=cv2.INTER_LANCZOS4,
-    )
-
-    # transform and blend remaining images into the panorama
-    for i in range(n):
-        if i == ref_idx:
-            continue
-        warped_i = cv2.warpPerspective(
-            images[i], H_translation @ H_to_ref[i], pano_size, flags=cv2.INTER_LANCZOS4
-        )
-        panorama, vis_weights = blend_images(panorama, warped_i)
-        if save_output and i == n - 1:
-            cv2.imwrite(
-                os.path.join(output_dir, f"weightmask.png"),
-                vis_weights,
-            )
-
-    cv2.imshow("Panorama", panorama)
-    if save_output:
-        cv2.imwrite(os.path.join(output_dir, "mypano.png"), panorama)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    try:
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+    except cv2.error:
+        pass
     return
 
 

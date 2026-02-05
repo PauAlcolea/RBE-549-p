@@ -1,212 +1,248 @@
 #!/usr/bin/env python
-"""
-RBE/CS Fall 2022: Classical and Deep Learning Approaches for
-Geometric Computer Vision
-Project 1: MyAutoPano: Phase 2 Starter Code
 
-
-Author(s):
-Lening Li (lli4@wpi.edu)
-Teaching Assistant in Robotics Engineering,
-Worcester Polytechnic Institute
-"""
-
-
-# Dependencies:
-# opencv, do (pip install opencv-python)
-# skimage, do (apt install python-skimage)
-
-import cv2
-import os
 import sys
-import glob
-import random
-from skimage import data, exposure, img_as_float
-import matplotlib.pyplot as plt
-import numpy as np
-import time
-from torchvision.transforms import ToTensor
-import argparse
-from Network.Network import HomographyModel
-import shutil
-import string
-import math as m
-from sklearn.metrics import confusion_matrix
-from tqdm import tqdm
-import torch
 
-
-# Don't generate pyc codes
 sys.dont_write_bytecode = True
 
+import os
+import torch
+import matplotlib.pyplot as plt
+import numpy as np
+import cv2
+from argparse import ArgumentParser
 
-def SetupAll():
-    """
-    Outputs:
-    ImageSize - Size of the Image
-    """
-    # Image Input Shape
-    ImageSize = [32, 32, 3]
-
-    return ImageSize
-
-
-def StandardizeInputs(Img):
-    ##########################################################################
-    # Add any standardization or cropping/resizing if used in Training here!
-    ##########################################################################
-    return Img
-
-
-def ReadImages(Img):
-    """
-    Outputs:
-    I1Combined - I1 image after any standardization and/or cropping/resizing to ImageSize
-    I1 - Original I1 image for visualization purposes only
-    """
-    I1 = Img
-
-    if I1 is None:
-        # OpenCV returns empty list if image is not read!
-        print("ERROR: Image I1 cannot be read")
-        sys.exit()
-
-    I1S = StandardizeInputs(np.float32(I1))
-
-    I1Combined = np.expand_dims(I1S, axis=0)
-
-    return I1Combined, I1
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+from Phase1.Code.Wrapper import (
+    locate_corners,
+    ANMS,
+    encode_feature_points,
+    match_features,
+    _normalize_points,
+    _form_A_matrix,
+    form_panorama,
+)
+from Network.Network import SupervisedHomographyModel
+from Dataset import NORMALIZING_FACTOR
 
 
-def TestOperation(ImageSize, ModelPath, TestSet, LabelsPathPred):
-    """
-    Inputs:
-    ImageSize is the size of the image
-    ModelPath - Path to load trained model from
-    TestSet - The test dataset
-    LabelsPathPred - Path to save predictions
-    Outputs:
-    Predictions written to /content/data/TxtFiles/PredOut.txt
-    """
-    # Predict output with forward pass, MiniBatchSize for Test is 1
-    model = CIFAR10Model(InputSize=3 * 32 * 32, OutputSize=10)
+def load_images(dir):
+    images = []
+    for filename in sorted(os.listdir(dir)):
+        if filename.endswith(".jpg") or filename.endswith(".png"):
+            img = cv2.imread(os.path.join(dir, filename))
+            if img is not None:
+                images.append(img)
+    return images
 
-    CheckPoint = torch.load(ModelPath)
-    model.load_state_dict(CheckPoint["model_state_dict"])
-    print(
-        "Number of parameters in this model are %d " % len(model.state_dict().items())
+
+def get_matching_features(images):
+    raw_corners = [locate_corners(image) for image in images]
+    anms_corners = [ANMS(corners) for corners in raw_corners]
+    fds, kps = zip(
+        *[
+            encode_feature_points(image, corners)
+            for image, corners in zip(images, anms_corners)
+        ]
     )
+    pairwise_matches = []
+    for i in range(len(images) - 1):
+        # match_features returns index pairs (idx_in_img_i, idx_in_img_i+1)
+        idx_matches = match_features(fds[i], fds[i + 1])
 
-    OutSaveT = open(LabelsPathPred, "w")
+        # convert index pairs to coordinate pairs ((x1, y1), (x2, y2))
+        kp1 = kps[i]
+        kp2 = kps[i + 1]
+        coord_matches = [(kp1[i1], kp2[i2]) for i1, i2 in idx_matches]
 
-    for count in tqdm(range(len(TestSet))):
-        Img, Label = TestSet[count]
-        Img, ImgOrg = ReadImages(Img)
-        PredT = torch.argmax(model(Img)).item()
-
-        OutSaveT.write(str(PredT) + "\n")
-    OutSaveT.close()
+        pairwise_matches.append(coord_matches)
+    return pairwise_matches
 
 
-def Accuracy(Pred, GT):
+def extract_patches(
+    image1, image2, matches, patch_size=128, max_patches=12, min_dist=None
+):
     """
-    Inputs:
-    Pred are the predicted labels
-    GT are the ground truth labels
-    Outputs:
-    Accuracy in percentage
-    """
-    return np.sum(np.array(Pred) == np.array(GT)) * 100.0 / len(Pred)
-
-
-def ReadLabels(LabelsPathTest, LabelsPathPred):
-    if not (os.path.isfile(LabelsPathTest)):
-        print("ERROR: Test Labels do not exist in " + LabelsPathTest)
-        sys.exit()
-    else:
-        LabelTest = open(LabelsPathTest, "r")
-        LabelTest = LabelTest.read()
-        LabelTest = map(float, LabelTest.split())
-
-    if not (os.path.isfile(LabelsPathPred)):
-        print("ERROR: Pred Labels do not exist in " + LabelsPathPred)
-        sys.exit()
-    else:
-        LabelPred = open(LabelsPathPred, "r")
-        LabelPred = LabelPred.read()
-        LabelPred = map(float, LabelPred.split())
-
-    return LabelTest, LabelPred
-
-
-def ConfusionMatrix(LabelsTrue, LabelsPred):
-    """
-    LabelsTrue - True labels
-    LabelsPred - Predicted labels
+    select spatially spread patches around matched features
     """
 
-    # Get the confusion matrix using sklearn.
-    LabelsTrue, LabelsPred = list(LabelsTrue), list(LabelsPred)
-    cm = confusion_matrix(
-        y_true=LabelsTrue, y_pred=LabelsPred  # True class for test-set.
-    )  # Predicted class.
+    if len(matches) == 0:
+        return [], [], []
 
-    # Print the confusion matrix as text.
-    for i in range(10):
-        print(str(cm[i, :]) + " ({0})".format(i))
+    half_size = patch_size // 2
+    if min_dist is None:
+        min_dist = half_size
 
-    # Print the class-numbers for easy reference.
-    class_numbers = [" ({0})".format(i) for i in range(10)]
-    print("".join(class_numbers))
+    # list candidate centers where a full patch fits in both images
+    candidates = []
+    h1, w1 = image1.shape[:2]
+    h2, w2 = image2.shape[:2]
+    for (x1, y1), (x2, y2) in matches:
+        x1_i, y1_i = int(x1), int(y1)
+        x2_i, y2_i = int(x2), int(y2)
 
-    print("Accuracy: " + str(Accuracy(LabelsPred, LabelsTrue)), "%")
+        if (
+            x1_i - half_size >= 0
+            and y1_i - half_size >= 0
+            and x1_i + half_size <= w1
+            and y1_i + half_size <= h1
+            and x2_i - half_size >= 0
+            and y2_i - half_size >= 0
+            and x2_i + half_size <= w2
+            and y2_i + half_size <= h2
+        ):
+            candidates.append((x1_i, y1_i, x2_i, y2_i))
+
+    if not candidates:
+        return [], [], []
+
+    # select spatially spread candidates
+    selected = []
+    for cand in candidates:
+        x1_i, y1_i, _, _ = cand
+        if not selected:
+            selected.append(cand)
+        else:
+            # compute distance to previously selected centers; keep if far enough away
+            dists = [np.hypot(x1_i - sx1, y1_i - sy1) for (sx1, sy1, _, _) in selected]
+            if min(dists) >= min_dist:
+                selected.append(cand)
+        if len(selected) >= max_patches:
+            break
+
+    # extract patches around selected centers
+    patches1 = []
+    patches2 = []
+    patches1_coords = []
+    for x1_i, y1_i, x2_i, y2_i in selected:
+        p1_x1, p1_y1 = x1_i - half_size, y1_i - half_size
+        p1_x2, p1_y2 = x1_i + half_size, y1_i + half_size
+        patch1 = image1[p1_y1:p1_y2, p1_x1:p1_x2]
+        patch2 = image2[
+            y2_i - half_size : y2_i + half_size,
+            x2_i - half_size : x2_i + half_size,
+        ]
+        patches1.append(patch1)
+        patches2.append(patch2)
+        patches1_coords.append(
+            ((p1_x1, p1_y1), (p1_x2, p1_y1), (p1_x2, p1_y2), (p1_x1, p1_y2))
+        )
+
+    return patches1, patches2, patches1_coords
+
+
+def patches_to_tensor(patches):
+    """
+    patches: list of (H, W, 3) numpy arrays
+    returns: torch tensor (B, 1, H, W)
+    """
+    tensors = []
+    for p in patches:
+        p = cv2.cvtColor(p, cv2.COLOR_BGR2GRAY)
+        p = torch.from_numpy(p).unsqueeze(0).float() / 255.0
+        tensors.append(p)
+    return torch.stack(tensors)
+
+
+def _compute_homography(pairs):
+    pairs = np.asarray(pairs, dtype=np.float32)
+
+    if pairs.ndim == 4 and pairs.shape[2:] == (2, 2):
+        pairs = pairs.reshape(-1, 2, 2)
+
+    # normalize points
+    points1_norm, T1 = _normalize_points(pairs[:, 0])
+    points2_norm, T2 = _normalize_points(pairs[:, 1])
+    norm_pairs = np.stack([points1_norm, points2_norm], axis=1)
+
+    # form A matrix and solve A*h=0 using SVD
+    A = _form_A_matrix(norm_pairs)
+    _, _, Vt = np.linalg.svd(A)
+    h = Vt[-1, :]  # last row of Vt is null space of A, i.e. solution h
+    H = h.reshape((3, 3)) / np.max(np.abs(h))
+    # denormalize H
+    H = np.linalg.inv(T2) @ H @ T1
+    return H
 
 
 def main():
-    """
-    Inputs:
-    None
-    Outputs:
-    Prints out the confusion matrix with accuracy
-    """
-
-    # Parse Command Line arguments
-    Parser = argparse.ArgumentParser()
-    Parser.add_argument(
-        "--ModelPath",
-        dest="ModelPath",
-        default="/home/chahatdeep/Downloads/Checkpoints/144model.ckpt",
-        help="Path to load latest model from, Default:ModelPath",
+    device = (
+        "cuda"
+        if torch.cuda.is_available()
+        else "mps" if torch.backends.mps.is_available() else "cpu"
     )
-    Parser.add_argument(
-        "--BasePath",
-        dest="BasePath",
-        default="/home/chahatdeep/Downloads/aa/CMSC733HW0/CIFAR10/Test/",
-        help="Path to load images from, Default:BasePath",
+    parser = ArgumentParser(
+        description="Test homography model by stitching images in Phase#/Data/DIR"
     )
-    Parser.add_argument(
-        "--LabelsPath",
-        dest="LabelsPath",
-        default="./TxtFiles/LabelsTest.txt",
-        help="Path of labels file, Default:./TxtFiles/LabelsTest.txt",
+    parser.add_argument(
+        "-p",
+        "--phase",
+        type=int,
+        default=1,
+        choices=[1, 2],
+        help="Read Phase 1 or Phase 2 Data/ directory",
     )
-    Args = Parser.parse_args()
-    ModelPath = Args.ModelPath
-    BasePath = Args.BasePath
-    LabelsPath = Args.LabelsPath
+    parser.add_argument(
+        "--dir",
+        type=str,
+        default="Train/Set1",
+        help="directory containing images to stitch; relative to Phase#/Data, i.e. 'Train/Set1' or 'Test/unity_hall'",
+    )
+    args = parser.parse_args()
+    data_top_dir = (
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        + f"/Phase{args.phase}/Data/"
+    )
+    test_data_dir = os.path.join(data_top_dir, args.dir)
+    if not os.path.isdir(test_data_dir):
+        print(f"Error: directory {test_data_dir} does not exist.")
+        return
 
-    # Setup all needed parameters including file reading
-    ImageSize, DataPath = SetupAll(BasePath)
+    # initialize model
+    model_path = (
+        os.path.dirname(os.path.abspath(__file__)) + "/checkpoints/best_model.pt"
+    )
+    model = SupervisedHomographyModel()
+    checkpoint = torch.load(model_path, map_location=device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    model.to(device)
+    model.eval()
 
-    # Define PlaceHolder variables for Input and Predicted output
-    ImgPH = tf.placeholder("float", shape=(1, ImageSize[0], ImageSize[1], 3))
-    LabelsPathPred = "./TxtFiles/PredOut.txt"  # Path to save predicted labels
+    # extract patches from images via feature matching
+    images = load_images(test_data_dir)
+    pairwise_matches = get_matching_features(images)
+    pairwise_H = []
+    for i in range(len(images) - 1):
+        # extract patches around matched features
+        patches_a, patches_b, patch_a_coords = extract_patches(
+            images[i], images[i + 1], pairwise_matches[i]
+        )
 
-    TestOperation(ImgPH, ImageSize, ModelPath, DataPath, LabelsPathPred)
+        # predict deltas with trained model
+        with torch.no_grad():
+            delta_preds = (
+                model(
+                    patches_to_tensor(patches_a).to(device),
+                    patches_to_tensor(patches_b).to(device),
+                )
+                .cpu()
+                .numpy()
+            )
 
-    # Plot Confusion Matrix
-    LabelsTrue, LabelsPred = ReadLabels(LabelsPath, LabelsPathPred)
-    ConfusionMatrix(LabelsTrue, LabelsPred)
+        delta_preds = delta_preds * NORMALIZING_FACTOR
+
+        patch_a_coords_np = np.array(patch_a_coords, dtype=np.float32)
+        deltas = delta_preds.reshape(-1, 4, 2)
+        patch_b_coords_est = patch_a_coords_np + deltas
+
+        # build all corner correspondence pairs across all patches
+        src_pts = patch_a_coords_np.reshape(-1, 2)
+        dst_pts = patch_b_coords_est.reshape(-1, 2)
+        corner_pairs = np.stack([src_pts, dst_pts], axis=1)
+
+        H_i = _compute_homography(corner_pairs)
+        pairwise_H.append(H_i)
+    panorama = form_panorama(images, pairwise_H=pairwise_H, graph_mode=False)
+    cv2.imwrite("mypano.png", panorama)
 
 
 if __name__ == "__main__":
