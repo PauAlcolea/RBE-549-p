@@ -3,6 +3,7 @@ import random
 import numpy as np
 import torch
 
+NORMALIZING_FACTOR = 64 # max shift + max translation is 64 pixels
 
 class HomographyDataset:
     """
@@ -53,7 +54,7 @@ class HomographyDataset:
         )
 
         # normalize labels
-        shifts = shifts / 32 # max shift is 32 pixels
+        shifts = shifts / NORMALIZING_FACTOR
         return patch_a, patch_b, shifts
 
     def _load_sample(self, fname, shifts):

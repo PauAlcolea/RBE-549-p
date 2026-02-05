@@ -22,6 +22,7 @@ from Phase1.Code.Wrapper import (
     form_panorama,
 )
 from Network.Network import SupervisedHomographyModel
+from Dataset import NORMALIZING_FACTOR
 
 
 def load_images(dir):
@@ -212,7 +213,7 @@ def main():
                 .numpy()
             )
 
-        delta_preds = delta_preds * 32  # scale up to original pixel coordinates
+        delta_preds = delta_preds * NORMALIZING_FACTOR
 
         patch_a_coords_np = np.array(patch_a_coords, dtype=np.float32)
         deltas = delta_preds.reshape(-1, 4, 2)
