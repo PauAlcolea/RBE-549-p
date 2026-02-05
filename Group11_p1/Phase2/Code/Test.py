@@ -27,7 +27,7 @@ from Dataset import NORMALIZING_FACTOR
 
 def load_images(dir):
     images = []
-    for filename in os.listdir(dir):
+    for filename in sorted(os.listdir(dir)):
         if filename.endswith(".jpg") or filename.endswith(".png"):
             img = cv2.imread(os.path.join(dir, filename))
             if img is not None:
