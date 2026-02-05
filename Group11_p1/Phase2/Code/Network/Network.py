@@ -49,6 +49,7 @@ class SupervisedHomographyModel(pl.LightningModule):
         return {"avg_val_loss": avg_loss, "log": logs}
 
 
+# resnet-like architecture
 class SupervisedNet(nn.Module):
     def __init__(self, OutputSize=8):
         """
@@ -57,67 +58,45 @@ class SupervisedNet(nn.Module):
         """
         super().__init__()
         self.conv1 = nn.Sequential(
-            nn.Conv2d(in_channels=2, out_channels=64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(num_features=64),
-            nn.ReLU(),
+            nn.Conv2d(in_channels=2, out_channels=32, kernel_size=7, stride=2, padding=3, bias=False),
+            nn.BatchNorm2d(num_features=32),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
         )
-
-        self.conv2 = nn.Sequential(
-            nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(num_features=64),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2),
+        self.stage1 = nn.Sequential(
+            self.ResidualBlock(in_channels=32, out_channels=64, stride=1),
+            self.ResidualBlock(in_channels=64, out_channels=64, stride=1),
         )
-        self.conv3 = nn.Sequential(
-            nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(num_features=64),
-            nn.ReLU(),
+        self.stage2 = nn.Sequential(
+            self.ResidualBlock(in_channels=64, out_channels=128, stride=2),
+            self.ResidualBlock(in_channels=128, out_channels=128, stride=1),
         )
-        self.conv4 = nn.Sequential(
-            nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(num_features=64),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2),
+        self.stage3 = nn.Sequential(
+            self.ResidualBlock(in_channels=128, out_channels=128, stride=1),
+            self.ResidualBlock(in_channels=128, out_channels=128, stride=1),
         )
-        self.conv5 = nn.Sequential(
-            nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(num_features=128),
-            nn.ReLU(),
+        self.head = nn.Sequential(
+            nn.AdaptiveAvgPool2d((1, 1)),
+            nn.Flatten(),
+            nn.Linear(in_features=128, out_features=256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=0.4),
+            nn.Linear(in_features=256, out_features=OutputSize),
         )
-        self.conv6 = nn.Sequential(
-            nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(num_features=128),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2),
-        )
-        self.conv7 = nn.Sequential(
-            nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(num_features=128),
-            nn.ReLU(),
-        )
-        self.conv8 = nn.Sequential(
-            nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(num_features=128),
-            nn.ReLU(),
-        )
-        # self.fc = nn.Sequential(
-        #     nn.Linear(in_features=128 * 16 * 16, out_features=1024),
-        #     nn.Dropout(p=0.5),
-        #     nn.Linear(in_features=1024, out_features=OutputSize),
-        # )
-        self.fc = nn.Linear(in_features=128, out_features=OutputSize)
         self.features = nn.Sequential(
             self.conv1,
-            self.conv2,
-            self.conv3,
-            self.conv4,
-            self.conv5,
-            self.conv6,
-            self.conv7,
-            self.conv8,
+            self.stage1,
+            self.stage2,
+            self.stage3,
+            self.head,
         )
-        nn.init.zeros_(self.fc.weight)
-        nn.init.zeros_(self.fc.bias)
+
+        # init weights
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight)
+                if hasattr(m, "bias") and m.bias is not None:
+                    nn.init.zeros_(m.bias)
 
     def forward(self, xa, xb):
         """
@@ -128,11 +107,38 @@ class SupervisedNet(nn.Module):
         out - output of the network
         """
         x = torch.cat([xa, xb], dim=1)
-        x = self.features(x)
-        # x = x.view(x.size(0), -1)
-        x = torch.mean(x, dim=[2, 3])  # global average pooling
-        out = self.fc(x)
-        return out
+        return self.features(x)
+
+    class ResidualBlock(nn.Module):
+        """two conv layers with a skip connection"""
+        def __init__(self, in_channels, out_channels, stride=1):
+            super().__init__()
+            self.conv1 = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False),
+                nn.BatchNorm2d(num_features=out_channels),
+                nn.ReLU(inplace=True),
+            )
+            self.conv2 = nn.Sequential(
+                nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
+                nn.BatchNorm2d(num_features=out_channels),
+            )
+            self.downsample = (
+                nn.Sequential(
+                    nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride, bias=False),
+                    nn.BatchNorm2d(num_features=out_channels),
+                )
+                if (stride != 1 or in_channels != out_channels)
+                else None
+            )
+
+        def forward(self, x):
+            residual = x
+            out = self.conv2(self.conv1(x))
+            if self.downsample:
+                residual = self.downsample(x)
+            out += residual
+            out = F.relu(out, inplace=True)
+            return out
 
 
 class UnsupervisedHomographyModel(pl.LightningModule):
