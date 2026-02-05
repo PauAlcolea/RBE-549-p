@@ -18,9 +18,9 @@ def train(
     train_label_file,
     val_data_dir,
     val_label_file,
-    num_epochs=50,
-    batch_size=64,
-    lr=0.005,
+    num_epochs=100,
+    batch_size=128,
+    lr=0.003,
     log_dir="logs",
     device="cuda",
     patience=10,
@@ -34,9 +34,12 @@ def train(
 
     # model
     model = SupervisedHomographyModel().to(device)
-    optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9)
-    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=15, gamma=0.1)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
+    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min", factor=0.5, patience=3
+    )
     loss_fn = torch.nn.SmoothL1Loss()
+    corner_loss_weight = 0.1
 
     # clear contents of log_dir
     if os.path.exists(log_dir):
@@ -70,6 +73,12 @@ def train(
             pred_delta = model(patch_a, patch_b)
             loss = loss_fn(pred_delta, gt_delta)
 
+            # incorporate corner error into loss
+            pred_delta = pred_delta * NORMALIZING_FACTOR
+            gt_delta = gt_delta * NORMALIZING_FACTOR
+            loss_corner = (pred_delta - gt_delta).view(-1, 4, 2).norm(dim=2).mean()
+            loss += corner_loss_weight * loss_corner
+
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -79,7 +88,6 @@ def train(
             global_step += 1
 
         train_loss /= num_train_iters
-        lr_scheduler.step()
 
         #### validation ####
         model.eval()
@@ -107,13 +115,19 @@ def train(
                 gt_delta = gt_delta * NORMALIZING_FACTOR
 
                 # EPE is L2 err between predicted and ground truth corners
-                corner_err = torch.norm(pred_delta - gt_delta, p=2, dim=1).mean()
+                corner_err = (1/4) * torch.norm(
+                    (pred_delta - gt_delta).view(-1, 4, 2), dim=2
+                ).sum(dim=1).mean()
                 val_corner_err += corner_err.item()
 
+                # incorporate corner error into loss
+                loss_corner = (pred_delta - gt_delta).view(-1, 4, 2).norm(dim=2).mean()
+                loss += corner_loss_weight * loss_corner
                 val_loss += loss.item()
 
         val_loss /= num_val_iters
         val_corner_err /= num_val_iters
+        lr_scheduler.step(val_corner_err)
 
         #### logging ####
         writer.add_scalars(
@@ -124,7 +138,7 @@ def train(
         writer.add_scalar("val/corner_err", val_corner_err, epoch)
 
         print(
-            f"Epoch {epoch:03d} | " f"train: {train_loss:.4f} | " f"val: {val_loss:.4f}"
+            f"Epoch {epoch:03d} | " f"train: {train_loss:.4f} | " f"val: {val_loss:.4f} | " f"corner_err: {val_corner_err:.4f}"
         )
 
         if epoch % 5 == 0:
