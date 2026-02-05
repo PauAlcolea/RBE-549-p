@@ -58,7 +58,14 @@ class SupervisedNet(nn.Module):
         """
         super().__init__()
         self.conv1 = nn.Sequential(
-            nn.Conv2d(in_channels=2, out_channels=32, kernel_size=7, stride=2, padding=3, bias=False),
+            nn.Conv2d(
+                in_channels=2,
+                out_channels=32,
+                kernel_size=7,
+                stride=2,
+                padding=3,
+                bias=False,
+            ),
             nn.BatchNorm2d(num_features=32),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
@@ -111,20 +118,36 @@ class SupervisedNet(nn.Module):
 
     class ResidualBlock(nn.Module):
         """two conv layers with a skip connection"""
+
         def __init__(self, in_channels, out_channels, stride=1):
             super().__init__()
             self.conv1 = nn.Sequential(
-                nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False),
+                nn.Conv2d(
+                    in_channels,
+                    out_channels,
+                    kernel_size=3,
+                    stride=stride,
+                    padding=1,
+                    bias=False,
+                ),
                 nn.BatchNorm2d(num_features=out_channels),
                 nn.ReLU(inplace=True),
             )
             self.conv2 = nn.Sequential(
-                nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
+                nn.Conv2d(
+                    out_channels, out_channels, kernel_size=3, padding=1, bias=False
+                ),
                 nn.BatchNorm2d(num_features=out_channels),
             )
             self.downsample = (
                 nn.Sequential(
-                    nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride, bias=False),
+                    nn.Conv2d(
+                        in_channels,
+                        out_channels,
+                        kernel_size=1,
+                        stride=stride,
+                        bias=False,
+                    ),
                     nn.BatchNorm2d(num_features=out_channels),
                 )
                 if (stride != 1 or in_channels != out_channels)

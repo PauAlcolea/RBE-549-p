@@ -58,7 +58,9 @@ def get_matching_features(images):
     return pairwise_matches
 
 
-def extract_patches(image1, image2, matches, patch_size=128, max_patches=12, min_dist=None):
+def extract_patches(
+    image1, image2, matches, patch_size=128, max_patches=12, min_dist=None
+):
     """
     select spatially spread patches around matched features
     """

@@ -3,7 +3,8 @@ import random
 import numpy as np
 import torch
 
-NORMALIZING_FACTOR = 64 # max shift + max translation is 64 pixels
+NORMALIZING_FACTOR = 64  # max shift + max translation is 64 pixels
+
 
 class HomographyDataset:
     """

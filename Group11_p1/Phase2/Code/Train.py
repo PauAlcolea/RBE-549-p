@@ -115,7 +115,7 @@ def train(
                 gt_delta = gt_delta * NORMALIZING_FACTOR
 
                 # EPE is L2 err between predicted and ground truth corners
-                corner_err = (1/4) * torch.norm(
+                corner_err = (1 / 4) * torch.norm(
                     (pred_delta - gt_delta).view(-1, 4, 2), dim=2
                 ).sum(dim=1).mean()
                 val_corner_err += corner_err.item()
@@ -138,7 +138,10 @@ def train(
         writer.add_scalar("val/corner_err", val_corner_err, epoch)
 
         print(
-            f"Epoch {epoch:03d} | " f"train: {train_loss:.4f} | " f"val: {val_loss:.4f} | " f"corner_err: {val_corner_err:.4f}"
+            f"Epoch {epoch:03d} | "
+            f"train: {train_loss:.4f} | "
+            f"val: {val_loss:.4f} | "
+            f"corner_err: {val_corner_err:.4f}"
         )
 
         if epoch % 5 == 0:

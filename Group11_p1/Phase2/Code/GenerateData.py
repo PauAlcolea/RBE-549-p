@@ -85,7 +85,11 @@ def main():
         "-n", "--num_images", type=int, default=100, help="number of images to read"
     )
     ap.add_argument(
-        "-c", "--num_copies", type=int, default=2, help="data points to generate per image"
+        "-c",
+        "--num_copies",
+        type=int,
+        default=2,
+        help="data points to generate per image",
     )
     ap.add_argument(
         "--all", action="store_true", help="read all images in the folder, ignoring -n"
