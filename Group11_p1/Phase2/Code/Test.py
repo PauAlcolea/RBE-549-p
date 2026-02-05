@@ -170,9 +170,16 @@ def main():
         if torch.cuda.is_available()
         else "mps" if torch.backends.mps.is_available() else "cpu"
     )
-    parser = ArgumentParser(description="Test homography model by stitching images in Phase#/Data/DIR")
+    parser = ArgumentParser(
+        description="Test homography model by stitching images in Phase#/Data/DIR"
+    )
     parser.add_argument(
-        "-p", "--phase", type=int, default=1, choices=[1, 2], help="Read Phase 1 or Phase 2 Data/ directory"
+        "-p",
+        "--phase",
+        type=int,
+        default=1,
+        choices=[1, 2],
+        help="Read Phase 1 or Phase 2 Data/ directory",
     )
     parser.add_argument(
         "--dir",

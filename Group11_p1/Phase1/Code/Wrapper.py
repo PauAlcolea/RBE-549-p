@@ -325,7 +325,14 @@ def _get_inlier_corners_and_remapped_matches(valid_corners_pair, inlier_matches)
     return inlier_corners, remapped_inlier_matches
 
 
-def refine_matches(images, pairwise_matches, valid_corners, graph_mode, save_output=None, output_dir=None):
+def refine_matches(
+    images,
+    pairwise_matches,
+    valid_corners,
+    graph_mode,
+    save_output=None,
+    output_dir=None,
+):
     """
     use RANSAC to refine feature matches and estimate pairwise homographies
     """
@@ -621,7 +628,6 @@ def main():
     save_output = args.output
     output_dir = f"{parent_dir}/Output"
     graph_mode = args.graph
-
 
     """
     Read a set of images for Panorama stitching
