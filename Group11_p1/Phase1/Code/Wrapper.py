@@ -20,35 +20,6 @@ import os
 from matplotlib import pyplot as plt
 from skimage.feature import corner_peaks
 
-# get path to current directory
-curr_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(curr_dir)
-
-ap = argparse.ArgumentParser()
-ap.add_argument(
-    "--dir",
-    type=str,
-    default=f"{parent_dir}/Data/Train/Set1",
-    help="Directory of input images",
-)
-ap.add_argument(
-    "-o",
-    "--output",
-    action="store_true",
-    help="Whether to save output images",
-)
-ap.add_argument(
-    "-g",
-    "--graph",
-    action="store_true",
-    help="Form homography graph to stitch images in optimal order. Slow, but effective for out-of-order image sets.",
-)
-args = ap.parse_args()
-input_dir = args.dir
-save_output = args.output
-output_dir = f"{parent_dir}/Output"
-graph_mode = args.graph
-
 
 def cylindrical_warp(flat_image, cylinder_radius):
     """
@@ -207,6 +178,8 @@ def visualize_matches(
     matches,
     corners,
     window_name,
+    save_output,
+    output_dir,
     filename,
 ):
     img_matches = _draw_matches(
@@ -352,7 +325,7 @@ def _get_inlier_corners_and_remapped_matches(valid_corners_pair, inlier_matches)
     return inlier_corners, remapped_inlier_matches
 
 
-def refine_matches(images, pairwise_matches, valid_corners, graph_mode):
+def refine_matches(images, pairwise_matches, valid_corners, graph_mode, save_output=None, output_dir=None):
     """
     use RANSAC to refine feature matches and estimate pairwise homographies
     """
@@ -391,6 +364,8 @@ def refine_matches(images, pairwise_matches, valid_corners, graph_mode):
                 remapped_inlier_matches,
                 (inlier_corners[0], inlier_corners[1]),
                 window_name=f"Inlier Matches {i}->{j}",
+                save_output=save_output,
+                output_dir=output_dir,
                 filename=f"inlier_matching_{i}_{j}.png",
             )
     else:
@@ -428,6 +403,8 @@ def refine_matches(images, pairwise_matches, valid_corners, graph_mode):
                 remapped_inlier_matches,
                 (inlier_corners[0], inlier_corners[1]),
                 window_name=f"Inlier Matches {i}->{i+1}",
+                save_output=save_output,
+                output_dir=output_dir,
                 filename=f"inlier_matching_{i}_{i+1}.png",
             )
 
@@ -549,7 +526,7 @@ def _blend_images(img1, img2):
     return blended.astype(np.uint8), (sum_weights * 255).astype(np.uint8)
 
 
-def form_panorama(images, pairwise_H, graph_mode):
+def form_panorama(images, pairwise_H, graph_mode, save_output=None, output_dir=None):
     if not graph_mode:
         # build a valid contiguous chain from the start
         valid_indices = [0]
@@ -616,6 +593,36 @@ def form_panorama(images, pairwise_H, graph_mode):
 
 
 def main():
+    # get path to current directory
+    curr_dir = os.path.dirname(os.path.abspath(__file__))
+    parent_dir = os.path.dirname(curr_dir)
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument(
+        "--dir",
+        type=str,
+        default=f"{parent_dir}/Data/Train/Set1",
+        help="Directory of input images",
+    )
+    ap.add_argument(
+        "-o",
+        "--output",
+        action="store_true",
+        help="Whether to save output images",
+    )
+    ap.add_argument(
+        "-g",
+        "--graph",
+        action="store_true",
+        help="Form homography graph to stitch images in optimal order. Slow, but effective for out-of-order image sets.",
+    )
+    args = ap.parse_args()
+    input_dir = args.dir
+    save_output = args.output
+    output_dir = f"{parent_dir}/Output"
+    graph_mode = args.graph
+
+
     """
     Read a set of images for Panorama stitching
     """
@@ -704,6 +711,8 @@ def main():
                     matches_ij,
                     (valid_corners[i], valid_corners[j]),
                     window_name=f"Feature Matches {i}->{j}",
+                    save_output=save_output,
+                    output_dir=output_dir,
                     filename=f"matching_{i}_{j}.png",
                 )
     else:
@@ -716,6 +725,8 @@ def main():
                 match_indices_i,
                 (valid_corners[i], valid_corners[i + 1]),
                 window_name=f"Feature Matches {i}->{i+1}",
+                save_output=save_output,
+                output_dir=output_dir,
                 filename=f"matching_{i}_{i+1}.png",
             )
 
@@ -724,7 +735,7 @@ def main():
     """
     # list of homographies between consecutive images
     pairwise_H, pairwise_inliers = refine_matches(
-        images, pairwise_matches, valid_corners, graph_mode
+        images, pairwise_matches, valid_corners, graph_mode, save_output, output_dir
     )
 
     """
@@ -734,7 +745,7 @@ def main():
     if graph_mode:
         pairwise_H = build_and_walk_graph(images, pairwise_H, pairwise_inliers)
 
-    form_panorama(images, pairwise_H, graph_mode)
+    form_panorama(images, pairwise_H, graph_mode, save_output, output_dir)
 
     try:
         cv2.waitKey(0)

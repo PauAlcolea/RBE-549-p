@@ -170,19 +170,25 @@ def main():
         if torch.cuda.is_available()
         else "mps" if torch.backends.mps.is_available() else "cpu"
     )
-    data_top_dir = (
-        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        + "/Phase1/Data/"
+    parser = ArgumentParser(description="Test homography model by stitching images in Phase#/Data/DIR")
+    parser.add_argument(
+        "-p", "--phase", type=int, default=1, choices=[1, 2], help="Read Phase 1 or Phase 2 Data/ directory"
     )
-    parser = ArgumentParser()
     parser.add_argument(
         "--dir",
         type=str,
-        default="Train/CustomSet1",
-        help="directory containing test images; relative to Phase1/Data, i.e. 'Train/Set1'",
+        default="Train/Set1",
+        help="directory containing images to stitch; relative to Phase#/Data, i.e. 'Train/Set1' or 'Test/unity_hall'",
     )
     args = parser.parse_args()
+    data_top_dir = (
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        + f"/Phase{args.phase}/Data/"
+    )
     test_data_dir = os.path.join(data_top_dir, args.dir)
+    if not os.path.isdir(test_data_dir):
+        print(f"Error: directory {test_data_dir} does not exist.")
+        return
 
     # initialize model
     model_path = (
