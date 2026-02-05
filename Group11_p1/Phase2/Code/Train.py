@@ -8,14 +8,12 @@ import os
 import torch
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
-from argparse import ArgumentParser
 
 from Dataset import NORMALIZING_FACTOR, GenerateBatch, HomographyDataset
-from Network.Network import SupervisedHomographyModel, UnsupervisedHomographyModel
+from Network.Network import SupervisedHomographyModel
 
 
 def train(
-    model_type,
     train_data_dir,
     train_label_file,
     val_data_dir,
@@ -35,7 +33,7 @@ def train(
     val_dataset = HomographyDataset(val_data_dir, val_label_file)
 
     # model
-    model = SupervisedHomographyModel().to(device) if model_type == "s" else UnsupervisedHomographyModel().to(device)
+    model = SupervisedHomographyModel().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
     lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="min", factor=0.5, patience=3
@@ -194,13 +192,7 @@ def main():
     train_data_dir = f"{gen_data_dir}/Train"
     val_data_dir = f"{gen_data_dir}/Val"
 
-    parser = ArgumentParser()
-    parser.add_argument("-t", "--type", type=str, default="s", choices=["s", "u"], help="Type of model to train; 's' for supervised, 'u' for unsupervised")
-    args = parser.parse_args()
-
-
     train(
-        args.type,
         train_data_dir=train_data_dir,
         train_label_file=f"{train_data_dir}/labels.txt",
         val_data_dir=val_data_dir,
