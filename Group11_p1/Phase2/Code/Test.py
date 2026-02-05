@@ -57,33 +57,73 @@ def get_matching_features(images):
     return pairwise_matches
 
 
-def extract_patches(image1, image2, matches, patch_size=128):
+def extract_patches(image1, image2, matches, patch_size=128, max_patches=12, min_dist=None):
+    """
+    select spatially spread patches around matched features
+    """
+
+    if len(matches) == 0:
+        return [], [], []
+
+    half_size = patch_size // 2
+    if min_dist is None:
+        min_dist = half_size
+
+    # list candidate centers where a full patch fits in both images
+    candidates = []
+    h1, w1 = image1.shape[:2]
+    h2, w2 = image2.shape[:2]
+    for (x1, y1), (x2, y2) in matches:
+        x1_i, y1_i = int(x1), int(y1)
+        x2_i, y2_i = int(x2), int(y2)
+
+        if (
+            x1_i - half_size >= 0
+            and y1_i - half_size >= 0
+            and x1_i + half_size <= w1
+            and y1_i + half_size <= h1
+            and x2_i - half_size >= 0
+            and y2_i - half_size >= 0
+            and x2_i + half_size <= w2
+            and y2_i + half_size <= h2
+        ):
+            candidates.append((x1_i, y1_i, x2_i, y2_i))
+
+    if not candidates:
+        return [], [], []
+
+    # select spatially spread candidates
+    selected = []
+    for cand in candidates:
+        x1_i, y1_i, _, _ = cand
+        if not selected:
+            selected.append(cand)
+        else:
+            # compute distance to previously selected centers; keep if far enough away
+            dists = [np.hypot(x1_i - sx1, y1_i - sy1) for (sx1, sy1, _, _) in selected]
+            if min(dists) >= min_dist:
+                selected.append(cand)
+        if len(selected) >= max_patches:
+            break
+
+    # extract patches around selected centers
     patches1 = []
     patches2 = []
     patches1_coords = []
-    half_size = patch_size // 2
-    for (x1, y1), (x2, y2) in matches:
-        if (
-            x1 - half_size >= 0
-            and y1 - half_size >= 0
-            and x1 + half_size <= image1.shape[1]
-            and y1 + half_size <= image1.shape[0]
-            and x2 - half_size >= 0
-            and y2 - half_size >= 0
-            and x2 + half_size <= image2.shape[1]
-            and y2 + half_size <= image2.shape[0]
-        ):
-            p1_x1, p1_y1 = x1 - half_size, y1 - half_size
-            p1_x2, p1_y2 = x1 + half_size, y1 + half_size
-            patch1 = image1[p1_y1:p1_y2, p1_x1:p1_x2]
-            patch2 = image2[
-                y2 - half_size : y2 + half_size, x2 - half_size : x2 + half_size
-            ]
-            patches1.append(patch1)
-            patches2.append(patch2)
-            patches1_coords.append(
-                ((p1_x1, p1_y1), (p1_x2, p1_y1), (p1_x2, p1_y2), (p1_x1, p1_y2))
-            )
+    for x1_i, y1_i, x2_i, y2_i in selected:
+        p1_x1, p1_y1 = x1_i - half_size, y1_i - half_size
+        p1_x2, p1_y2 = x1_i + half_size, y1_i + half_size
+        patch1 = image1[p1_y1:p1_y2, p1_x1:p1_x2]
+        patch2 = image2[
+            y2_i - half_size : y2_i + half_size,
+            x2_i - half_size : x2_i + half_size,
+        ]
+        patches1.append(patch1)
+        patches2.append(patch2)
+        patches1_coords.append(
+            ((p1_x1, p1_y1), (p1_x2, p1_y1), (p1_x2, p1_y2), (p1_x1, p1_y2))
+        )
+
     return patches1, patches2, patches1_coords
 
 
@@ -101,7 +141,6 @@ def patches_to_tensor(patches):
 
 
 def _compute_homography(pairs):
-    # convert to NumPy array first
     pairs = np.asarray(pairs, dtype=np.float32)
 
     if pairs.ndim == 4 and pairs.shape[2:] == (2, 2):
@@ -120,54 +159,6 @@ def _compute_homography(pairs):
     # denormalize H
     H = np.linalg.inv(T2) @ H @ T1
     return H
-
-
-def RANSAC_homography(
-    pairs,
-    n_iterations=1000,
-    inlier_thresh=10,
-    stop_thresh=0.85,
-):
-    best_inlier_pairs = []
-
-    for _ in range(n_iterations):
-        pair_idx = np.random.choice(len(pairs), replace=False)
-        random_pairs = pairs[pair_idx]
-        # skip iteration if selected points are degenerate
-        if np.linalg.matrix_rank(_form_A_matrix(random_pairs)) < 8:
-            continue
-
-        # compute homography from the four pairs; skip if SVD fails
-        try:
-            H = _compute_homography(random_pairs)
-        except np.linalg.LinAlgError:
-            continue
-
-        # use H to map all points from image1 to image2, counting inliers
-        inlier_pairs = []
-        for p in pairs:
-            dists = []
-            for (x1, y1), (x2, y2) in p:
-                p1 = np.array([x1, y1, 1]).reshape((3, 1))
-                p2_est = H @ p1
-                p2_est = (p2_est[:2] / max(p2_est[2], 1e-8)).flatten()
-                dists.append(np.linalg.norm(p2_est - np.array([x2, y2]), ord=1))
-            if np.mean(dists) < inlier_thresh:
-                inlier_pairs.append(p)
-
-        if len(inlier_pairs) > len(best_inlier_pairs):
-            best_inlier_pairs = inlier_pairs
-
-        if len(inlier_pairs) > stop_thresh * len(pairs):
-            print(f"Early stopping RANSAC with {len(inlier_pairs)} inliers")
-            break
-
-    try:
-        H_final = _compute_homography(best_inlier_pairs)
-    except np.linalg.LinAlgError:
-        H_final = None
-        best_inlier_pairs = []
-    return H_final
 
 
 def main():
@@ -205,7 +196,8 @@ def main():
     pairwise_matches = get_matching_features(images)
     pairwise_H = []
     for i in range(len(images) - 1):
-        patches_a, patches_b, patch_coords = extract_patches(
+        # extract patches around matched features
+        patches_a, patches_b, patch_a_coords = extract_patches(
             images[i], images[i + 1], pairwise_matches[i]
         )
 
@@ -222,13 +214,16 @@ def main():
 
         delta_preds = delta_preds * 32  # scale up to original pixel coordinates
 
-        patch_pairs = []
-        for coords, d in zip(patch_coords, delta_preds):
-            dst = np.array(coords) + d.reshape(4, 2)
-            patch_pairs.append(list(zip(coords, dst)))
+        patch_a_coords_np = np.array(patch_a_coords, dtype=np.float32)
+        deltas = delta_preds.reshape(-1, 4, 2)
+        patch_b_coords_est = patch_a_coords_np + deltas
 
-        # compute homography with RANSAC
-        H_i = RANSAC_homography(patch_pairs)
+        # build all corner correspondence pairs across all patches
+        src_pts = patch_a_coords_np.reshape(-1, 2)
+        dst_pts = patch_b_coords_est.reshape(-1, 2)
+        corner_pairs = np.stack([src_pts, dst_pts], axis=1)
+
+        H_i = _compute_homography(corner_pairs)
         pairwise_H.append(H_i)
     panorama = form_panorama(images, pairwise_H=pairwise_H, graph_mode=False)
     cv2.imwrite("mypano.png", panorama)
