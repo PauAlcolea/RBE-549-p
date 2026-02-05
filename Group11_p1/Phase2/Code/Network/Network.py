@@ -146,9 +146,8 @@ class SupervisedNet(nn.Module):
 
 
 class UnsupervisedHomographyModel(nn.Module):
-    def __init__(self, hparams):
+    def __init__(self):
         super(UnsupervisedHomographyModel, self).__init__()
-        self.hparams = hparams
         self.model = UnsupervisedNet()
 
     def forward(self, a, b):
