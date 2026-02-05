@@ -8,12 +8,13 @@ import os
 import torch
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
+from argparse import ArgumentParser
 
 from Dataset import NORMALIZING_FACTOR, GenerateBatch, HomographyDataset
-from Network.Network import SupervisedHomographyModel
+from Network.Network import SupervisedHomographyModel, UnsupervisedHomographyModel
 
 
-def train(
+def train_supervised(
     train_data_dir,
     train_label_file,
     val_data_dir,
@@ -178,6 +179,9 @@ def train(
 
     writer.close()
 
+def train_unsupervised():
+    pass
+
 
 def main():
     device = (
@@ -192,13 +196,21 @@ def main():
     train_data_dir = f"{gen_data_dir}/Train"
     val_data_dir = f"{gen_data_dir}/Val"
 
-    train(
-        train_data_dir=train_data_dir,
-        train_label_file=f"{train_data_dir}/labels.txt",
-        val_data_dir=val_data_dir,
-        val_label_file=f"{val_data_dir}/labels.txt",
-        device=device,
+    parser = ArgumentParser()
+    parser.add_argument(
+        "-t", "--type", type=str, default="s", choices=["s", "u"], help="Type of training: s for supervised or u for unsupervised"
     )
+    args = parser.parse_args()
+    if args.type == "s":
+        train_supervised(
+            train_data_dir=train_data_dir,
+            train_label_file=f"{train_data_dir}/labels.txt",
+            val_data_dir=val_data_dir,
+            val_label_file=f"{val_data_dir}/labels.txt",
+            device=device,
+        )
+    else:
+        train_unsupervised()
 
 
 if __name__ == "__main__":
