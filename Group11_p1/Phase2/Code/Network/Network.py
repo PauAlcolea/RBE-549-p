@@ -16,37 +16,18 @@ import torch
 import numpy as np
 import torch.nn.functional as F
 import kornia  # You can use this to get the transform and warp in this project
-import pytorch_lightning as pl
 
 # Don't generate pyc codes
 sys.dont_write_bytecode = True
 
 
-class SupervisedHomographyModel(pl.LightningModule):
+class SupervisedHomographyModel(nn.Module):
     def __init__(self):
         super(SupervisedHomographyModel, self).__init__()
         self.model = SupervisedNet()
 
     def forward(self, a, b):
         return self.model(a, b)
-
-    def training_step(self, batch, batch_idx):
-        img_a, patch_a, patch_b, corners, gt = batch
-        delta = self.model(patch_a, patch_b)
-        loss = F.smooth_l1_loss(delta, gt)
-        logs = {"loss": loss}
-        return {"loss": loss, "log": logs}
-
-    def validation_step(self, batch, batch_idx):
-        img_a, patch_a, patch_b, corners, gt = batch
-        delta = self.model(patch_a, patch_b)
-        loss = F.smooth_l1_loss(delta, gt)
-        return {"val_loss": loss}
-
-    def validation_epoch_end(self, outputs):
-        avg_loss = torch.stack([x["val_loss"] for x in outputs]).mean()
-        logs = {"val_loss": avg_loss}
-        return {"avg_val_loss": avg_loss, "log": logs}
 
 
 # resnet-like architecture
@@ -164,7 +145,7 @@ class SupervisedNet(nn.Module):
             return out
 
 
-class UnsupervisedHomographyModel(pl.LightningModule):
+class UnsupervisedHomographyModel(nn.Module):
     def __init__(self, hparams):
         super(UnsupervisedHomographyModel, self).__init__()
         self.hparams = hparams
@@ -172,24 +153,6 @@ class UnsupervisedHomographyModel(pl.LightningModule):
 
     def forward(self, a, b):
         return self.model(a, b)
-
-    def training_step(self, batch, batch_idx):
-        img_a, patch_a, patch_b, corners, gt = batch
-        delta = self.model(patch_a, patch_b)
-        loss = self.LossFn(delta, img_a, patch_b, corners)
-        logs = {"loss": loss}
-        return {"loss": loss, "log": logs}
-
-    def validation_step(self, batch, batch_idx):
-        img_a, patch_a, patch_b, corners, gt = batch
-        delta = self.model(patch_a, patch_b)
-        loss = self.LossFn(delta, img_a, patch_b, corners)
-        return {"val_loss": loss}
-
-    def validation_epoch_end(self, outputs):
-        avg_loss = torch.stack([x["val_loss"] for x in outputs]).mean()
-        logs = {"val_loss": avg_loss}
-        return {"avg_val_loss": avg_loss, "log": logs}
 
     def LossFn(delta, patch_a, patch_b, corners):
         B = delta.shape[0]
