@@ -12,6 +12,7 @@ from argparse import ArgumentParser
 
 from Dataset import NORMALIZING_FACTOR, GenerateBatch, HomographyDataset
 from Network.Network import SupervisedHomographyModel, UnsupervisedHomographyModel
+import kornia
 
 
 def train_supervised(
@@ -184,19 +185,20 @@ Tensor Direct Linear Transform fully differentiable
 @param batch_shifts is a tensor of shape torch.Size([batch_size, 8]), 
 @param batch_patch_shape is (B, C, H, W)
 """
-def dlt(batch_shifts: torch.Tensor, batch_patch_shape: torch.Tensor, batch_size):
+def dlt(batch_shifts: torch.Tensor, batch_patch_shape: torch.Tensor):
     #patch shape from patch a
     # print("batch patch shape:", batch_patch_shape)
+    B = batch_shifts.shape[0]
     h = batch_patch_shape[2]
     w = batch_patch_shape[3]
     
     #make sure that the source points are in the same format as the batch shifts (B, 4, 2)
     src_points = torch.tensor([[0,0],[w-1,0],[w-1,h-1],[0,h-1]], device=batch_shifts.device, dtype=batch_shifts.dtype)
-    src_points = src_points.unsqueeze(0).repeat(batch_size, 1, 1) 
+    src_points = src_points.unsqueeze(0).repeat(B, 1, 1) 
     
     #separate batch into different points [[x1',y1'],[x2',y2'],[x3',y3'],[x4',y4']]
     # then add them to the source points to get the destination points
-    dst_points = src_points + batch_shifts.view(batch_size, 4, 2)
+    dst_points = src_points + batch_shifts.view(B, 4, 2)
 
     # separate into each component, which will be tensors of shape (B, 4)
     x = src_points[:,:,0]
@@ -224,8 +226,8 @@ def dlt(batch_shifts: torch.Tensor, batch_patch_shape: torch.Tensor, batch_size)
     h = torch.linalg.solve(A, b)
 
     # Add the last value
-    h = torch.cat([h, torch.ones(batch_size, 1, device=batch_shifts.device)], dim=1)
-    H = h.view(batch_size, 3, 3)
+    h = torch.cat([h, torch.ones(B, 1, device=batch_shifts.device)], dim=1)
+    H = h.view(B, 3, 3)
     return H
 
 
@@ -296,19 +298,32 @@ def train_unsupervised(train_data_dir, train_label_file, val_data_dir, val_label
                 gt_delta = gt_delta * NORMALIZING_FACTOR
                 loss_corner = (pred_delta - gt_delta).view(-1, 4, 2).norm(dim=2).mean()
                 loss += corner_loss_weight * loss_corner
-            else: 
+            else:                 
                 #take the 4 Preddicted Shifts and throw them into the Direct Linear Transform (DLT)
                 # (make sure that it remains differentiable)
                 # the output of that is a predicted homography
-                dlt(pred_delta, batch_patch_shape=patch_a.shape, batch_size=batch_size)
+                # H_batch is of shape (batch_size, 3, 3)
+                H_batch = dlt(pred_delta, batch_patch_shape=patch_a.shape)
 
                 # take the homography and throw it into the Spatial Transform Network
                 # This should output a warped image of B based on the 
                 # Use inverse mapping
+                H = patch_a.shape[2]
+                W = patch_a.shape[3]
+
+                # spatial transform network makes a grid of the same size as patch b
+                # for every pixel in that tensor, it uses the Homography from dlt to look back into what point in patch a it would have to pull from
+                # this is most likely a float, so interpolation is necessary
+                # this is all taken care of my kornia
+                warped_a = kornia.geometry.transform.warp_perspective(patch_a, 
+                                                                      H_batch, 
+                                                                      dsize=(H, W),
+                                                                      mode="bilinear",
+                                                                      padding_mode="zeros",
+                                                                      align_corners=True,)
                 
-
-
-                loss = ... #something else with the Photometric Loss
+                # Photometric loss
+                loss = torch.mean(torch.abs(warped_a - patch_b))
 
             
             # Back propagation and gradient
@@ -364,13 +379,37 @@ def train_unsupervised(train_data_dir, train_label_file, val_data_dir, val_label
                     loss += corner_loss_weight * loss_corner
                     val_loss += loss.item()
                 else:
-                    loss = ... #this is where unsupervised photometric loss will be
+                    #dlt
+                    H_batch = dlt(pred_delta, batch_patch_shape=patch_a.shape)
+
+                    # take the homography and throw it into the Spatial Transform Network
+                    # This should output a warped image of B based on the 
+                    # Use inverse mapping
+                    H = patch_a.shape[2]
+                    W = patch_a.shape[3]
+
+                    # stn
+                    warped_a = kornia.geometry.transform.warp_perspective(patch_a, 
+                                                                        H_batch, 
+                                                                        dsize=(H, W),
+                                                                        mode="bilinear",
+                                                                        padding_mode="zeros",
+                                                                        align_corners=True,)
+                    
+                    # Photometric loss
+                    loss = torch.mean(torch.abs(warped_a - patch_b))
+                    val_loss += loss.item()
 
     
         # If corner didn't improve, scheduler decreases the learning rate
         val_loss /= num_val_iters
         val_corner_err /= num_val_iters
-        lr_scheduler.step(val_corner_err)
+
+        # in unsupervised learning, you are not counting with the actual labels
+        if supervised:
+            lr_scheduler.step(val_corner_err)
+        else:
+            lr_scheduler.step(val_loss)
 
         #### logging ####
         writer.add_scalars(
