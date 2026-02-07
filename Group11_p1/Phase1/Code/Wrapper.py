@@ -444,9 +444,14 @@ def _walk_graph(graph, start):
     return order
 
 
-def build_and_walk_graph(images, pairwise_H, pairwise_inliers):
+def build_and_walk_graph(pairwise_H, pairwise_inliers):
     # build graph from pairwise inliers
-    graph = {i: [] for i in range(len(images))}
+    # determine number of nodes from the keys in pairwise_inliers
+    all_nodes = set()
+    for (i, j) in pairwise_inliers.keys():
+        all_nodes.add(i)
+        all_nodes.add(j)
+    graph = {i: [] for i in all_nodes}
     for (i, j), k in pairwise_inliers.items():
         graph[i].append((j, k))
         graph[j].append((i, k))
@@ -475,7 +480,6 @@ def build_and_walk_graph(images, pairwise_H, pairwise_inliers):
     start = endpoints[0]
     order = _walk_graph(graph, start)
     print("Stitching order:", order)
-    images = [images[i] for i in order]
     ordered_pairwise_H = []
 
     for a, b in zip(order[:-1], order[1:]):
@@ -749,7 +753,7 @@ def main():
     Save Panorama output as mypano.png
     """
     if graph_mode:
-        pairwise_H = build_and_walk_graph(images, pairwise_H, pairwise_inliers)
+        pairwise_H = build_and_walk_graph(pairwise_H, pairwise_inliers)
 
     form_panorama(images, pairwise_H, graph_mode, save_output, output_dir)
 
