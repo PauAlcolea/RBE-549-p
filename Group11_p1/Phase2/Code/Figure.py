@@ -128,7 +128,7 @@ def visualize_known_warp_and_prediction(
     ps = patch_size
 
     patch, corners = _get_random_patch(img_gray)
-    shifted_corners, shifts = _shift_corners(corners, img_gray.shape[:2])
+    shifted_corners, shifts = _shift_corners(corners, img_gray.shape[:2], max_shift=24)
 
     # ground truth homography
     H_gt = cv2.getPerspectiveTransform(corners.astype(np.float32), shifted_corners.astype(np.float32))
@@ -196,8 +196,18 @@ def visualize_known_warp_and_prediction(
     # Error text on right side
     cv2.putText(
         canvas,
-        f"EPE (Traditional) = {err_traditional:.2f}",
+        f"GT",
         (offset + 20, 40),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1.0,
+        GREEN,
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        canvas,
+        f"Trad.",
+        (offset + 20, 80),
         cv2.FONT_HERSHEY_SIMPLEX,
         1.0,
         ORANGE,
@@ -206,8 +216,8 @@ def visualize_known_warp_and_prediction(
     )
     cv2.putText(
         canvas,
-        f"EPE (Supervised) = {err_supervised:.2f}",
-        (offset + 20, 80),
+        f"Sup.",
+        (offset + 20, 120),
         cv2.FONT_HERSHEY_SIMPLEX,
         1.0,
         RED,
@@ -216,8 +226,8 @@ def visualize_known_warp_and_prediction(
     )
     cv2.putText(
         canvas,
-        f"EPE (Unsupervised) = {err_unsupervised:.2f}",
-        (offset + 20, 120),
+        f"Unsup.",
+        (offset + 20, 160),
         cv2.FONT_HERSHEY_SIMPLEX,
         1.0,
         CYAN,
