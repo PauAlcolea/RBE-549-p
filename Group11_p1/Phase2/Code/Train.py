@@ -231,9 +231,8 @@ def dlt(batch_shifts: torch.Tensor, batch_patch_shape: torch.Tensor):
     return H
 
 
-
-def train_unsupervised(train_data_dir, train_label_file, val_data_dir, val_label_file, num_epochs=100, batch_size=128, 
-                       lr=0.003,log_dir="logs", device="cuda", patience=10, checkpoint_dir="checkpoints", supervised=True):
+def train_unsupervised(train_data_dir, train_label_file, val_data_dir, val_label_file, num_epochs=300, batch_size=128, 
+                       lr=0.003,log_dir="logs", device="cuda", patience=20, checkpoint_dir="checkpoints", supervised=True):
     
     # make a folder for checkpoints in case it doesn't exist
     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -308,16 +307,16 @@ def train_unsupervised(train_data_dir, train_label_file, val_data_dir, val_label
                 # take the homography and throw it into the Spatial Transform Network
                 # This should output a warped image of B based on the 
                 # Use inverse mapping
-                H = patch_a.shape[2]
-                W = patch_a.shape[3]
+                height = patch_a.shape[2]
+                width = patch_a.shape[3]
 
                 # spatial transform network makes a grid of the same size as patch b
                 # for every pixel in that tensor, it uses the Homography from dlt to look back into what point in patch a it would have to pull from
                 # this is most likely a float, so interpolation is necessary
                 # this is all taken care of my kornia
                 warped_a = kornia.geometry.transform.warp_perspective(patch_a, 
-                                                                      H_batch, 
-                                                                      dsize=(H, W),
+                                                                      torch.inverse(H_batch), 
+                                                                      dsize=(height, width),
                                                                       mode="bilinear",
                                                                       padding_mode="zeros",
                                                                       align_corners=True,)
@@ -385,13 +384,13 @@ def train_unsupervised(train_data_dir, train_label_file, val_data_dir, val_label
                     # take the homography and throw it into the Spatial Transform Network
                     # This should output a warped image of B based on the 
                     # Use inverse mapping
-                    H = patch_a.shape[2]
-                    W = patch_a.shape[3]
+                    height_nograd = patch_a.shape[2]
+                    width_nograd = patch_a.shape[3]
 
                     # stn
                     warped_a = kornia.geometry.transform.warp_perspective(patch_a, 
-                                                                        H_batch, 
-                                                                        dsize=(H, W),
+                                                                        torch.inverse(H_batch), 
+                                                                        dsize=(height_nograd, width_nograd),
                                                                         mode="bilinear",
                                                                         padding_mode="zeros",
                                                                         align_corners=True,)
@@ -417,7 +416,8 @@ def train_unsupervised(train_data_dir, train_label_file, val_data_dir, val_label
             {"train": train_loss, "val": val_loss},
             epoch,
         )
-        writer.add_scalar("val/corner_err", val_corner_err, epoch)
+        if supervised:
+            writer.add_scalar("val/corner_err", val_corner_err, epoch)
 
         print(
             f"Epoch {epoch:03d} | "
@@ -428,6 +428,8 @@ def train_unsupervised(train_data_dir, train_label_file, val_data_dir, val_label
 
         if epoch % 5 == 0:
             writer.add_images("val/patch_a", patch_a, epoch)
+            if not supervised:
+                writer.add_images("val/warped_a", warped_a, epoch)
             writer.add_images("val/patch_b", patch_b, epoch)
 
         #### checkpoint ####
@@ -455,7 +457,7 @@ def train_unsupervised(train_data_dir, train_label_file, val_data_dir, val_label
 
         #### early stopping ####
         if epochs_no_improve >= patience:
-            print(f"Early stopping triggered after {epochs_no_improve} epochs.")
+            print(f"Early stopping triggered after {epoch} epochs.")
             break
 
     writer.close()
