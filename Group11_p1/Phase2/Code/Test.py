@@ -23,6 +23,7 @@ from Phase1.Code.Wrapper import (
 )
 from Network.Network import SupervisedHomographyModel
 from Dataset import NORMALIZING_FACTOR
+from GenerateData import _get_random_patch
 
 
 def load_images(dir):
@@ -58,91 +59,6 @@ def get_matching_features(images):
     return pairwise_matches
 
 
-def extract_patches(
-    image1, image2, matches, patch_size=128, max_patches=12, min_dist=None
-):
-    """
-    select spatially spread patches around matched features
-    """
-
-    if len(matches) == 0:
-        return [], [], []
-
-    half_size = patch_size // 2
-    if min_dist is None:
-        min_dist = half_size
-
-    # list candidate centers where a full patch fits in both images
-    candidates = []
-    h1, w1 = image1.shape[:2]
-    h2, w2 = image2.shape[:2]
-    for (x1, y1), (x2, y2) in matches:
-        x1_i, y1_i = int(x1), int(y1)
-        x2_i, y2_i = int(x2), int(y2)
-
-        if (
-            x1_i - half_size >= 0
-            and y1_i - half_size >= 0
-            and x1_i + half_size <= w1
-            and y1_i + half_size <= h1
-            and x2_i - half_size >= 0
-            and y2_i - half_size >= 0
-            and x2_i + half_size <= w2
-            and y2_i + half_size <= h2
-        ):
-            candidates.append((x1_i, y1_i, x2_i, y2_i))
-
-    if not candidates:
-        return [], [], []
-
-    # select spatially spread candidates
-    selected = []
-    for cand in candidates:
-        x1_i, y1_i, _, _ = cand
-        if not selected:
-            selected.append(cand)
-        else:
-            # compute distance to previously selected centers; keep if far enough away
-            dists = [np.hypot(x1_i - sx1, y1_i - sy1) for (sx1, sy1, _, _) in selected]
-            if min(dists) >= min_dist:
-                selected.append(cand)
-        if len(selected) >= max_patches:
-            break
-
-    # extract patches around selected centers
-    patches1 = []
-    patches2 = []
-    patches1_coords = []
-    for x1_i, y1_i, x2_i, y2_i in selected:
-        p1_x1, p1_y1 = x1_i - half_size, y1_i - half_size
-        p1_x2, p1_y2 = x1_i + half_size, y1_i + half_size
-        patch1 = image1[p1_y1:p1_y2, p1_x1:p1_x2]
-        patch2 = image2[
-            y2_i - half_size : y2_i + half_size,
-            x2_i - half_size : x2_i + half_size,
-        ]
-        patches1.append(patch1)
-        patches2.append(patch2)
-        patches1_coords.append(
-            ((p1_x1, p1_y1), (p1_x2, p1_y1), (p1_x2, p1_y2), (p1_x1, p1_y2))
-        )
-
-    return patches1, patches2, patches1_coords
-
-
-def patches_to_tensor(patches):
-    """
-    patches: list of (H, W, 3) numpy arrays
-    returns: torch tensor (B, 1, H, W)
-    """
-    tensors = []
-    for p in patches:
-        p = cv2.cvtColor(p, cv2.COLOR_BGR2GRAY)
-        p = torch.from_numpy(p).unsqueeze(0).float() / 255.0
-        tensors.append(p)
-    return torch.stack(tensors)
-
-
 def _compute_homography(pairs):
     pairs = np.asarray(pairs, dtype=np.float32)
 
@@ -162,6 +78,105 @@ def _compute_homography(pairs):
     # denormalize H
     H = np.linalg.inv(T2) @ H @ T1
     return H
+
+def RANSAC_homography(
+    matching_pairs,
+    n_iterations=1000,
+    inlier_thresh=5,
+    stop_thresh=0.85,
+):
+    # convert to numpy array of shape (N, 2, 2): [[x1,y1],[x2,y2]]
+    pairs_arr = np.asarray(matching_pairs, dtype=np.float32)
+    if pairs_arr.size == 0 or pairs_arr.shape[0] < 4:
+        return None
+
+    best_inlier_pairs = []
+    N = pairs_arr.shape[0]
+    for _ in range(n_iterations):
+        idx = np.random.choice(N, size=4, replace=False)
+        sample = pairs_arr[idx]  # shape (4, 2, 2)
+
+        # skip iteration if selected points are degenerate
+        if np.linalg.matrix_rank(_form_A_matrix(sample)) < 8:
+            continue
+
+        # compute homography from the four pairs; skip if SVD fails
+        try:
+            H = _compute_homography(sample)
+        except np.linalg.LinAlgError:
+            continue
+
+        # use H to map all source points to target and count inliers
+        inlier_pairs = []
+        for s in pairs_arr:
+            (x1, y1), (x2, y2) = s
+            p1 = np.array([x1, y1, 1.0]).reshape((3, 1))
+            p2_est = H @ p1
+            p2_est = (p2_est[:2] / max(p2_est[2], 1e-8)).flatten()
+            dist = np.linalg.norm(p2_est - np.array([x2, y2]), ord=1)
+            if dist < inlier_thresh:
+                inlier_pairs.append(s)
+
+        if len(inlier_pairs) > len(best_inlier_pairs):
+            best_inlier_pairs = inlier_pairs
+
+        if len(inlier_pairs) > stop_thresh * N:
+            print(f"Early stopping RANSAC with {len(inlier_pairs)} inliers")
+            break
+
+    try:
+        if len(best_inlier_pairs) < 4:
+            return None
+        H_final = _compute_homography(np.asarray(best_inlier_pairs, dtype=np.float32))
+    except np.linalg.LinAlgError:
+        H_final = None
+        best_inlier_pairs = []
+    return H_final
+
+
+def extract_patches(images, pairwise_H, num_patches=30):
+    """
+    get num_patches patch pairs between image i warped to image i+1 frame and image i+1
+    """
+    all_pair_patches = []
+    h, w = images[0].shape[:2]
+    for i in range(len(images) - 1):
+        H = pairwise_H[i]
+        pair_patches = []
+        # warp image i to image i+1 frame
+        warped_img = cv2.warpPerspective(images[i], H, dsize=(w, h))
+        attempts = 0
+        while len(pair_patches) < num_patches and attempts < num_patches * 5:
+            attempts += 1
+            # get patch_a from image i+1
+            patch_a, patch_coords = _get_random_patch(images[i + 1])
+            if patch_a is None:
+                continue
+            y1, y2 = patch_coords[0][1], patch_coords[2][1]
+            x1, x2 = patch_coords[0][0], patch_coords[2][0]
+            patch_b = warped_img[y1:y2, x1:x2]
+            if patch_b.shape[:2] != patch_a.shape[:2]:
+                continue
+            # skip patches where warped image is mostly black (outside source)
+            gray_b = cv2.cvtColor(patch_b, cv2.COLOR_BGR2GRAY) if patch_b.ndim == 3 else patch_b
+            if np.mean(gray_b > 0) < 0.9:
+                continue
+            pair_patches.append((patch_a, patch_b, patch_coords))
+        all_pair_patches.append(pair_patches)
+    return all_pair_patches
+
+
+def patches_to_tensor(patches, device):
+    """
+    patches: list of (H, W, 3) numpy arrays
+    returns: torch tensor (B, 1, H, W)
+    """
+    tensors = []
+    for p in patches:
+        p = cv2.cvtColor(p, cv2.COLOR_BGR2GRAY)
+        p = torch.from_numpy(p).unsqueeze(0).float() / 255.0
+        tensors.append(p.to(device))
+    return torch.stack(tensors)
 
 
 def main():
@@ -199,7 +214,7 @@ def main():
 
     # initialize model
     model_path = (
-        os.path.dirname(os.path.abspath(__file__)) + "/checkpoints/best_model.pt"
+        os.path.dirname(os.path.abspath(__file__)) + "/checkpoints/supervised.pt"
     )
     model = SupervisedHomographyModel()
     checkpoint = torch.load(model_path, map_location=device)
@@ -207,41 +222,32 @@ def main():
     model.to(device)
     model.eval()
 
-    # extract patches from images via feature matching
+    # extract patches from images via traditional method
     images = load_images(test_data_dir)
     pairwise_matches = get_matching_features(images)
-    pairwise_H = []
-    for i in range(len(images) - 1):
-        # extract patches around matched features
-        patches_a, patches_b, patch_a_coords = extract_patches(
-            images[i], images[i + 1], pairwise_matches[i]
-        )
+    pairwise_H_ransac = [RANSAC_homography(m) for m in pairwise_matches]
+    all_pair_patches = extract_patches(images, pairwise_H_ransac, num_patches=30)
 
-        # predict deltas with trained model
-        with torch.no_grad():
-            delta_preds = (
-                model(
-                    patches_to_tensor(patches_a).to(device),
-                    patches_to_tensor(patches_b).to(device),
-                )
-                .cpu()
-                .numpy()
-            )
+    # for each image pair, predict residual correction and compose with RANSAC H
+    H_pred = []
+    with torch.no_grad():
+        for idx, pair_patches in enumerate(all_pair_patches):
+            all_corr = []
+            for patch_a, patch_b, patch_coords in pair_patches:
+                xa = patches_to_tensor([patch_a], device=device)
+                xb = patches_to_tensor([patch_b], device=device)
+                pred_delta = model(xa, xb).detach().cpu().numpy().reshape(4, 2)
+                patch_coords = np.asarray(patch_coords, dtype=np.float32)
+                pred_coords = patch_coords + pred_delta * NORMALIZING_FACTOR
+                corr = np.stack([patch_coords, pred_coords], axis=1)
+                all_corr.append(corr)
+            all_corr = np.concatenate(all_corr, axis=0)
+            print(f"Pair {idx}: fitting correction from {len(all_corr)} correspondences")
+            H_correction = _compute_homography(all_corr)
+            H_final = H_correction @ pairwise_H_ransac[idx]
+            H_pred.append(H_final)
 
-        delta_preds = delta_preds * NORMALIZING_FACTOR
-
-        patch_a_coords_np = np.array(patch_a_coords, dtype=np.float32)
-        deltas = delta_preds.reshape(-1, 4, 2)
-        patch_b_coords_est = patch_a_coords_np + deltas
-
-        # build all corner correspondence pairs across all patches
-        src_pts = patch_a_coords_np.reshape(-1, 2)
-        dst_pts = patch_b_coords_est.reshape(-1, 2)
-        corner_pairs = np.stack([src_pts, dst_pts], axis=1)
-
-        H_i = _compute_homography(corner_pairs)
-        pairwise_H.append(H_i)
-    panorama = form_panorama(images, pairwise_H=pairwise_H, graph_mode=False)
+    panorama = form_panorama(images, pairwise_H=H_pred, graph_mode=False)
     cv2.imwrite("mypano.png", panorama)
 
 
