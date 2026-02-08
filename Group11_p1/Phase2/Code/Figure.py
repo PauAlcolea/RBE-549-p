@@ -269,7 +269,7 @@ if __name__ == "__main__":
     supervised_model.eval()
 
     unsupervised_path = (
-        os.path.dirname(os.path.abspath(__file__)) + "/checkpoints/best_model.pt"
+        os.path.dirname(os.path.abspath(__file__)) + "/checkpoints/unsupervised.pt"
     )
     unsupervised_model = UnsupervisedHomographyModel()
     checkpoint = torch.load(unsupervised_path, map_location=device)

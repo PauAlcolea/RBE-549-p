@@ -224,7 +224,7 @@ def main():
     model_path = (
         os.path.dirname(os.path.abspath(__file__)) + "/checkpoints/supervised.pt"
     ) if args.model == "s" else (
-        os.path.dirname(os.path.abspath(__file__)) + "/checkpoints/best_model.pt"
+        os.path.dirname(os.path.abspath(__file__)) + "/checkpoints/unsupervised.pt"
     )
     model = SupervisedHomographyModel() if args.model == "s" else UnsupervisedHomographyModel()
     checkpoint = torch.load(model_path, map_location=device)
