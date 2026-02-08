@@ -20,6 +20,8 @@ from Phase1.Code.Wrapper import (
     _normalize_points,
     _form_A_matrix,
     form_panorama,
+    cylindrical_warp,
+    build_and_walk_graph,
 )
 from Network.Network import SupervisedHomographyModel, UnsupervisedHomographyModel
 from Dataset import NORMALIZING_FACTOR
@@ -36,7 +38,7 @@ def load_images(dir):
     return images
 
 
-def get_matching_features(images):
+def get_matching_features(images, graph_mode=False):
     raw_corners = [locate_corners(image) for image in images]
     anms_corners = [ANMS(corners) for corners in raw_corners]
     fds, kps = zip(
@@ -45,17 +47,31 @@ def get_matching_features(images):
             for image, corners in zip(images, anms_corners)
         ]
     )
-    pairwise_matches = []
-    for i in range(len(images) - 1):
-        # match_features returns index pairs (idx_in_img_i, idx_in_img_i+1)
-        idx_matches = match_features(fds[i], fds[i + 1])
+    pairwise_matches = {} if graph_mode else []
+    
+    if graph_mode:
+        for i in range(len(images)):
+            for j in range(i + 1, len(images)):
+                # match_features returns index pairs (idx_in_img_i, idx_in_img_j)
+                idx_matches = match_features(fds[i], fds[j])
+                
+                # convert index pairs to coordinate pairs ((x1, y1), (x2, y2))
+                kp1 = kps[i]
+                kp2 = kps[j]
+                coord_matches = [(kp1[i1], kp2[i2]) for i1, i2 in idx_matches]
+                
+                pairwise_matches[(i, j)] = coord_matches
+    else:
+        for i in range(len(images) - 1):
+            # match_features returns index pairs (idx_in_img_i, idx_in_img_i+1)
+            idx_matches = match_features(fds[i], fds[i + 1])
 
-        # convert index pairs to coordinate pairs ((x1, y1), (x2, y2))
-        kp1 = kps[i]
-        kp2 = kps[i + 1]
-        coord_matches = [(kp1[i1], kp2[i2]) for i1, i2 in idx_matches]
+            # convert index pairs to coordinate pairs ((x1, y1), (x2, y2))
+            kp1 = kps[i]
+            kp2 = kps[i + 1]
+            coord_matches = [(kp1[i1], kp2[i2]) for i1, i2 in idx_matches]
 
-        pairwise_matches.append(coord_matches)
+            pairwise_matches.append(coord_matches)
     return pairwise_matches
 
 
@@ -81,8 +97,8 @@ def _compute_homography(pairs):
 
 def RANSAC_homography(
     matching_pairs,
-    n_iterations=100,
-    inlier_thresh=5,
+    n_iterations=1000,
+    inlier_thresh=30,
     stop_thresh=0.85,
 ):
     # convert to numpy array of shape (N, 2, 2): [[x1,y1],[x2,y2]]
@@ -134,22 +150,26 @@ def RANSAC_homography(
     return H_final
 
 
-def extract_patches(images, pairwise_H, num_patches=30):
+def extract_patches(images, pairwise_H, image_pairs, num_patches=30):
     """
-    get num_patches patch pairs between image i warped to image i+1 frame and image i+1
+    get num_patches patch pairs between image i warped to image j frame and image j
+    image_pairs: list of (i, j) tuples indicating which image pairs to extract patches from
     """
     all_pair_patches = []
     h, w = images[0].shape[:2]
-    for i in range(len(images) - 1):
-        H = pairwise_H[i]
+    for idx, (i, j) in enumerate(image_pairs):
+        H = pairwise_H[idx]
+        if H is None:
+            all_pair_patches.append([])
+            continue
         pair_patches = []
-        # warp image i to image i+1 frame
+        # warp image i to image j frame
         warped_img = cv2.warpPerspective(images[i], H, dsize=(w, h))
         attempts = 0
         while len(pair_patches) < num_patches and attempts < num_patches * 5:
             attempts += 1
-            # get patch_a from image i+1
-            patch_a, patch_coords = _get_random_patch(images[i + 1])
+            # get patch_a from image j
+            patch_a, patch_coords = _get_random_patch(images[j])
             if patch_a is None:
                 continue
             y1, y2 = patch_coords[0][1], patch_coords[2][1]
@@ -200,17 +220,30 @@ def main():
         "--dir",
         type=str,
         default="Train/Set1",
-        help="directory containing images to stitch; relative to Phase#/Data, i.e. 'Train/Set1' or 'Test/unity_hall'",
+        help="directory containing images to stitch; relative to Phase#/Data, i.e. 'Train/Set1' or 'Test/unity_hall'. Assumes that both phase's Data/ is in same directory as Code/",
     )
     parser.add_argument(
         "-m",
-        "--model",
+        "--ModelType",
         type=str,
         default="supervised",
-        choices=["s", "u"],
-        help="which model checkpoint to use for testing",
+        choices=["supervised", "unsupervised"],
+        help="Model type. Assumes \"supervised.pt\" and \"unsupervised.pt\" checkpoints are in Code/checkpoints/",
+    )
+    parser.add_argument(
+        "-g",
+        "--graph",
+        action="store_true",
+        help="Form homography graph to stitch images in optimal order. Slow, but effective for out-of-order image sets.",
+    )
+    parser.add_argument(
+        "-w",
+        "--warp",
+        action="store_true",
+        help="Apply cylindrical warp to images before stitching. Helpful for wide FOV images/large datasets.",
     )
     args = parser.parse_args()
+    graph_mode = args.graph
     data_top_dir = (
         os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         + f"/Phase{args.phase}/Data/"
@@ -223,10 +256,10 @@ def main():
     # initialize model
     model_path = (
         os.path.dirname(os.path.abspath(__file__)) + "/checkpoints/supervised.pt"
-    ) if args.model == "s" else (
+    ) if args.ModelType == "supervised" else (
         os.path.dirname(os.path.abspath(__file__)) + "/checkpoints/unsupervised.pt"
     )
-    model = SupervisedHomographyModel() if args.model == "s" else UnsupervisedHomographyModel()
+    model = SupervisedHomographyModel() if args.ModelType == "supervised" else UnsupervisedHomographyModel()
     checkpoint = torch.load(model_path, map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.to(device)
@@ -234,14 +267,77 @@ def main():
 
     # extract patches from images via traditional method
     images = load_images(test_data_dir)
-    pairwise_matches = get_matching_features(images)
-    pairwise_H_ransac = [RANSAC_homography(m) for m in pairwise_matches]
-    all_pair_patches = extract_patches(images, pairwise_H_ransac, num_patches=30)
+    if args.warp:
+        images = [
+            cylindrical_warp(img, cylinder_radius=img.shape[1] + 100) for img in images
+        ]
+    pairwise_matches = get_matching_features(images, graph_mode=graph_mode)
+    
+    # compute RANSAC homographies and track inliers
+    if graph_mode:
+        pairwise_H_ransac = {}
+        pairwise_inliers = {}
+        image_pairs = []
+        
+        for (i, j), matches in pairwise_matches.items():
+            if len(matches) < 4:
+                continue
+            print(f"Evaluating matches between images {i} and {j}: {len(matches)} total matches")
+            H_ij = RANSAC_homography(matches)
+            
+            if H_ij is None:
+                continue
+            
+            # count inliers for this homography
+            inlier_count = 0
+            for (x1, y1), (x2, y2) in matches:
+                p1 = np.array([x1, y1, 1.0]).reshape((3, 1))
+                p2_est = H_ij @ p1
+                p2_est = (p2_est[:2] / max(p2_est[2], 1e-8)).flatten()
+                dist = np.linalg.norm(p2_est - np.array([x2, y2]), ord=1)
+                if dist < 10:
+                    inlier_count += 1
+            
+            inlier_ratio = inlier_count / len(matches)
+            if inlier_ratio < 0.30:
+                continue
+            
+            pairwise_H_ransac[(i, j)] = H_ij
+            pairwise_inliers[(i, j)] = inlier_count
+            image_pairs.append((i, j))
+            print(f"Images {i} <-> {j}: {inlier_count} inliers")
+        
+        # extract ordered list of H matrices from graph
+        pairwise_H_list = [pairwise_H_ransac[pair] for pair in image_pairs]
+    else:
+        pairwise_H_ransac = []
+        for i, matches in enumerate(pairwise_matches):
+            H_i = RANSAC_homography(matches)
+            if H_i is not None and len(matches) >= 4:
+                # count inliers and filter weak homographies
+                inlier_count = sum(1 for (x1, y1), (x2, y2) in matches 
+                                   if np.linalg.norm((H_i @ np.array([x1, y1, 1.0]))[:2] / max((H_i @ np.array([x1, y1, 1.0]))[2], 1e-8) - np.array([x2, y2]), ord=1) < 10)
+                if inlier_count / len(matches) < 0.15:
+                    H_i = None
+            pairwise_H_ransac.append(H_i)
+        pairwise_inliers = None
+        image_pairs = [(i, i+1) for i in range(len(images) - 1)]
+        pairwise_H_list = pairwise_H_ransac 
+    
+    all_pair_patches = extract_patches(images, pairwise_H_list, image_pairs, num_patches=30)
 
-    # for each image pair, predict residual correction and compose with RANSAC H
-    H_pred = []
+    # for each image pair, predict residual correction
+    H_pred = [] if not graph_mode else {}
     with torch.no_grad():
         for idx, pair_patches in enumerate(all_pair_patches):
+            pair_key = image_pairs[idx] if graph_mode else idx
+            
+            # skip pairs with no initial homography
+            if pairwise_H_list[idx] is None:
+                if not graph_mode:
+                    H_pred.append(None)
+                continue
+            
             all_corr = []
             for patch_a, patch_b, patch_coords in pair_patches:
                 xa = patches_to_tensor([patch_a], device=device)
@@ -251,19 +347,30 @@ def main():
                 pred_coords = patch_coords + pred_delta * NORMALIZING_FACTOR
                 corr = np.stack([patch_coords, pred_coords], axis=1)
                 all_corr.append(corr)
+            
             if len(all_corr) == 0:
-                print(f"Pair {idx}: no valid correspondences, using RANSAC H fallback")
-                fallback_H = pairwise_H_ransac[idx] if pairwise_H_ransac[idx] is not None else np.eye(3, dtype=np.float32)
-                H_pred.append(fallback_H)
+                if graph_mode:
+                    H_pred[pair_key] = pairwise_H_list[idx]
+                else:
+                    H_pred.append(pairwise_H_list[idx])
                 continue
 
             all_corr = np.concatenate(all_corr, axis=0)
-            print(f"Pair {idx}: fitting correction from {len(all_corr)} correspondences")
+            print(f"Pair {pair_key}: fitting correction from {len(all_corr)} correspondences")
             H_correction = _compute_homography(all_corr)
-            H_final = H_correction @ pairwise_H_ransac[idx]
-            H_pred.append(H_final)
+            H_final = H_correction @ pairwise_H_list[idx]
+            
+            if graph_mode:
+                H_pred[pair_key] = H_final
+            else:
+                H_pred.append(H_final)
+    
+    # build and walk graph if in graph mode
+    if graph_mode:
+        H_pred, image_order = build_and_walk_graph(H_pred, pairwise_inliers)
+        images = [images[i] for i in image_order]
 
-    panorama = form_panorama(images, pairwise_H=H_pred, graph_mode=False)
+    panorama = form_panorama(images, pairwise_H=H_pred, graph_mode=graph_mode)
     cv2.imwrite("../Output/mypano.png", panorama)
 
 
