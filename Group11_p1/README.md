@@ -22,3 +22,15 @@ options:
   -g, --graph           Form homography graph to stitch images in optimal order. Slow, but effective for out-of-order image sets.
   -w, --warp            Apply cylindrical warp to images before stitching. Helpful for wide FOV images.
   ```
+
+  ```
+  usage: Test.py [-h] [-d {Train,Val,Test}] [-b BATCH_SIZE] [-t {supervised,unsupervised}]
+
+Evaluate homography model and compute EPE
+
+options:
+  -h, --help            show this help message and exit
+  -d, --dataset {Train,Val,Test}
+                        Dataset to evaluate on (Train, Val, or Test)
+  -t, --ModelType {supervised,unsupervised}
+  ```

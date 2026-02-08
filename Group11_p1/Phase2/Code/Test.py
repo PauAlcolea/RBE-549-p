@@ -15,45 +15,18 @@ from Network.Network import SupervisedHomographyModel, UnsupervisedHomographyMod
 
 
 def calculate_epe(predictions, ground_truth):
-    """
-    Calculate Endpoint Error (L2 distance) between predictions and ground truth
-
-    Args:
-        predictions: predicted corner shifts (N, 8) or (N, 4, 2)
-        ground_truth: ground truth corner shifts (N, 8) or (N, 4, 2)
-
-    Returns:
-        epe: average L2 distance per corner point
-    """
-    # Reshape to (N, 4, 2) if needed
     if predictions.ndim == 2 and predictions.shape[1] == 8:
         predictions = predictions.reshape(-1, 4, 2)
     if ground_truth.ndim == 2 and ground_truth.shape[1] == 8:
         ground_truth = ground_truth.reshape(-1, 4, 2)
 
-    # Calculate L2 distance for each corner
     diff = predictions - ground_truth
     distances = np.linalg.norm(diff, axis=2)  # (N, 4)
-
-    # Average over all corners and all samples
     epe = np.mean(distances)
     return epe
 
 
 def evaluate_model(model, dataset, device, batch_size=64):
-    """
-    Evaluate model on entire dataset and calculate average EPE
-
-    Args:
-        model: trained model
-        dataset: HomographyDataset instance
-        device: device to run inference on
-        batch_size: batch size for inference
-
-    Returns:
-        avg_epe: average EPE over the dataset
-        avg_inference_time: average forward pass time per sample (in ms)
-    """
     model.eval()
 
     all_predictions = []
@@ -64,7 +37,6 @@ def evaluate_model(model, dataset, device, batch_size=64):
 
     print(f"Running inference on {num_samples} samples...")
 
-    # Warm-up run to initialize CUDA graphs
     if device == "cuda":
         print("Warming up CUDA...")
         with torch.no_grad():
@@ -82,7 +54,7 @@ def evaluate_model(model, dataset, device, batch_size=64):
             end_idx = min(start_idx + batch_size, num_samples)
             current_batch_size = end_idx - start_idx
 
-            # Load batch
+            # load batch
             batch_patches_a = []
             batch_patches_b = []
             batch_shifts = []
@@ -93,12 +65,12 @@ def evaluate_model(model, dataset, device, batch_size=64):
                 batch_patches_b.append(patch_b)
                 batch_shifts.append(shifts)
 
-            # Stack into tensors
+            # stack into tensors
             patch_a = torch.stack(batch_patches_a).to(device)
             patch_b = torch.stack(batch_patches_b).to(device)
             gt_shifts = torch.stack(batch_shifts).numpy()
 
-            # Time the forward pass
+            # time the forward pass
             if device == "cuda":
                 torch.cuda.synchronize()
 
@@ -110,14 +82,14 @@ def evaluate_model(model, dataset, device, batch_size=64):
 
             end_time = time.perf_counter()
 
-            # Accumulate timing
+            # accumulate timing
             total_inference_time += end_time - start_time
             total_samples_timed += current_batch_size
 
-            # Convert predictions to numpy
+            # convert predictions to numpy
             predictions_np = predictions.cpu().numpy()
 
-            # Denormalize (predictions and ground truth are in normalized space)
+            # denormalize
             predictions_denorm = predictions_np * NORMALIZING_FACTOR
             gt_shifts_denorm = gt_shifts * NORMALIZING_FACTOR
 
@@ -127,14 +99,14 @@ def evaluate_model(model, dataset, device, batch_size=64):
             if (batch_idx + 1) % 10 == 0:
                 print(f"  Processed {end_idx}/{num_samples} samples...")
 
-    # Concatenate all predictions and ground truth
+    # concatenate all predictions and ground truth
     all_predictions = np.concatenate(all_predictions, axis=0)
     all_ground_truth = np.concatenate(all_ground_truth, axis=0)
 
-    # Calculate EPE
+    # calculate EPE
     avg_epe = calculate_epe(all_predictions, all_ground_truth)
 
-    # Calculate average inference time per sample in milliseconds
+    # calculate average inference time per sample in milliseconds
     avg_inference_time = (total_inference_time / total_samples_timed) * 1000
 
     return avg_epe, avg_inference_time
@@ -151,13 +123,6 @@ def main():
         help="Dataset to evaluate on (Train, Val, or Test)",
     )
     parser.add_argument(
-        "-b",
-        "--batch_size",
-        type=int,
-        default=64,
-        help="Batch size for inference",
-    )
-    parser.add_argument(
         "-t",
         "--ModelType",
         type=str,
@@ -168,7 +133,6 @@ def main():
 
     args = parser.parse_args()
 
-    # Setup device
     device = (
         "cuda"
         if torch.cuda.is_available()
@@ -176,7 +140,6 @@ def main():
     )
     print(f"Using device: {device}")
 
-    # Setup paths
     gen_data_dir = (
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/Data/Generated"
     )
@@ -189,12 +152,12 @@ def main():
         print(f"Error: Label file not found at {label_file}")
         return
 
-    # Load dataset
+    # load dataset
     print(f"Loading {args.dataset} dataset from {data_dir}...")
     dataset = HomographyDataset(data_dir, label_file)
     print(f"Dataset size: {len(dataset)} samples")
 
-    # Load model
+    # load model
     if args.ModelType == "supervised":
         model = SupervisedHomographyModel()
         path = os.path.dirname(os.path.abspath(__file__)) + "/checkpoints/supervised.pt"
@@ -210,12 +173,10 @@ def main():
 
     print(f"Model loaded (trained for {checkpoint.get('epoch', 'unknown')} epochs)")
 
-    # Evaluate
-    avg_epe, avg_time = evaluate_model(
-        model, dataset, device, batch_size=args.batch_size
-    )
+    # evaluate
+    avg_epe, avg_time = evaluate_model(model, dataset, device)
 
-    # Print results
+    # print results
     print("\n" + "=" * 60)
     print(f"RESULTS - {args.dataset} Dataset")
     print("=" * 60)
