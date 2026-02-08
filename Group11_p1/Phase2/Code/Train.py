@@ -207,6 +207,17 @@ def train_supervised(train_data_dir, train_label_file, val_data_dir, val_label_f
 
                 # forward pass
                 pred_delta = model(patch_a, patch_b)
+                loss = loss_fn(pred_delta, gt_delta)
+                
+                # denormalize for corner error metric
+                pred_delta_px = pred_delta * NORMALIZING_FACTOR
+                gt_delta_px = gt_delta * NORMALIZING_FACTOR
+                corner_err = (pred_delta_px - gt_delta_px).view(-1, 4, 2).norm(dim=2).mean()
+                val_corner_err += corner_err.item()
+
+                # add corner error (scaled back to normalized space)
+                loss += (corner_err / NORMALIZING_FACTOR)
+                val_loss += loss.item()
 
                 # loss calculation depending on if its supervised or unsupervised model
                 if supervised:
