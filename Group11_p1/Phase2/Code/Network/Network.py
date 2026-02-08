@@ -209,8 +209,10 @@ class UnsupervisedHomographyModel(nn.Module):
 
 class UnsupervisedNet(nn.Module):
     """unsupervised homography network"""
+
     def __init__(self, OutputSize=8):
         super().__init__()
+
         def conv_block(in_channels, out_channels):
             return nn.Sequential(
                 nn.Conv2d(
@@ -222,32 +224,31 @@ class UnsupervisedNet(nn.Module):
                 nn.BatchNorm2d(num_features=out_channels),
                 nn.ReLU(inplace=True),
             )
-        
+
         self.features = nn.Sequential(
-                conv_block(2, 64),
-                conv_block(64, 64),
-                nn.MaxPool2d(kernel_size=2, stride=2),
-                conv_block(64, 128),
-                conv_block(128, 128),
-                nn.MaxPool2d(kernel_size=2, stride=2),
-                conv_block(128, 128),
-                conv_block(128, 128),
-                nn.AdaptiveAvgPool2d((1, 1)),
-            )
+            conv_block(2, 64),
+            conv_block(64, 64),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            conv_block(64, 128),
+            conv_block(128, 128),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            conv_block(128, 128),
+            conv_block(128, 128),
+            nn.AdaptiveAvgPool2d((1, 1)),
+        )
         self.fc = nn.Sequential(
             nn.Linear(in_features=128, out_features=256),
             nn.ReLU(inplace=True),
             nn.Dropout(p=0.4),
             nn.Linear(in_features=256, out_features=OutputSize),
-            )
-        
+        )
+
         # init weights
         for m in self.modules():
             if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
                 nn.init.kaiming_normal_(m.weight)
                 if hasattr(m, "bias") and m.bias is not None:
                     nn.init.zeros_(m.bias)
-
 
     def forward(self, xa, xb):
         x = torch.cat([xa, xb], dim=1)

@@ -48,18 +48,18 @@ def get_matching_features(images, graph_mode=False):
         ]
     )
     pairwise_matches = {} if graph_mode else []
-    
+
     if graph_mode:
         for i in range(len(images)):
             for j in range(i + 1, len(images)):
                 # match_features returns index pairs (idx_in_img_i, idx_in_img_j)
                 idx_matches = match_features(fds[i], fds[j])
-                
+
                 # convert index pairs to coordinate pairs ((x1, y1), (x2, y2))
                 kp1 = kps[i]
                 kp2 = kps[j]
                 coord_matches = [(kp1[i1], kp2[i2]) for i1, i2 in idx_matches]
-                
+
                 pairwise_matches[(i, j)] = coord_matches
     else:
         for i in range(len(images) - 1):
@@ -94,6 +94,7 @@ def _compute_homography(pairs):
     # denormalize H
     H = np.linalg.inv(T2) @ H @ T1
     return H
+
 
 def RANSAC_homography(
     matching_pairs,
@@ -178,7 +179,11 @@ def extract_patches(images, pairwise_H, image_pairs, num_patches=30):
             if patch_b.shape[:2] != patch_a.shape[:2]:
                 continue
             # skip patches where warped image is mostly black (outside source)
-            gray_b = cv2.cvtColor(patch_b, cv2.COLOR_BGR2GRAY) if patch_b.ndim == 3 else patch_b
+            gray_b = (
+                cv2.cvtColor(patch_b, cv2.COLOR_BGR2GRAY)
+                if patch_b.ndim == 3
+                else patch_b
+            )
             if np.mean(gray_b > 0) < 0.9:
                 continue
             pair_patches.append((patch_a, patch_b, patch_coords))
@@ -228,7 +233,7 @@ def main():
         type=str,
         default="supervised",
         choices=["supervised", "unsupervised"],
-        help="Model type. Assumes \"supervised.pt\" and \"unsupervised.pt\" checkpoints are in Code/checkpoints/",
+        help='Model type. Assumes "supervised.pt" and "unsupervised.pt" checkpoints are in Code/checkpoints/',
     )
     parser.add_argument(
         "-g",
@@ -255,11 +260,17 @@ def main():
 
     # initialize model
     model_path = (
-        os.path.dirname(os.path.abspath(__file__)) + "/checkpoints/supervised.pt"
-    ) if args.ModelType == "supervised" else (
-        os.path.dirname(os.path.abspath(__file__)) + "/checkpoints/unsupervised.pt"
+        (os.path.dirname(os.path.abspath(__file__)) + "/checkpoints/supervised.pt")
+        if args.ModelType == "supervised"
+        else (
+            os.path.dirname(os.path.abspath(__file__)) + "/checkpoints/unsupervised.pt"
+        )
     )
-    model = SupervisedHomographyModel() if args.ModelType == "supervised" else UnsupervisedHomographyModel()
+    model = (
+        SupervisedHomographyModel()
+        if args.ModelType == "supervised"
+        else UnsupervisedHomographyModel()
+    )
     checkpoint = torch.load(model_path, map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.to(device)
@@ -272,22 +283,24 @@ def main():
             cylindrical_warp(img, cylinder_radius=img.shape[1] + 100) for img in images
         ]
     pairwise_matches = get_matching_features(images, graph_mode=graph_mode)
-    
+
     # compute RANSAC homographies and track inliers
     if graph_mode:
         pairwise_H_ransac = {}
         pairwise_inliers = {}
         image_pairs = []
-        
+
         for (i, j), matches in pairwise_matches.items():
             if len(matches) < 4:
                 continue
-            print(f"Evaluating matches between images {i} and {j}: {len(matches)} total matches")
+            print(
+                f"Evaluating matches between images {i} and {j}: {len(matches)} total matches"
+            )
             H_ij = RANSAC_homography(matches)
-            
+
             if H_ij is None:
                 continue
-            
+
             # count inliers for this homography
             inlier_count = 0
             for (x1, y1), (x2, y2) in matches:
@@ -297,16 +310,16 @@ def main():
                 dist = np.linalg.norm(p2_est - np.array([x2, y2]), ord=1)
                 if dist < 10:
                     inlier_count += 1
-            
+
             inlier_ratio = inlier_count / len(matches)
             if inlier_ratio < 0.30:
                 continue
-            
+
             pairwise_H_ransac[(i, j)] = H_ij
             pairwise_inliers[(i, j)] = inlier_count
             image_pairs.append((i, j))
             print(f"Images {i} <-> {j}: {inlier_count} inliers")
-        
+
         # extract ordered list of H matrices from graph
         pairwise_H_list = [pairwise_H_ransac[pair] for pair in image_pairs]
     else:
@@ -315,29 +328,40 @@ def main():
             H_i = RANSAC_homography(matches)
             if H_i is not None and len(matches) >= 4:
                 # count inliers and filter weak homographies
-                inlier_count = sum(1 for (x1, y1), (x2, y2) in matches 
-                                   if np.linalg.norm((H_i @ np.array([x1, y1, 1.0]))[:2] / max((H_i @ np.array([x1, y1, 1.0]))[2], 1e-8) - np.array([x2, y2]), ord=1) < 10)
+                inlier_count = sum(
+                    1
+                    for (x1, y1), (x2, y2) in matches
+                    if np.linalg.norm(
+                        (H_i @ np.array([x1, y1, 1.0]))[:2]
+                        / max((H_i @ np.array([x1, y1, 1.0]))[2], 1e-8)
+                        - np.array([x2, y2]),
+                        ord=1,
+                    )
+                    < 10
+                )
                 if inlier_count / len(matches) < 0.15:
                     H_i = None
             pairwise_H_ransac.append(H_i)
         pairwise_inliers = None
-        image_pairs = [(i, i+1) for i in range(len(images) - 1)]
-        pairwise_H_list = pairwise_H_ransac 
-    
-    all_pair_patches = extract_patches(images, pairwise_H_list, image_pairs, num_patches=30)
+        image_pairs = [(i, i + 1) for i in range(len(images) - 1)]
+        pairwise_H_list = pairwise_H_ransac
+
+    all_pair_patches = extract_patches(
+        images, pairwise_H_list, image_pairs, num_patches=30
+    )
 
     # for each image pair, predict residual correction
     H_pred = [] if not graph_mode else {}
     with torch.no_grad():
         for idx, pair_patches in enumerate(all_pair_patches):
             pair_key = image_pairs[idx] if graph_mode else idx
-            
+
             # skip pairs with no initial homography
             if pairwise_H_list[idx] is None:
                 if not graph_mode:
                     H_pred.append(None)
                 continue
-            
+
             all_corr = []
             for patch_a, patch_b, patch_coords in pair_patches:
                 xa = patches_to_tensor([patch_a], device=device)
@@ -347,7 +371,7 @@ def main():
                 pred_coords = patch_coords + pred_delta * NORMALIZING_FACTOR
                 corr = np.stack([patch_coords, pred_coords], axis=1)
                 all_corr.append(corr)
-            
+
             if len(all_corr) == 0:
                 if graph_mode:
                     H_pred[pair_key] = pairwise_H_list[idx]
@@ -356,15 +380,17 @@ def main():
                 continue
 
             all_corr = np.concatenate(all_corr, axis=0)
-            print(f"Pair {pair_key}: fitting correction from {len(all_corr)} correspondences")
+            print(
+                f"Pair {pair_key}: fitting correction from {len(all_corr)} correspondences"
+            )
             H_correction = _compute_homography(all_corr)
             H_final = H_correction @ pairwise_H_list[idx]
-            
+
             if graph_mode:
                 H_pred[pair_key] = H_final
             else:
                 H_pred.append(H_final)
-    
+
     # build and walk graph if in graph mode
     if graph_mode:
         H_pred, image_order = build_and_walk_graph(H_pred, pairwise_inliers)

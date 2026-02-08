@@ -16,6 +16,7 @@ from Phase1.Code.Wrapper import (
     match_features,
 )
 
+
 def learning_pipeline(patches, model, device):
     patch_a, patch_b = patches
     xa = torch.from_numpy(patch_a).unsqueeze(0).unsqueeze(0).float() / 255.0
@@ -32,6 +33,7 @@ def learning_pipeline(patches, model, device):
 
     pred_scaled = pred * float(NORMALIZING_FACTOR)
     return pred_scaled
+
 
 def largest_square_patch_that_fits(img, center_xy):
 
@@ -62,36 +64,45 @@ def _traditional_pipeline(images):
     kp2 = kps[1]
     coord_matches = [(kp1[i1], kp2[i2]) for i1, i2 in idx_matches]
     pairwise_matches = coord_matches
-    pairwise_H = RANSAC_homography(pairwise_matches, n_iterations=50, inlier_thresh=10.0)
+    pairwise_H = RANSAC_homography(
+        pairwise_matches, n_iterations=50, inlier_thresh=10.0
+    )
     return pairwise_H
 
 
-def run_traditional_on_large_then_map_to_image(corners, img_gray, warped_gray,patch_size_net=128):
+def run_traditional_on_large_then_map_to_image(
+    corners, img_gray, warped_gray, patch_size_net=128
+):
     cx = int((corners[0, 0] + corners[2, 0]) / 2)
     cy = int((corners[0, 1] + corners[2, 1]) / 2)
     patchA_large, bbox = largest_square_patch_that_fits(img_gray, (cx, cy))
-    patchB_large, _    = largest_square_patch_that_fits(warped_gray, (cx, cy))
+    patchB_large, _ = largest_square_patch_that_fits(warped_gray, (cx, cy))
 
     x1, y1, _, _ = bbox
     H_large, W_large = patchA_large.shape[:2]
 
     # un traditional pipeline on large patches
-    H_patch = _traditional_pipeline([
-        cv2.cvtColor(patchA_large, cv2.COLOR_GRAY2BGR),
-        cv2.cvtColor(patchB_large, cv2.COLOR_GRAY2BGR),
-    ])
+    H_patch = _traditional_pipeline(
+        [
+            cv2.cvtColor(patchA_large, cv2.COLOR_GRAY2BGR),
+            cv2.cvtColor(patchB_large, cv2.COLOR_GRAY2BGR),
+        ]
+    )
 
     # 128x128 patch inside large patch
     half_net = patch_size_net // 2
     cx, cy = W_large // 2, H_large // 2
     net_x1, net_y1 = cx - half_net, cy - half_net
 
-    src_corners_large = np.array([
-        [net_x1,              net_y1],
-        [net_x1 + patch_size_net, net_y1],
-        [net_x1 + patch_size_net, net_y1 + patch_size_net],
-        [net_x1,              net_y1 + patch_size_net],
-    ], dtype=np.float32)
+    src_corners_large = np.array(
+        [
+            [net_x1, net_y1],
+            [net_x1 + patch_size_net, net_y1],
+            [net_x1 + patch_size_net, net_y1 + patch_size_net],
+            [net_x1, net_y1 + patch_size_net],
+        ],
+        dtype=np.float32,
+    )
 
     #  warp corners using H_patch
     dst_corners_large = cv2.perspectiveTransform(
@@ -131,31 +142,49 @@ def visualize_known_warp_and_prediction(
     shifted_corners, shifts = _shift_corners(corners, img_gray.shape[:2], max_shift=24)
 
     # ground truth homography
-    H_gt = cv2.getPerspectiveTransform(corners.astype(np.float32), shifted_corners.astype(np.float32))
+    H_gt = cv2.getPerspectiveTransform(
+        corners.astype(np.float32), shifted_corners.astype(np.float32)
+    )
 
     # warp full image
     warped_bgr = cv2.warpPerspective(img_bgr, H_gt, (W, H))
     warped_gray = cv2.cvtColor(warped_bgr, cv2.COLOR_BGR2GRAY)
 
     # extract patch A and patch B at the same coordinates in both images
-    patch_a = img_gray[corners[0, 1]:corners[2, 1], corners[0, 0]:corners[2, 0]]  # (ps, ps)
-    patch_b = warped_gray[corners[0, 1]:corners[2, 1], corners[0, 0]:corners[2, 0]]  # (ps, ps)
+    patch_a = img_gray[
+        corners[0, 1] : corners[2, 1], corners[0, 0] : corners[2, 0]
+    ]  # (ps, ps)
+    patch_b = warped_gray[
+        corners[0, 1] : corners[2, 1], corners[0, 0] : corners[2, 0]
+    ]  # (ps, ps)
 
     # get model predicted deltas
-    pred_supervised = learning_pipeline((patch_a, patch_b), supervised_model, device=device)    
-    pred_unsupervised = learning_pipeline((patch_a, patch_b), unsupervised_model, device=device) 
+    pred_supervised = learning_pipeline(
+        (patch_a, patch_b), supervised_model, device=device
+    )
+    pred_unsupervised = learning_pipeline(
+        (patch_a, patch_b), unsupervised_model, device=device
+    )
 
     # put model predictions in full image coordinates
     pred_dst_supervised = corners + pred_supervised
     pred_dst_unsupervised = corners + pred_unsupervised
 
     # compute EPE (mean L2 corner error) for both models
-    err_supervised = float(np.mean(np.linalg.norm(shifted_corners - pred_dst_supervised, axis=1)))
-    err_unsupervised = float(np.mean(np.linalg.norm(shifted_corners - pred_dst_unsupervised, axis=1)))
+    err_supervised = float(
+        np.mean(np.linalg.norm(shifted_corners - pred_dst_supervised, axis=1))
+    )
+    err_unsupervised = float(
+        np.mean(np.linalg.norm(shifted_corners - pred_dst_unsupervised, axis=1))
+    )
 
     # also use traditional pipeline (with largest possible patch)
-    H_patch, src_full, pred_traditional = run_traditional_on_large_then_map_to_image(corners, img_gray, warped_gray, patch_size_net=patch_size)
-    err_traditional = float(np.mean(np.linalg.norm(shifted_corners - pred_traditional, axis=1)))
+    H_patch, src_full, pred_traditional = run_traditional_on_large_then_map_to_image(
+        corners, img_gray, warped_gray, patch_size_net=patch_size
+    )
+    err_traditional = float(
+        np.mean(np.linalg.norm(shifted_corners - pred_traditional, axis=1))
+    )
 
     # visualize
     left = img_bgr.copy()
@@ -291,6 +320,12 @@ if __name__ == "__main__":
         device=device,
         save_path="./debug_visualization.png",
     )
-    print(f"Mean corner error (traditional): {info['mean_corner_error_traditional']:.2f} pixels")
-    print(f"Mean corner error (supervised): {info['mean_corner_error_supervised']:.2f} pixels")
-    print(f"Mean corner error (unsupervised): {info['mean_corner_error_unsupervised']:.2f} pixels")
+    print(
+        f"Mean corner error (traditional): {info['mean_corner_error_traditional']:.2f} pixels"
+    )
+    print(
+        f"Mean corner error (supervised): {info['mean_corner_error_supervised']:.2f} pixels"
+    )
+    print(
+        f"Mean corner error (unsupervised): {info['mean_corner_error_unsupervised']:.2f} pixels"
+    )
