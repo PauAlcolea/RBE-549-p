@@ -448,7 +448,7 @@ def build_and_walk_graph(pairwise_H, pairwise_inliers):
     # build graph from pairwise inliers
     # determine number of nodes from the keys in pairwise_inliers
     all_nodes = set()
-    for (i, j) in pairwise_inliers.keys():
+    for i, j in pairwise_inliers.keys():
         all_nodes.add(i)
         all_nodes.add(j)
     graph = {i: [] for i in all_nodes}
@@ -568,7 +568,6 @@ def form_panorama(images, pairwise_H, graph_mode, save_output=None, output_dir=N
     # right of reference (i > ref_idx); use inverse H
     for j in range(ref_idx + 1, n):
         H_to_ref[j] = H_to_ref[j - 1] @ np.linalg.inv(pairwise_H[j - 1])
-
 
     # determine panorama size and translations
     pano_size, H_translation = _get_panorama_dimensions(images, H_to_ref)
