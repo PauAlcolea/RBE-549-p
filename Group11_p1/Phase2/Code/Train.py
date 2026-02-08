@@ -14,10 +14,22 @@ from Dataset import NORMALIZING_FACTOR, GenerateBatch, HomographyDataset
 from Network.Network import SupervisedHomographyModel, UnsupervisedHomographyModel
 
 
-def train(train_data_dir, train_label_file, val_data_dir, val_label_file, num_epochs=300, batch_size=128, 
-                       lr=0.0001,log_dir="logs", device="cuda", patience=25, checkpoint_dir="checkpoints", 
-                       supervised=True, resume_checkpoint=None):
-    
+def train(
+    train_data_dir,
+    train_label_file,
+    val_data_dir,
+    val_label_file,
+    num_epochs=300,
+    batch_size=128,
+    lr=0.0001,
+    log_dir="logs",
+    device="cuda",
+    patience=25,
+    checkpoint_dir="checkpoints",
+    supervised=True,
+    resume_checkpoint=None,
+):
+
     # make a folder for checkpoints in case it doesn't exist
     os.makedirs(checkpoint_dir, exist_ok=True)
 
@@ -27,26 +39,36 @@ def train(train_data_dir, train_label_file, val_data_dir, val_label_file, num_ep
 
     # Specify the Model, the optimizer, the scheduler and the loss function
     # the scheduler decreases the learning rate if the model is not improving
-    model = SupervisedHomographyModel().to(device) if supervised else UnsupervisedHomographyModel().to(device)
+    model = (
+        SupervisedHomographyModel().to(device)
+        if supervised
+        else UnsupervisedHomographyModel().to(device)
+    )
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
-    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=6)
+    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min", factor=0.5, patience=6
+    )
 
     start_epoch = 0
     best_val_loss = float("inf")
     epochs_no_improve = 0
-    
+
     # load from checkpoint if specified
     if resume_checkpoint:
         if os.path.exists(resume_checkpoint):
             print(f"Loading checkpoint from {resume_checkpoint}")
             checkpoint = torch.load(resume_checkpoint, map_location=device)
-            model.load_state_dict(checkpoint['model_state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            start_epoch = checkpoint['epoch'] + 1
-            best_val_loss = checkpoint.get('val_loss', float('inf'))
-            print(f"Resuming from epoch {start_epoch}, best_val_loss={best_val_loss:.4f}")
+            model.load_state_dict(checkpoint["model_state_dict"])
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            start_epoch = checkpoint["epoch"] + 1
+            best_val_loss = checkpoint.get("val_loss", float("inf"))
+            print(
+                f"Resuming from epoch {start_epoch}, best_val_loss={best_val_loss:.4f}"
+            )
         else:
-            print(f"Warning: Checkpoint {resume_checkpoint} not found. Starting from scratch.")
+            print(
+                f"Warning: Checkpoint {resume_checkpoint} not found. Starting from scratch."
+            )
 
     # clear contents of log_dir to begin with a clean slate
     if os.path.exists(log_dir):
@@ -84,7 +106,7 @@ def train(train_data_dir, train_label_file, val_data_dir, val_label_file, num_ep
             # Forward pass
             # this predicted delta is normalized
             pred_delta = model(patch_a, patch_b)
-            
+
             # loss calculation
             if supervised:
                 loss, corner_err = SupervisedHomographyModel.compute_loss(
@@ -96,15 +118,14 @@ def train(train_data_dir, train_label_file, val_data_dir, val_label_file, num_ep
                     pred_delta, patch_a, patch_b, NORMALIZING_FACTOR
                 )
 
-            
             # Back propagation and gradient
             optimizer.zero_grad()
             loss.backward()
-            
+
             # clip gradient for stability
             if not supervised:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            
+
             optimizer.step()
 
             # Logging
@@ -140,7 +161,8 @@ def train(train_data_dir, train_label_file, val_data_dir, val_label_file, num_ep
                 # loss calculation depending on if its supervised or unsupervised model
                 if supervised:
                     loss, corner_err = SupervisedHomographyModel.compute_loss(
-                        pred_delta, gt_delta, NORMALIZING_FACTOR)
+                        pred_delta, gt_delta, NORMALIZING_FACTOR
+                    )
                     val_corner_err += corner_err.item()
                     val_loss += loss.item()
                 else:
@@ -212,6 +234,7 @@ def train(train_data_dir, train_label_file, val_data_dir, val_label_file, num_ep
 
     writer.close()
 
+
 def main():
     device = (
         "cuda"
@@ -227,14 +250,22 @@ def main():
 
     parser = ArgumentParser()
     parser.add_argument(
-        "-t", "--type", type=str, default="s", choices=["s", "u"], help="Type of training: s for supervised or u for unsupervised"
+        "-t",
+        "--type",
+        type=str,
+        default="s",
+        choices=["s", "u"],
+        help="Type of training: s for supervised or u for unsupervised",
     )
     parser.add_argument(
-        "-r", "--resume", type=str, default=None, help="Path to checkpoint to resume training from"
+        "-r",
+        "--resume",
+        type=str,
+        default=None,
+        help="Path to checkpoint to resume training from",
     )
     args = parser.parse_args()
-    
-    
+
     train(
         train_data_dir=train_data_dir,
         train_label_file=f"{train_data_dir}/labels.txt",
@@ -242,7 +273,7 @@ def main():
         val_label_file=f"{val_data_dir}/labels.txt",
         device=device,
         supervised=True if args.type == "s" else False,
-        resume_checkpoint=args.resume
+        resume_checkpoint=args.resume,
     )
 
 

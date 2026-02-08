@@ -39,9 +39,7 @@ class ResidualBlock(nn.Module):
             nn.ReLU(inplace=True),
         )
         self.conv2 = nn.Sequential(
-            nn.Conv2d(
-                out_channels, out_channels, kernel_size=3, padding=1, bias=False
-            ),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(num_features=out_channels),
         )
         self.downsample = (
@@ -71,7 +69,7 @@ class ResidualBlock(nn.Module):
 
 class BaseHomographyNet(nn.Module):
     """base resnet-like architecture for homography estimation"""
-    
+
     def __init__(self, OutputSize=8):
         super().__init__()
         self.conv1 = nn.Sequential(
@@ -141,26 +139,29 @@ class SupervisedHomographyModel(nn.Module):
 
     def forward(self, a, b):
         return self.model(a, b)
-    
+
     @staticmethod
-    def compute_loss(pred_delta, gt_delta, normalizing_factor=1.0, corner_loss_weight=0.1):
+    def compute_loss(
+        pred_delta, gt_delta, normalizing_factor=1.0, corner_loss_weight=0.1
+    ):
         # smooth L1 on normalized predictions
         loss = F.smooth_l1_loss(pred_delta, gt_delta)
-        
+
         # denormalize to pixel space for corner error
         pred_delta_px = pred_delta * normalizing_factor
         gt_delta_px = gt_delta * normalizing_factor
-        
+
         # corner error: average L2 distance across all corners
         corner_err = (pred_delta_px - gt_delta_px).view(-1, 4, 2).norm(dim=2).mean()
         # add corner error to loss
         loss += corner_loss_weight * corner_err
-        
+
         return loss, corner_err
 
 
 class SupervisedNet(BaseHomographyNet):
     """supervised homography network; inherits from base architecture"""
+
     pass
 
 
@@ -178,36 +179,44 @@ class UnsupervisedHomographyModel(nn.Module):
         B = pred_delta.shape[0]
         h = patch_a.shape[2]
         w = patch_a.shape[3]
-        
+
         # denormalize predictions to pixel space
         pred_delta_px = pred_delta * normalizing_factor
-        
+
         # define source corners (corners of patch in pixel coords)
-        src_corners = torch.tensor(
-            [[0, 0], [w-1, 0], [w-1, h-1], [0, h-1]], 
-            device=pred_delta.device, 
-            dtype=pred_delta.dtype
-        ).unsqueeze(0).repeat(B, 1, 1)
-        
+        src_corners = (
+            torch.tensor(
+                [[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]],
+                device=pred_delta.device,
+                dtype=pred_delta.dtype,
+            )
+            .unsqueeze(0)
+            .repeat(B, 1, 1)
+        )
+
         # destination corners = source + predicted shifts
         dst_corners = src_corners + pred_delta_px.view(B, 4, 2)
         H_pixel = kornia.geometry.get_perspective_transform(src_corners, dst_corners)
-        
+
         # Convert to normalized coordinates for warping
         # M maps normalized coords [-1,1] to pixel coords [0, W]
-        M = torch.tensor([
-            [w / 2.0, 0, w / 2.0],
-            [0, h / 2.0, h / 2.0],
-            [0, 0, 1]
-        ], dtype=pred_delta.dtype, device=pred_delta.device).unsqueeze(0).repeat(B, 1, 1)
-        
+        M = (
+            torch.tensor(
+                [[w / 2.0, 0, w / 2.0], [0, h / 2.0, h / 2.0], [0, 0, 1]],
+                dtype=pred_delta.dtype,
+                device=pred_delta.device,
+            )
+            .unsqueeze(0)
+            .repeat(B, 1, 1)
+        )
+
         M_inv = torch.inverse(M)
-        
+
         # H_normalized = M^-1 @ H_pixel @ M
         # But for warping we need the inverse: H_norm_inv = M^-1 @ H_inv @ M
         H_pixel_inv = torch.inverse(H_pixel)
         H_normalized_inv = M_inv @ H_pixel_inv @ M
-        
+
         # warp patch_a using normalized homography
         warped_a = kornia.geometry.transform.warp_perspective(
             patch_a,
@@ -217,13 +226,14 @@ class UnsupervisedHomographyModel(nn.Module):
             padding_mode="zeros",
             align_corners=True,
         )
-        
+
         # photometric loss (L1)
         loss = F.l1_loss(warped_a, patch_b)
-        
+
         return loss, warped_a
 
 
 class UnsupervisedNet(BaseHomographyNet):
     """unsupervised homography network; inherits from base architecture"""
+
     pass
