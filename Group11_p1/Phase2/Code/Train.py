@@ -312,6 +312,17 @@ def train_supervised(train_data_dir, train_label_file, val_data_dir, val_label_f
                 height = patch_a.shape[2]
                 width = patch_a.shape[3]
 
+
+                # # THIS IS FOR TESTING, it should technically be 0 if everything worked right becuase gt_delta are the true shifts in pixels
+                # H_gt = dlt(gt_delta * NORMALIZING_FACTOR, patch_a.shape)
+                # warped_gt = kornia.geometry.transform.warp_perspective(patch_a, 
+                #                                                       torch.inverse(H_gt), 
+                #                                                       dsize=(height, width),
+                #                                                       align_corners=False)
+                # loss = torch.mean(torch.abs(warped_gt - patch_b))
+                # print(loss)
+                # sys.exit()
+
                 # spatial transform network makes a grid of the same size as patch b
                 # for every pixel in that tensor, it uses the Homography from dlt to look back into what point in patch a it would have to pull from
                 # this is most likely a float, so interpolation is necessary
