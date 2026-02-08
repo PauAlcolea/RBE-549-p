@@ -98,13 +98,15 @@ def main():
         "-t",
         "--type",
         type=str,
-        choices=["Train", "Val"],
+        choices=["Train", "Val", "Test"],
         default="Train",
         help="type of dataset to generate",
     )
     args = ap.parse_args()
     num_images = args.num_images
     dataset_type = args.type
+    if dataset_type == "Test":
+        dataset_type = "Test/Phase2"
     if args.all:
         num_images = sys.maxsize
 
