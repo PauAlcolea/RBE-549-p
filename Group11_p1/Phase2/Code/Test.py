@@ -21,7 +21,7 @@ from Phase1.Code.Wrapper import (
     _form_A_matrix,
     form_panorama,
 )
-from Network.Network import SupervisedHomographyModel
+from Network.Network import SupervisedHomographyModel, UnsupervisedHomographyModel
 from Dataset import NORMALIZING_FACTOR
 from GenerateData import _get_random_patch
 
@@ -202,6 +202,14 @@ def main():
         default="Train/Set1",
         help="directory containing images to stitch; relative to Phase#/Data, i.e. 'Train/Set1' or 'Test/unity_hall'",
     )
+    parser.add_argument(
+        "-m",
+        "--model",
+        type=str,
+        default="supervised",
+        choices=["s", "u"],
+        help="which model checkpoint to use for testing",
+    )
     args = parser.parse_args()
     data_top_dir = (
         os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -215,8 +223,10 @@ def main():
     # initialize model
     model_path = (
         os.path.dirname(os.path.abspath(__file__)) + "/checkpoints/supervised.pt"
+    ) if args.model == "s" else (
+        os.path.dirname(os.path.abspath(__file__)) + "/checkpoints/best_model.pt"
     )
-    model = SupervisedHomographyModel()
+    model = SupervisedHomographyModel() if args.model == "s" else UnsupervisedHomographyModel()
     checkpoint = torch.load(model_path, map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.to(device)
