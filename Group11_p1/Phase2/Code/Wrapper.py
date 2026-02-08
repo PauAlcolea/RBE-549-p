@@ -312,7 +312,7 @@ def main():
                     inlier_count += 1
 
             inlier_ratio = inlier_count / len(matches)
-            if inlier_ratio < 0.30:
+            if inlier_ratio < 0.15:
                 continue
 
             pairwise_H_ransac[(i, j)] = H_ij
