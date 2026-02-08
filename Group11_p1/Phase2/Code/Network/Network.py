@@ -126,7 +126,7 @@ class BaseHomographyNet(nn.Module):
         xa is a MiniBatch of the image a
         xb is a MiniBatch of the image b
         Outputs:
-        out - output of the network (predicted corner shifts)
+        out - output of the network
         """
         x = torch.cat([xa, xb], dim=1)
         return self.features(x)
@@ -166,9 +166,8 @@ class SupervisedNet(BaseHomographyNet):
 
 
 class UnsupervisedHomographyModel(nn.Module):
-    def __init__(self, hparams=None):
+    def __init__(self):
         super(UnsupervisedHomographyModel, self).__init__()
-        self.hparams = hparams
         self.model = UnsupervisedNet()
 
     def forward(self, a, b):
