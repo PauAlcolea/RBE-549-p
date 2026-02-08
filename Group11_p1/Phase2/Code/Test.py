@@ -81,7 +81,7 @@ def _compute_homography(pairs):
 
 def RANSAC_homography(
     matching_pairs,
-    n_iterations=1000,
+    n_iterations=100,
     inlier_thresh=5,
     stop_thresh=0.85,
 ):
@@ -241,6 +241,12 @@ def main():
                 pred_coords = patch_coords + pred_delta * NORMALIZING_FACTOR
                 corr = np.stack([patch_coords, pred_coords], axis=1)
                 all_corr.append(corr)
+            if len(all_corr) == 0:
+                print(f"Pair {idx}: no valid correspondences, using RANSAC H fallback")
+                fallback_H = pairwise_H_ransac[idx] if pairwise_H_ransac[idx] is not None else np.eye(3, dtype=np.float32)
+                H_pred.append(fallback_H)
+                continue
+
             all_corr = np.concatenate(all_corr, axis=0)
             print(f"Pair {idx}: fitting correction from {len(all_corr)} correspondences")
             H_correction = _compute_homography(all_corr)
@@ -248,7 +254,7 @@ def main():
             H_pred.append(H_final)
 
     panorama = form_panorama(images, pairwise_H=H_pred, graph_mode=False)
-    cv2.imwrite("mypano.png", panorama)
+    cv2.imwrite("../Output/mypano.png", panorama)
 
 
 if __name__ == "__main__":

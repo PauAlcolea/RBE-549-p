@@ -13,6 +13,7 @@ Worcester Polytechnic Institute
 """
 
 # Code starts here:
+from sys import exception
 import numpy as np
 import cv2
 import argparse
@@ -496,7 +497,19 @@ def _get_panorama_dimensions(images, H_list):
     for img, H in zip(images, H_list):
         h, w = img.shape[:2]
         corners = np.float32([[0, 0], [0, h], [w, h], [w, 0]]).reshape(-1, 1, 2)
-        corners_transformed = cv2.perspectiveTransform(corners, H)
+        # validate homography matrix
+        if H is None:
+            print("Warning: missing homography for an image; using identity for bounds computation.")
+            H_valid = np.eye(3, dtype=np.float32)
+        else:
+            H_arr = np.asarray(H)
+            if H_arr.shape != (3, 3):
+                print(f"Warning: invalid homography shape {H_arr.shape}; using identity for bounds computation.")
+                H_valid = np.eye(3, dtype=np.float32)
+            else:
+                H_valid = H_arr.astype(np.float32)
+
+        corners_transformed = cv2.perspectiveTransform(corners, H_valid)
         all_corners.append(corners_transformed)
 
     # combine all corners to find panorama bounds
@@ -567,7 +580,24 @@ def form_panorama(images, pairwise_H, graph_mode, save_output=None, output_dir=N
         H_to_ref[j] = H_to_ref[j + 1] @ pairwise_H[j]
     # right of reference (i > ref_idx); use inverse H
     for j in range(ref_idx + 1, n):
-        H_to_ref[j] = H_to_ref[j - 1] @ np.linalg.inv(pairwise_H[j - 1])
+        try:
+            H_to_ref[j] = H_to_ref[j - 1] @ np.linalg.inv(pairwise_H[j - 1])
+        except np.linalg.LinAlgError:
+            print(
+                f"Warning: singular homography between images {j-1} and {j}; skipping image {j}."
+            )
+            H_to_ref[j] = None
+        except ValueError:
+            print(
+                f"Warning: invalid homography between images {j-1} and {j}; skipping image {j}."
+            )
+            H_to_ref[j] = None
+        except exception as e:
+            print(
+                f"Warning: error processing homography between images {j-1} and {j}: {e}; skipping image {j}."
+            )
+            H_to_ref[j] = None
+
 
     # determine panorama size and translations
     pano_size, H_translation = _get_panorama_dimensions(images, H_to_ref)
