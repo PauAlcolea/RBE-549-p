@@ -487,7 +487,7 @@ def build_and_walk_graph(pairwise_H, pairwise_inliers):
             ordered_pairwise_H.append(pairwise_H[(a, b)])
         elif (b, a) in pairwise_H:
             ordered_pairwise_H.append(np.linalg.inv(pairwise_H[(b, a)]))
-    return ordered_pairwise_H
+    return ordered_pairwise_H, order
 
 
 def _get_panorama_dimensions(images, H_list):
@@ -754,7 +754,7 @@ def main():
     Save Panorama output as mypano.png
     """
     if graph_mode:
-        pairwise_H = build_and_walk_graph(pairwise_H, pairwise_inliers)
+        pairwise_H, _ = build_and_walk_graph(pairwise_H, pairwise_inliers)
 
     form_panorama(images, pairwise_H, graph_mode, save_output, output_dir)
 
