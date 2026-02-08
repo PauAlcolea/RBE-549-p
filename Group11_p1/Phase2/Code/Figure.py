@@ -3,7 +3,7 @@ import numpy as np
 import torch
 import os
 import sys
-from Network.Network import SupervisedHomographyModel
+from Network.Network import SupervisedHomographyModel, UnsupervisedHomographyModel
 from Dataset import NORMALIZING_FACTOR
 from GenerateData import _get_random_patch, _shift_corners
 from Test import RANSAC_homography
@@ -269,9 +269,9 @@ if __name__ == "__main__":
     supervised_model.eval()
 
     unsupervised_path = (
-        os.path.dirname(os.path.abspath(__file__)) + "/checkpoints/unsupervised.pt"
+        os.path.dirname(os.path.abspath(__file__)) + "/checkpoints/best_model.pt"
     )
-    unsupervised_model = SupervisedHomographyModel()
+    unsupervised_model = UnsupervisedHomographyModel()
     checkpoint = torch.load(unsupervised_path, map_location=device)
     unsupervised_model.load_state_dict(checkpoint["model_state_dict"])
     unsupervised_model.to(device)
