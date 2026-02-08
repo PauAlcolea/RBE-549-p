@@ -33,10 +33,6 @@ class SupervisedHomographyModel(nn.Module):
 # resnet-like architecture
 class SupervisedNet(nn.Module):
     def __init__(self, OutputSize=8):
-        """
-        Inputs:
-        OutputSize - Size of the Output
-        """
         super().__init__()
         self.conv1 = nn.Sequential(
             nn.Conv2d(
@@ -173,13 +169,14 @@ class UnsupervisedHomographyModel(nn.Module):
             .repeat(B, 1, 1)
         )
 
-        # destination corners = source + predicted shifts
+        # direct linear transformation
         dst_corners = src_corners + pred_delta_px.view(B, 4, 2)
         H_pixel = kornia.geometry.get_perspective_transform(src_corners, dst_corners)
 
-        # Convert to normalized coordinates for warping
-        # M maps normalized coords [-1,1] to pixel coords [0, W]
-        M = (
+        # STN expects normalized values, but H_pixel is in pixel coordinates
+
+        # converts from normalized->pixel coordinates
+        denormalizing_mat = (
             torch.tensor(
                 [[w / 2.0, 0, w / 2.0], [0, h / 2.0, h / 2.0], [0, 0, 1]],
                 dtype=pred_delta.dtype,
@@ -188,15 +185,13 @@ class UnsupervisedHomographyModel(nn.Module):
             .unsqueeze(0)
             .repeat(B, 1, 1)
         )
-
-        M_inv = torch.inverse(M)
-
-        # H_normalized = M^-1 @ H_pixel @ M
-        # But for warping we need the inverse: H_norm_inv = M^-1 @ H_inv @ M
+        # converts from pixel->normalized coordinates
+        normalizing_mat = torch.inverse(denormalizing_mat)
+        # STN uses inverse H
         H_pixel_inv = torch.inverse(H_pixel)
-        H_normalized_inv = M_inv @ H_pixel_inv @ M
-
-        # warp patch_a using normalized homography
+        # converts normalized coordinates to pixel coordinates, applies H, then converts back to normalized coordinates
+        H_normalized_inv = normalizing_mat @ H_pixel_inv @ denormalizing_mat
+        # spatial transformer network
         warped_a = kornia.geometry.transform.warp_perspective(
             patch_a,
             H_normalized_inv,
