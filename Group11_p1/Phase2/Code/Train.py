@@ -251,11 +251,11 @@ def main():
     parser = ArgumentParser()
     parser.add_argument(
         "-t",
-        "--type",
+        "--ModelType",
         type=str,
-        default="s",
-        choices=["s", "u"],
-        help="Type of training: s for supervised or u for unsupervised",
+        default="supervised",
+        choices=["supervised", "unsupervised"],
+        help="Type of training: supervised or unsupervised",
     )
     parser.add_argument(
         "-r",
@@ -272,7 +272,7 @@ def main():
         val_data_dir=val_data_dir,
         val_label_file=f"{val_data_dir}/labels.txt",
         device=device,
-        supervised=True if args.type == "s" else False,
+        supervised=True if args.ModelType == "supervised" else False,
         resume_checkpoint=args.resume,
     )
 
