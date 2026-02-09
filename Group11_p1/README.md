@@ -22,7 +22,15 @@ options:
   -g, --graph           Form homography graph to stitch images in optimal order. Slow, but effective for out-of-order image sets.
   -w, --warp            Apply cylindrical warp to images before stitching. Helpful for wide FOV images.
   ```
+```
+usage: Train.py [-h] [-t {supervised,unsupervised}] [-r RESUME]
 
+options:
+  -h, --help            show this help message and exit
+  -t, --ModelType {supervised,unsupervised}
+                        Type of training: supervised or unsupervised
+  -r, --resume RESUME   Path to checkpoint to resume training from
+```
   ```
   usage: Test.py [-h] [-d {Train,Val,Test}] [-b BATCH_SIZE] [-t {supervised,unsupervised}]
 
