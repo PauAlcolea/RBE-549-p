@@ -12,63 +12,24 @@ from argparse import ArgumentParser
 
 from Dataset import NORMALIZING_FACTOR, GenerateBatch, HomographyDataset
 from Network.Network import SupervisedHomographyModel, UnsupervisedHomographyModel
-import kornia
 
 
-""" 
-Tensor Direct Linear Transform fully differentiable
-@param batch_shifts is a tensor of shape torch.Size([batch_size, 8]), 
-@param batch_patch_shape is (B, C, H, W)
-"""
-def dlt(batch_shifts: torch.Tensor, batch_patch_shape: torch.Tensor):
-    #patch shape from patch a
-    # print("batch patch shape:", batch_patch_shape)
-    B = batch_shifts.shape[0]
-    h = batch_patch_shape[2]
-    w = batch_patch_shape[3]
-    
-    #make sure that the source points are in the same format as the batch shifts (B, 4, 2)
-    src_points = torch.tensor([[0,0],[w-1,0],[w-1,h-1],[0,h-1]], device=batch_shifts.device, dtype=batch_shifts.dtype)
-    src_points = src_points.unsqueeze(0).repeat(B, 1, 1) 
-    
-    #separate batch into different points [[x1',y1'],[x2',y2'],[x3',y3'],[x4',y4']]
-    # then add them to the source points to get the destination points
-    dst_points = src_points + batch_shifts.view(B, 4, 2)
+def train(
+    train_data_dir,
+    train_label_file,
+    val_data_dir,
+    val_label_file,
+    num_epochs=300,
+    batch_size=128,
+    lr=0.0001,
+    log_dir="logs",
+    device="cuda",
+    patience=25,
+    checkpoint_dir="checkpoints",
+    supervised=True,
+    resume_checkpoint=None,
+):
 
-    # separate into each component, which will be tensors of shape (B, 4)
-    x = src_points[:,:,0]
-    y = src_points[:,:,1]
-    xp = dst_points[:,:,0]
-    yp = dst_points[:,:,1]
-    
-    #zeros and ones for the A matrix
-    zeros = torch.zeros_like(x)
-    ones = torch.ones_like(x)
-
-    # make the two rows of A and then join them
-    # each batch B will have 4 rows (4 because x, y, xp, yp, ... each have shape (B, 4), and each row will have the 8 elements)
-    # A is of shape (B, 8, 8)
-    # https://www.cs.cmu.edu/~16385/s17/Slides/10.2_2D_Alignment__DLT.pdf
-    ###################### UNSURE ABOUT THIS ^^^, SOMEWHAT CONFLICTING WITH THE SLIDES FROM LECTURE ######################
-    A1 = torch.stack([x, y, ones, zeros, zeros, zeros, -x*xp, -y*xp], dim=2)
-    A2 = torch.stack([zeros, zeros, zeros, x, y, ones, -x*yp, -y*yp], dim=2)
-    A = torch.cat([A1, A2], dim=1)
-    b = torch.cat([xp, yp], dim=1)
-
-    # Solve for h
-    # h will be of shape (B, 8), it's missing the one at the end
-    # h = torch.inverse(torch.transpose(A) @ A) @ torch.transpose(A) @ b
-    h = torch.linalg.solve(A, b)
-
-    # Add the last value
-    h = torch.cat([h, torch.ones(B, 1, device=batch_shifts.device)], dim=1)
-    H = h.view(B, 3, 3)
-    return H
-
-
-def train_supervised(train_data_dir, train_label_file, val_data_dir, val_label_file, num_epochs=300, batch_size=128, 
-                       lr=0.002,log_dir="logs", device="cuda", patience=20, checkpoint_dir="checkpoints", supervised=True):
-    
     # make a folder for checkpoints in case it doesn't exist
     os.makedirs(checkpoint_dir, exist_ok=True)
 
@@ -78,11 +39,36 @@ def train_supervised(train_data_dir, train_label_file, val_data_dir, val_label_f
 
     # Specify the Model, the optimizer, the scheduler and the loss function
     # the scheduler decreases the learning rate if the model is not improving
-    model = SupervisedHomographyModel().to(device)
+    model = (
+        SupervisedHomographyModel().to(device)
+        if supervised
+        else UnsupervisedHomographyModel().to(device)
+    )
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
-    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=3)
-    loss_fn = torch.nn.SmoothL1Loss()
-    corner_loss_weight = 0.1
+    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min", factor=0.5, patience=6
+    )
+
+    start_epoch = 0
+    best_val_loss = float("inf")
+    epochs_no_improve = 0
+
+    # load from checkpoint if specified
+    if resume_checkpoint:
+        if os.path.exists(resume_checkpoint):
+            print(f"Loading checkpoint from {resume_checkpoint}")
+            checkpoint = torch.load(resume_checkpoint, map_location=device)
+            model.load_state_dict(checkpoint["model_state_dict"])
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            start_epoch = checkpoint["epoch"] + 1
+            best_val_loss = checkpoint.get("val_loss", float("inf"))
+            print(
+                f"Resuming from epoch {start_epoch}, best_val_loss={best_val_loss:.4f}"
+            )
+        else:
+            print(
+                f"Warning: Checkpoint {resume_checkpoint} not found. Starting from scratch."
+            )
 
     # clear contents of log_dir to begin with a clean slate
     if os.path.exists(log_dir):
@@ -95,12 +81,10 @@ def train_supervised(train_data_dir, train_label_file, val_data_dir, val_label_f
     # Prepare tensorboard logger
     writer = SummaryWriter(log_dir)
 
-    global_step = 0
-    best_val_loss = float("inf")
-    epochs_no_improve = 0
+    global_step = start_epoch * max(1, math.ceil(len(train_dataset) / batch_size))
 
     # go epoch by epoch, this is each "cycle" of the training
-    for epoch in range(num_epochs):
+    for epoch in range(start_epoch, num_epochs):
         #### train ####
         model.train()
 
@@ -120,62 +104,28 @@ def train_supervised(train_data_dir, train_label_file, val_data_dir, val_label_f
             gt_delta = gt_delta.to(device)
 
             # Forward pass
-            #this predicted delta is normalized
+            # this predicted delta is normalized
             pred_delta = model(patch_a, patch_b)
-            
-            ## this is where the unsupervised changes will happen
-            
+
             # loss calculation
             if supervised:
-                loss = loss_fn(pred_delta, gt_delta)
-                # incorporate corner error into loss
-                pred_delta = pred_delta * NORMALIZING_FACTOR
-                gt_delta = gt_delta * NORMALIZING_FACTOR
-                loss_corner = (pred_delta - gt_delta).view(-1, 4, 2).norm(dim=2).mean()
-                loss += corner_loss_weight * loss_corner
-            else:                 
-                #take the 4 Preddicted Shifts and throw them into the Direct Linear Transform (DLT)
-                # (make sure that it remains differentiable)
-                # the output of that is a predicted homography
-                # H_batch is of shape (batch_size, 3, 3)
-                # The normalizing_factor unormalizes the preidcted deltas
-                H_batch = dlt(pred_delta, batch_patch_shape=patch_a.shape)
+                loss, corner_err = SupervisedHomographyModel.compute_loss(
+                    pred_delta, gt_delta, NORMALIZING_FACTOR
+                )
+            else:
+                # Unsupervised loss: photometric error after warping
+                loss, warped_a = UnsupervisedHomographyModel.compute_loss(
+                    pred_delta, patch_a, patch_b, NORMALIZING_FACTOR
+                )
 
-                # take the homography and throw it into the Spatial Transform Network
-                # This should output a warped image of B based on the 
-                # Use inverse mapping
-                height = patch_a.shape[2]
-                width = patch_a.shape[3]
-
-
-                # # THIS IS FOR TESTING, it should technically be 0 if everything worked right becuase gt_delta are the true shifts in pixels
-                # H_gt = dlt(gt_delta * NORMALIZING_FACTOR, patch_a.shape)
-                # warped_gt = kornia.geometry.transform.warp_perspective(patch_a, 
-                #                                                       torch.inverse(H_gt), 
-                #                                                       dsize=(height, width),
-                #                                                       align_corners=False)
-                # loss = torch.mean(torch.abs(warped_gt - patch_b))
-                # print(loss)
-                # sys.exit()
-
-                # spatial transform network makes a grid of the same size as patch b
-                # for every pixel in that tensor, it uses the Homography from dlt to look back into what point in patch a it would have to pull from
-                # this is most likely a float, so interpolation is necessary
-                # this is all taken care of my kornia
-                warped_a = kornia.geometry.transform.warp_perspective(patch_a, 
-                                                                      torch.inverse(H_batch), 
-                                                                      dsize=(height, width),
-                                                                      mode="bilinear",
-                                                                      padding_mode="zeros",
-                                                                      align_corners=True,)
-                
-                # Photometric loss
-                loss = torch.mean(torch.abs(warped_a - patch_b))
-
-            
             # Back propagation and gradient
             optimizer.zero_grad()
             loss.backward()
+
+            # clip gradient for stability
+            if not supervised:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
             optimizer.step()
 
             # Logging
@@ -210,44 +160,18 @@ def train_supervised(train_data_dir, train_label_file, val_data_dir, val_label_f
 
                 # loss calculation depending on if its supervised or unsupervised model
                 if supervised:
-                    loss = loss_fn(pred_delta, gt_delta)
-                    pred_delta = pred_delta * NORMALIZING_FACTOR
-                    gt_delta = gt_delta * NORMALIZING_FACTOR
-
-                    # EPE is L2 err between predicted and ground truth corners
-                    # this is the metric, what the scheduler watches
-                    corner_err = (1 / 4) * torch.norm(
-                        (pred_delta - gt_delta).view(-1, 4, 2), dim=2
-                    ).sum(dim=1).mean()
+                    loss, corner_err = SupervisedHomographyModel.compute_loss(
+                        pred_delta, gt_delta, NORMALIZING_FACTOR
+                    )
                     val_corner_err += corner_err.item()
-
-                    # incorporate corner error into loss
-                    loss_corner = (pred_delta - gt_delta).view(-1, 4, 2).norm(dim=2).mean()
-                    loss += corner_loss_weight * loss_corner
                     val_loss += loss.item()
                 else:
-                    #dlt
-                    H_batch = dlt(pred_delta, batch_patch_shape=patch_a.shape)
-
-                    # take the homography and throw it into the Spatial Transform Network
-                    # This should output a warped image of B based on the 
-                    # Use inverse mapping
-                    height_nograd = patch_a.shape[2]
-                    width_nograd = patch_a.shape[3]
-
-                    # stn
-                    warped_a = kornia.geometry.transform.warp_perspective(patch_a, 
-                                                                        torch.inverse(H_batch), 
-                                                                        dsize=(height_nograd, width_nograd),
-                                                                        mode="bilinear",
-                                                                        padding_mode="zeros",
-                                                                        align_corners=True,)
-                    
-                    # Photometric loss
-                    loss = torch.mean(torch.abs(warped_a - patch_b))
+                    # Unsupervised loss: photometric error after warping
+                    loss, warped_a = UnsupervisedHomographyModel.compute_loss(
+                        pred_delta, patch_a, patch_b, NORMALIZING_FACTOR
+                    )
                     val_loss += loss.item()
 
-    
         # If corner didn't improve, scheduler decreases the learning rate
         val_loss /= num_val_iters
         val_corner_err /= num_val_iters
@@ -310,6 +234,7 @@ def train_supervised(train_data_dir, train_label_file, val_data_dir, val_label_f
 
     writer.close()
 
+
 def main():
     device = (
         "cuda"
@@ -325,27 +250,31 @@ def main():
 
     parser = ArgumentParser()
     parser.add_argument(
-        "-t", "--type", type=str, default="s", choices=["s", "u"], help="Type of training: s for supervised or u for unsupervised"
+        "-t",
+        "--ModelType",
+        type=str,
+        default="supervised",
+        choices=["supervised", "unsupervised"],
+        help="Type of training: supervised or unsupervised",
+    )
+    parser.add_argument(
+        "-r",
+        "--resume",
+        type=str,
+        default=None,
+        help="Path to checkpoint to resume training from",
     )
     args = parser.parse_args()
-    if args.type == "s":
-        train_supervised(
-            train_data_dir=train_data_dir,
-            train_label_file=f"{train_data_dir}/labels.txt",
-            val_data_dir=val_data_dir,
-            val_label_file=f"{val_data_dir}/labels.txt",
-            device=device,
-            supervised=True
-        )
-    else:
-        train_supervised(
-            train_data_dir=train_data_dir,
-            train_label_file=f"{train_data_dir}/labels.txt",
-            val_data_dir=val_data_dir,
-            val_label_file=f"{val_data_dir}/labels.txt",
-            device=device,
-            supervised=False
-        )
+
+    train(
+        train_data_dir=train_data_dir,
+        train_label_file=f"{train_data_dir}/labels.txt",
+        val_data_dir=val_data_dir,
+        val_label_file=f"{val_data_dir}/labels.txt",
+        device=device,
+        supervised=True if args.ModelType == "supervised" else False,
+        resume_checkpoint=args.resume,
+    )
 
 
 if __name__ == "__main__":

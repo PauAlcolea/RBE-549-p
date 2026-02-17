@@ -5,244 +5,185 @@ import sys
 sys.dont_write_bytecode = True
 
 import os
+import time
 import torch
-import matplotlib.pyplot as plt
 import numpy as np
-import cv2
 from argparse import ArgumentParser
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
-from Phase1.Code.Wrapper import (
-    locate_corners,
-    ANMS,
-    encode_feature_points,
-    match_features,
-    _normalize_points,
-    _form_A_matrix,
-    form_panorama,
-)
-from Network.Network import SupervisedHomographyModel
-from Dataset import NORMALIZING_FACTOR
+from Dataset import NORMALIZING_FACTOR, HomographyDataset
+from Network.Network import SupervisedHomographyModel, UnsupervisedHomographyModel
 
 
-def load_images(dir):
-    images = []
-    for filename in sorted(os.listdir(dir)):
-        if filename.endswith(".jpg") or filename.endswith(".png"):
-            img = cv2.imread(os.path.join(dir, filename))
-            if img is not None:
-                images.append(img)
-    return images
+def calculate_epe(predictions, ground_truth):
+    if predictions.ndim == 2 and predictions.shape[1] == 8:
+        predictions = predictions.reshape(-1, 4, 2)
+    if ground_truth.ndim == 2 and ground_truth.shape[1] == 8:
+        ground_truth = ground_truth.reshape(-1, 4, 2)
+
+    diff = predictions - ground_truth
+    distances = np.linalg.norm(diff, axis=2)  # (N, 4)
+    epe = np.mean(distances)
+    return epe
 
 
-def get_matching_features(images):
-    raw_corners = [locate_corners(image) for image in images]
-    anms_corners = [ANMS(corners) for corners in raw_corners]
-    fds, kps = zip(
-        *[
-            encode_feature_points(image, corners)
-            for image, corners in zip(images, anms_corners)
-        ]
-    )
-    pairwise_matches = []
-    for i in range(len(images) - 1):
-        # match_features returns index pairs (idx_in_img_i, idx_in_img_i+1)
-        idx_matches = match_features(fds[i], fds[i + 1])
+def evaluate_model(model, dataset, device, batch_size=64):
+    model.eval()
 
-        # convert index pairs to coordinate pairs ((x1, y1), (x2, y2))
-        kp1 = kps[i]
-        kp2 = kps[i + 1]
-        coord_matches = [(kp1[i1], kp2[i2]) for i1, i2 in idx_matches]
+    all_predictions = []
+    all_ground_truth = []
 
-        pairwise_matches.append(coord_matches)
-    return pairwise_matches
+    num_samples = len(dataset)
+    num_batches = (num_samples + batch_size - 1) // batch_size
 
+    print(f"Running inference on {num_samples} samples...")
 
-def extract_patches(
-    image1, image2, matches, patch_size=128, max_patches=12, min_dist=None
-):
-    """
-    select spatially spread patches around matched features
-    """
+    if device == "cuda":
+        print("Warming up CUDA...")
+        with torch.no_grad():
+            dummy_a = torch.randn(1, 1, 128, 128).to(device)
+            dummy_b = torch.randn(1, 1, 128, 128).to(device)
+            _ = model(dummy_a, dummy_b)
+            torch.cuda.synchronize()
 
-    if len(matches) == 0:
-        return [], [], []
+    total_inference_time = 0.0
+    total_samples_timed = 0
 
-    half_size = patch_size // 2
-    if min_dist is None:
-        min_dist = half_size
+    with torch.no_grad():
+        for batch_idx in range(num_batches):
+            start_idx = batch_idx * batch_size
+            end_idx = min(start_idx + batch_size, num_samples)
+            current_batch_size = end_idx - start_idx
 
-    # list candidate centers where a full patch fits in both images
-    candidates = []
-    h1, w1 = image1.shape[:2]
-    h2, w2 = image2.shape[:2]
-    for (x1, y1), (x2, y2) in matches:
-        x1_i, y1_i = int(x1), int(y1)
-        x2_i, y2_i = int(x2), int(y2)
+            # load batch
+            batch_patches_a = []
+            batch_patches_b = []
+            batch_shifts = []
 
-        if (
-            x1_i - half_size >= 0
-            and y1_i - half_size >= 0
-            and x1_i + half_size <= w1
-            and y1_i + half_size <= h1
-            and x2_i - half_size >= 0
-            and y2_i - half_size >= 0
-            and x2_i + half_size <= w2
-            and y2_i + half_size <= h2
-        ):
-            candidates.append((x1_i, y1_i, x2_i, y2_i))
+            for idx in range(start_idx, end_idx):
+                patch_a, patch_b, shifts = dataset.get_sample(idx)
+                batch_patches_a.append(patch_a)
+                batch_patches_b.append(patch_b)
+                batch_shifts.append(shifts)
 
-    if not candidates:
-        return [], [], []
+            # stack into tensors
+            patch_a = torch.stack(batch_patches_a).to(device)
+            patch_b = torch.stack(batch_patches_b).to(device)
+            gt_shifts = torch.stack(batch_shifts).numpy()
 
-    # select spatially spread candidates
-    selected = []
-    for cand in candidates:
-        x1_i, y1_i, _, _ = cand
-        if not selected:
-            selected.append(cand)
-        else:
-            # compute distance to previously selected centers; keep if far enough away
-            dists = [np.hypot(x1_i - sx1, y1_i - sy1) for (sx1, sy1, _, _) in selected]
-            if min(dists) >= min_dist:
-                selected.append(cand)
-        if len(selected) >= max_patches:
-            break
+            # time the forward pass
+            if device == "cuda":
+                torch.cuda.synchronize()
 
-    # extract patches around selected centers
-    patches1 = []
-    patches2 = []
-    patches1_coords = []
-    for x1_i, y1_i, x2_i, y2_i in selected:
-        p1_x1, p1_y1 = x1_i - half_size, y1_i - half_size
-        p1_x2, p1_y2 = x1_i + half_size, y1_i + half_size
-        patch1 = image1[p1_y1:p1_y2, p1_x1:p1_x2]
-        patch2 = image2[
-            y2_i - half_size : y2_i + half_size,
-            x2_i - half_size : x2_i + half_size,
-        ]
-        patches1.append(patch1)
-        patches2.append(patch2)
-        patches1_coords.append(
-            ((p1_x1, p1_y1), (p1_x2, p1_y1), (p1_x2, p1_y2), (p1_x1, p1_y2))
-        )
+            start_time = time.perf_counter()
+            predictions = model(patch_a, patch_b)
 
-    return patches1, patches2, patches1_coords
+            if device == "cuda":
+                torch.cuda.synchronize()
 
+            end_time = time.perf_counter()
 
-def patches_to_tensor(patches):
-    """
-    patches: list of (H, W, 3) numpy arrays
-    returns: torch tensor (B, 1, H, W)
-    """
-    tensors = []
-    for p in patches:
-        p = cv2.cvtColor(p, cv2.COLOR_BGR2GRAY)
-        p = torch.from_numpy(p).unsqueeze(0).float() / 255.0
-        tensors.append(p)
-    return torch.stack(tensors)
+            # accumulate timing
+            total_inference_time += end_time - start_time
+            total_samples_timed += current_batch_size
 
+            # convert predictions to numpy
+            predictions_np = predictions.cpu().numpy()
 
-def _compute_homography(pairs):
-    pairs = np.asarray(pairs, dtype=np.float32)
+            # denormalize
+            predictions_denorm = predictions_np * NORMALIZING_FACTOR
+            gt_shifts_denorm = gt_shifts * NORMALIZING_FACTOR
 
-    if pairs.ndim == 4 and pairs.shape[2:] == (2, 2):
-        pairs = pairs.reshape(-1, 2, 2)
+            all_predictions.append(predictions_denorm)
+            all_ground_truth.append(gt_shifts_denorm)
 
-    # normalize points
-    points1_norm, T1 = _normalize_points(pairs[:, 0])
-    points2_norm, T2 = _normalize_points(pairs[:, 1])
-    norm_pairs = np.stack([points1_norm, points2_norm], axis=1)
+            if (batch_idx + 1) % 10 == 0:
+                print(f"  Processed {end_idx}/{num_samples} samples...")
 
-    # form A matrix and solve A*h=0 using SVD
-    A = _form_A_matrix(norm_pairs)
-    _, _, Vt = np.linalg.svd(A)
-    h = Vt[-1, :]  # last row of Vt is null space of A, i.e. solution h
-    H = h.reshape((3, 3)) / np.max(np.abs(h))
-    # denormalize H
-    H = np.linalg.inv(T2) @ H @ T1
-    return H
+    # concatenate all predictions and ground truth
+    all_predictions = np.concatenate(all_predictions, axis=0)
+    all_ground_truth = np.concatenate(all_ground_truth, axis=0)
+
+    # calculate EPE
+    avg_epe = calculate_epe(all_predictions, all_ground_truth)
+
+    # calculate average inference time per sample in milliseconds
+    avg_inference_time = (total_inference_time / total_samples_timed) * 1000
+
+    return avg_epe, avg_inference_time
 
 
 def main():
+    parser = ArgumentParser(description="Evaluate homography model and compute EPE")
+    parser.add_argument(
+        "-d",
+        "--dataset",
+        type=str,
+        default="Val",
+        choices=["Train", "Val", "Test"],
+        help="Dataset to evaluate on (Train, Val, or Test)",
+    )
+    parser.add_argument(
+        "-t",
+        "--ModelType",
+        type=str,
+        default="supervised",
+        choices=["supervised", "unsupervised"],
+        help="Type of model architecture",
+    )
+
+    args = parser.parse_args()
+
     device = (
         "cuda"
         if torch.cuda.is_available()
         else "mps" if torch.backends.mps.is_available() else "cpu"
     )
-    parser = ArgumentParser(
-        description="Test homography model by stitching images in Phase#/Data/DIR"
+    print(f"Using device: {device}")
+
+    gen_data_dir = (
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/Data/Generated"
     )
-    parser.add_argument(
-        "-p",
-        "--phase",
-        type=int,
-        default=1,
-        choices=[1, 2],
-        help="Read Phase 1 or Phase 2 Data/ directory",
-    )
-    parser.add_argument(
-        "--dir",
-        type=str,
-        default="Train/Set1",
-        help="directory containing images to stitch; relative to Phase#/Data, i.e. 'Train/Set1' or 'Test/unity_hall'",
-    )
-    args = parser.parse_args()
-    data_top_dir = (
-        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        + f"/Phase{args.phase}/Data/"
-    )
-    test_data_dir = os.path.join(data_top_dir, args.dir)
-    if not os.path.isdir(test_data_dir):
-        print(f"Error: directory {test_data_dir} does not exist.")
+    data_dir = os.path.join(gen_data_dir, args.dataset)
+    if args.dataset == "Test":
+        data_dir = os.path.join(gen_data_dir, "Test/Phase2")
+    label_file = os.path.join(data_dir, "labels.txt")
+
+    if not os.path.exists(label_file):
+        print(f"Error: Label file not found at {label_file}")
         return
 
-    # initialize model
-    model_path = (
-        os.path.dirname(os.path.abspath(__file__)) + "/checkpoints/best_model.pt"
-    )
-    model = SupervisedHomographyModel()
-    checkpoint = torch.load(model_path, map_location=device)
+    # load dataset
+    print(f"Loading {args.dataset} dataset from {data_dir}...")
+    dataset = HomographyDataset(data_dir, label_file)
+    print(f"Dataset size: {len(dataset)} samples")
+
+    # load model
+    if args.ModelType == "supervised":
+        model = SupervisedHomographyModel()
+        path = os.path.dirname(os.path.abspath(__file__)) + "/checkpoints/supervised.pt"
+    else:
+        model = UnsupervisedHomographyModel()
+        path = (
+            os.path.dirname(os.path.abspath(__file__)) + "/checkpoints/unsupervised.pt"
+        )
+    print(f"Loading model from {path}...")
+    checkpoint = torch.load(path, map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.to(device)
-    model.eval()
 
-    # extract patches from images via feature matching
-    images = load_images(test_data_dir)
-    pairwise_matches = get_matching_features(images)
-    pairwise_H = []
-    for i in range(len(images) - 1):
-        # extract patches around matched features
-        patches_a, patches_b, patch_a_coords = extract_patches(
-            images[i], images[i + 1], pairwise_matches[i]
-        )
+    print(f"Model loaded (trained for {checkpoint.get('epoch', 'unknown')} epochs)")
 
-        # predict deltas with trained model
-        with torch.no_grad():
-            delta_preds = (
-                model(
-                    patches_to_tensor(patches_a).to(device),
-                    patches_to_tensor(patches_b).to(device),
-                )
-                .cpu()
-                .numpy()
-            )
+    # evaluate
+    avg_epe, avg_time = evaluate_model(model, dataset, device)
 
-        delta_preds = delta_preds * NORMALIZING_FACTOR
-
-        patch_a_coords_np = np.array(patch_a_coords, dtype=np.float32)
-        deltas = delta_preds.reshape(-1, 4, 2)
-        patch_b_coords_est = patch_a_coords_np + deltas
-
-        # build all corner correspondence pairs across all patches
-        src_pts = patch_a_coords_np.reshape(-1, 2)
-        dst_pts = patch_b_coords_est.reshape(-1, 2)
-        corner_pairs = np.stack([src_pts, dst_pts], axis=1)
-
-        H_i = _compute_homography(corner_pairs)
-        pairwise_H.append(H_i)
-    panorama = form_panorama(images, pairwise_H=pairwise_H, graph_mode=False)
-    cv2.imwrite("mypano.png", panorama)
+    # print results
+    print("\n" + "=" * 60)
+    print(f"RESULTS - {args.dataset} Dataset")
+    print("=" * 60)
+    print(f"Average EPE (Endpoint Error): {avg_epe:.4f} pixels")
+    print(f"Average inference time per sample: {avg_time:.4f} ms")
+    print(f"Throughput: {1000.0/avg_time:.2f} samples/second")
+    print("=" * 60)
 
 
 if __name__ == "__main__":

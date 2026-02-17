@@ -33,10 +33,6 @@ class SupervisedHomographyModel(nn.Module):
 # resnet-like architecture
 class SupervisedNet(nn.Module):
     def __init__(self, OutputSize=8):
-        """
-        Inputs:
-        OutputSize - Size of the Output
-        """
         super().__init__()
         self.conv1 = nn.Sequential(
             nn.Conv2d(
@@ -146,93 +142,117 @@ class SupervisedNet(nn.Module):
 
 
 class UnsupervisedHomographyModel(nn.Module):
-    def __init__(self, hparams):
+    def __init__(self):
         super(UnsupervisedHomographyModel, self).__init__()
-        self.hparams = hparams
         self.model = UnsupervisedNet()
 
     def forward(self, a, b):
         return self.model(a, b)
 
-    def LossFn(delta, patch_a, patch_b, corners):
-        B = delta.shape[0]
-        pred_corners = corners + delta.view(B, 4, 2)
-        H = kornia.geometry.get_perspective_transform(
-            corners.float(), pred_corners.float()
+    @staticmethod
+    def compute_loss(pred_delta, patch_a, patch_b, normalizing_factor=1.0):
+        B = pred_delta.shape[0]
+        h = patch_a.shape[2]
+        w = patch_a.shape[3]
+
+        # denormalize predictions to pixel space
+        pred_delta_px = pred_delta * normalizing_factor
+
+        # define source corners (corners of patch in pixel coords)
+        src_corners = (
+            torch.tensor(
+                [[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]],
+                device=pred_delta.device,
+                dtype=pred_delta.dtype,
+            )
+            .unsqueeze(0)
+            .repeat(B, 1, 1)
         )
-        warped_a = kornia.geometry.warp_perspective(
+
+        # direct linear transformation
+        dst_corners = src_corners + pred_delta_px.view(B, 4, 2)
+        H_pixel = kornia.geometry.get_perspective_transform(src_corners, dst_corners)
+
+        # STN expects normalized values, but H_pixel is in pixel coordinates
+
+        # converts from normalized->pixel coordinates
+        denormalizing_mat = (
+            torch.tensor(
+                [[w / 2.0, 0, w / 2.0], [0, h / 2.0, h / 2.0], [0, 0, 1]],
+                dtype=pred_delta.dtype,
+                device=pred_delta.device,
+            )
+            .unsqueeze(0)
+            .repeat(B, 1, 1)
+        )
+        # converts from pixel->normalized coordinates
+        normalizing_mat = torch.inverse(denormalizing_mat)
+        # STN uses inverse H
+        H_pixel_inv = torch.inverse(H_pixel)
+        # converts normalized coordinates to pixel coordinates, applies H, then converts back to normalized coordinates
+        H_normalized_inv = normalizing_mat @ H_pixel_inv @ denormalizing_mat
+        # spatial transformer network
+        warped_a = kornia.geometry.transform.warp_perspective(
             patch_a,
-            H,
-            dsize=(patch_b.shape[-2], patch_b.shape[-1]),
-            padding_mode="border",
+            H_normalized_inv,
+            dsize=(h, w),
+            mode="bilinear",
+            padding_mode="zeros",
+            align_corners=True,
         )
+
+        # photometric loss (L1)
         loss = F.l1_loss(warped_a, patch_b)
-        return loss
+
+        return loss, warped_a
 
 
 class UnsupervisedNet(nn.Module):
+    """unsupervised homography network"""
 
-    def __init__(self, InputSize, OutputSize):
-        """
-        Inputs:
-        InputSize - Size of the Input
-        OutputSize - Size of the Output
-        """
+    def __init__(self, OutputSize=8):
         super().__init__()
-        #############################
-        # Fill your network initialization of choice here!
-        #############################
-        ...
-        #############################
-        # You will need to change the input size and output
-        # size for your Spatial transformer network layer!
-        #############################
-        # Spatial transformer localization-network
-        self.localization = nn.Sequential(
-            nn.Conv2d(1, 8, kernel_size=7),
-            nn.MaxPool2d(2, stride=2),
-            nn.ReLU(True),
-            nn.Conv2d(8, 10, kernel_size=5),
-            nn.MaxPool2d(2, stride=2),
-            nn.ReLU(True),
+
+        def conv_block(in_channels, out_channels):
+            return nn.Sequential(
+                nn.Conv2d(
+                    in_channels,
+                    out_channels,
+                    kernel_size=3,
+                    padding=1,
+                ),
+                nn.BatchNorm2d(num_features=out_channels),
+                nn.ReLU(inplace=True),
+            )
+
+        self.features = nn.Sequential(
+            conv_block(2, 64),
+            conv_block(64, 64),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            conv_block(64, 128),
+            conv_block(128, 128),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            conv_block(128, 128),
+            conv_block(128, 128),
+            nn.AdaptiveAvgPool2d((1, 1)),
+        )
+        self.fc = nn.Sequential(
+            nn.Linear(in_features=128, out_features=256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=0.4),
+            nn.Linear(in_features=256, out_features=OutputSize),
         )
 
-        # Regressor for the 3 * 2 affine matrix
-        self.fc_loc = nn.Sequential(
-            nn.Linear(10 * 3 * 3, 32), nn.ReLU(True), nn.Linear(32, 3 * 2)
-        )
-
-        # Initialize the weights/bias with identity transformation
-        self.fc_loc[2].weight.data.zero_()
-        self.fc_loc[2].bias.data.copy_(
-            torch.tensor([1, 0, 0, 0, 1, 0], dtype=torch.float)
-        )
-
-    #############################
-    # You will need to change the input size and output
-    # size for your Spatial transformer network layer!
-    #############################
-    def stn(self, x):
-        "Spatial transformer network forward function"
-        xs = self.localization(x)
-        xs = xs.view(-1, 10 * 3 * 3)
-        theta = self.fc_loc(xs)
-        theta = theta.view(-1, 2, 3)
-
-        grid = F.affine_grid(theta, x.size())
-        x = F.grid_sample(x, grid)
-
-        return x
+        # init weights
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight)
+                if hasattr(m, "bias") and m.bias is not None:
+                    nn.init.zeros_(m.bias)
 
     def forward(self, xa, xb):
-        """
-        Input:
-        xa is a MiniBatch of the image a
-        xb is a MiniBatch of the image b
-        Outputs:
-        out - output of the network
-        """
-        #############################
-        # Fill your network structure of choice here!
-        #############################
-        pass
+        x = torch.cat([xa, xb], dim=1)
+        x = self.features(x)
+        x = x.view(x.size(0), -1)
+        out = self.fc(x)
+        return out
