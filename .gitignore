@@ -14,6 +14,9 @@ Group11_p1/Phase1/Output/*
 Group11_p1/Phase2/Code/logs
 Group11_p1/Phase2/Code/checkpoints
 
+Group11_p2/Phase2/Code/logs
+Group11_p2/Phase2/Code/checkpoints
+
 # Slurm output
 *.out
 *.err
