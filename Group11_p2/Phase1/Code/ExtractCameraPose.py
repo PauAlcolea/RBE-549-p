@@ -33,7 +33,7 @@ def extractCameraPose(E: np.ndarray, K: np.ndarray) -> np.ndarray:
     for t in T:
         for r in R:
             # Check determinant and correct camera pose if it's -1. (is it supposed to be equal to 1??)
-            if np.linalg.det(r) == -1:
+            if np.linalg.det(r) < 0:
                 t = -t
                 r = -r
             pose = K @ r @ np.column_stack((np.identity(3), t))
