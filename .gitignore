@@ -20,3 +20,6 @@ Group11_p2/Phase2/Code/checkpoints
 # Slurm output
 *.out
 *.err
+
+# pycache
+__pycache__/
