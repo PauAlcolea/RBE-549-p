@@ -6,6 +6,7 @@ from typing import List
 from EstimateFundamentalMatrix import estimateFundamentalMat
 from GetInliersRANSAC import getInliersRANSAC
 from EssentialMatrixFromFundamentalMatrix import estimateEssentialMatrix
+from ExtractCameraPose import extractCameraPose
 
 
 def load_pair_matches(
@@ -93,6 +94,7 @@ def sfm_pipeline(
     n_ransac_iters: int = 1000,
     inlier_thresh: float = 1.0,
 ) -> None:
+    # load correspondences for current image and other image
     correspondences = load_pair_matches(current_image_id, other_image_id)
 
     if correspondences.shape[0] < n_samples:
@@ -101,41 +103,35 @@ def sfm_pipeline(
             f"found {correspondences.shape[0]}, need at least {n_samples}"
         )
 
+    # estimate fundamental matrix F using inliers from RANSAC
     inliers = getInliersRANSAC(correspondences, n_ransac_iters, inlier_thresh)
-
     if inliers.size >= 8:
         F = estimateFundamentalMat(inliers)
-        print(
-            f"Estimated Fundamental matrix F (RANSAC inliers) "
-            f"for images {current_image_id}-{other_image_id}:"
-        )
-        print(F)
-        print(
-            f"Number of RANSAC inliers: {inliers.shape[0]} / {correspondences.shape[0]}"
-        )
 
-    # evaluate simple epipolar constraint error |x2^T F x1| on all matches for this pair
-    # errors = []
-    # for (x1, y1), (x2, y2) in correspondences:
-    #     p1 = np.array([x1, y1, 1.0])
-    #     p2 = np.array([x2, y2, 1.0])
-    #     err = float(abs(p2.T @ F @ p1))
-    #     errors.append(err)
-
-    # errors = np.array(errors)
-    # print("Epipolar constraint |x2^T F x1| statistics over all matches:")
-    # print(f"  count = {errors.size}")
-    # print(f"  mean  = {errors.mean():.6f}")
-    # print(f"  median= {np.median(errors):.6f}")
-    # print(f"  max   = {errors.max():.6f}")
-
+    # estimate essential matrix E from F
     K = load_intrinsics()
     E = estimateEssentialMatrix(K, F)
+
+    # estimate camera pose from E
+    poses = extractCameraPose(E, K)
+
+    print(
+        f"Estimated Fundamental matrix F (RANSAC inliers) "
+        f"for images {current_image_id}-{other_image_id}:"
+    )
+    print(F)
+    print(f"Number of RANSAC inliers: {inliers.shape[0]} / {correspondences.shape[0]}")
     print(
         f"Estimated Essential matrix E (from F) "
         f"for images {current_image_id}-{other_image_id}:"
     )
     print(E)
+    print(
+        f"Estimated camera poses (from E) for images {current_image_id}-{other_image_id}:"
+    )
+    for i, pose in enumerate(poses):
+        print(f"Pose {i + 1}:")
+        print(pose)
 
 
 def main() -> None:
