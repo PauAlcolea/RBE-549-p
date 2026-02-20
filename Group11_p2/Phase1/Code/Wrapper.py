@@ -70,6 +70,22 @@ def load_pair_matches(
     return np.stack(correspondences, axis=0)
 
 
+def load_intrinsics() -> np.ndarray:
+    """
+    load intrinsics matrix K from calibration.txt
+    """
+    phase1_dir = Path(__file__).resolve().parents[1]
+    calibration_path = phase1_dir / "Data" / "calibration.txt"
+
+    with calibration_path.open("r") as f:
+        k_list = []
+        for line in f:
+            parts = line.strip().split()
+            k_list.extend([float(x) for x in parts])
+        K = np.array(k_list).reshape((3, 3))
+        return K
+
+
 def sfm_pipeline(
     current_image_id: int,
     other_image_id: int,
@@ -112,6 +128,14 @@ def sfm_pipeline(
     # print(f"  mean  = {errors.mean():.6f}")
     # print(f"  median= {np.median(errors):.6f}")
     # print(f"  max   = {errors.max():.6f}")
+
+    K = load_intrinsics()
+    E = estimateEssentialMatrix(K, F)
+    print(
+        f"Estimated Essential matrix E (from F) "
+        f"for images {current_image_id}-{other_image_id}:"
+    )
+    print(E)
 
 
 def main() -> None:
