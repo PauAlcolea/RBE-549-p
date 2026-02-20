@@ -35,5 +35,6 @@ def getInliersRANSAC(
         best_inliers = np.array(
             [[[x1, y1], [x2, y2]] for (x1, y1, x2, y2) in best_inliers], dtype=float
         )
-
-    return np.array(best_inliers)
+        return np.array(best_inliers)
+    else:
+        return np.empty((0, 2, 2), dtype=float)

@@ -5,7 +5,7 @@ def estimateFundamentalMat(eight_correspondences: np.ndarray) -> np.ndarray:
     """
     This estimates the Fundamental matrix between two images given eight point correspondences
 
-    :param eight_points: This is a numpy array with 8 correspondences between two images, shape (8, 2, 2) -> ([ [x1, y1], [x1', y2'] ], [], ...)
+    :param eight_correspondences: This is a numpy array with 8 correspondences between two images, shape (8, 2, 2) -> ([ [x1, y1], [x1', y2'] ], [], ...)
     :return: estimated 3x3 Fundamental Matrix, enforced Rank 2
     """
 
@@ -22,8 +22,13 @@ def estimateFundamentalMat(eight_correspondences: np.ndarray) -> np.ndarray:
 
     _, _, Vt = np.linalg.svd(A)
     f = Vt[-1, :]  # last row of Vt is null space of A, i.e. solution f
-    f[-1] = 0  # enforce the rank 2
     F = f.reshape(
         (3, 3)
     ).T  # get the transpose because the notes have f in a different order (f11, f21, f31 ...) instead of (f11, f12, f13 ...)
-    return F
+
+    # enforce rank-2 constraint on F via SVD
+    U, S, Vt_F = np.linalg.svd(F)
+    S[-1] = 0  # set smallest singular value to zero
+    F_rank2 = U @ np.diag(S) @ Vt_F
+
+    return F_rank2

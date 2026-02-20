@@ -104,6 +104,7 @@ def sfm_pipeline(
         )
 
     # estimate fundamental matrix F using inliers from RANSAC
+    F = np.zeros((3, 3))
     inliers = getInliersRANSAC(correspondences, n_ransac_iters, inlier_thresh)
     if inliers.size >= 8:
         F = estimateFundamentalMat(inliers)
