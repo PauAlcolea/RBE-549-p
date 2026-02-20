@@ -33,11 +33,14 @@ def extractCameraPose(E: np.ndarray, K: np.ndarray) -> np.ndarray:
     P = []
     for t in T:
         for r in R:
+            # use local variables to avoid overwriting t and r in the next loop iteration
+            t_corr = t
+            r_corr = r
             # Check determinant and correct camera pose if it's -1.
-            if np.linalg.det(r) < 0:
-                t = -t
-                r = -r
-            pose = K @ r @ np.column_stack((np.identity(3), t))
+            if np.linalg.det(r_corr) < 0:
+                t = -t_corr
+                r = -r_corr
+            pose = K @ r_corr @ np.column_stack((np.identity(3), t_corr))
             P.append(pose)
 
     return np.array(P)

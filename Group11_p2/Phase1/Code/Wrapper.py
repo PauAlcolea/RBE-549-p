@@ -34,7 +34,7 @@ def load_pair_matches(
 
     with matching_file.open("r") as f:
         # ignore first line
-        first_line = f.readline()
+        _ = f.readline()
         for line in f:
             parts = line.strip().split()
             if not parts:
