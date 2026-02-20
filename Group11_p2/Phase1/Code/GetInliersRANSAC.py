@@ -3,22 +3,22 @@ from EstimateFundamentalMatrix import estimateFundamentalMat
 
 
 def getInliersRANSAC(
-    correspondances: np.ndarray, n_iterations: int, inlier_thresh: float
+    correspondences: np.ndarray, n_iterations: int, inlier_thresh: float
 ) -> np.ndarray:
     best_inliers = []
     best_count = 0
 
     for _ in range(n_iterations):
         # randomly select 8 correspondences
-        indices = np.random.choice(len(correspondances), size=8, replace=False)
-        subset = correspondances[indices]
+        indices = np.random.choice(len(correspondences), size=8, replace=False)
+        subset = correspondences[indices]
 
         # estimate F for this subset
         F_subset = estimateFundamentalMat(subset)
 
         # find inliers for this F_subset
         inliers = []
-        for (x1, y1), (x2, y2) in correspondances:
+        for (x1, y1), (x2, y2) in correspondences:
             point1 = np.array([x1, y1, 1])
             point2 = np.array([x2, y2, 1])
             # compute epipolar error using F
