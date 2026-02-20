@@ -1,20 +1,16 @@
 import numpy as np
 
-def buildProjectionMatrices(K, P):
+def buildProjectionMatrices(K, Pose):
     """
     Docstring for buildProjectionMatrices
     
     :param K: camera internal matrix
-    :param P: one pose
+    :param Pose: one pose, which is [R|t]
     """
-    R = P[:,0:3]
-    C = P[:,3]
+    Projection = K @ Pose
+    return Projection
 
-    
-
-    pass
-
-def linearTriangulation(pose1: np.ndarray, pose2: np.ndarray, x1:np.ndarray, x2:np.ndarray):
+def linearTriangulation(K, pose1: np.ndarray, pose2: np.ndarray, x1:np.ndarray, x2:np.ndarray):
     """
     this function triangulates 3D points
     
@@ -22,12 +18,27 @@ def linearTriangulation(pose1: np.ndarray, pose2: np.ndarray, x1:np.ndarray, x2:
     :param pose2: another camera pose
     :param K: camera intrinsic maatrix
     :param correspondences between the two cameras, x1 and x2 np.ndarrays
-    :return 3d points
+    : expecting x1 and x2 in the form of [x1 y1 1] (np.array of shape (3,))
+    :return 3d point, this will be 
     """
-    pose1 = np.column_stack((np.identity(3), np.zeros(3)))
-    print(pose1)
+    # get the projections from the poses
+    P1 = K @ pose1
+    P2 = K @ pose2
 
-    pass
 
-# linearTriangulation(np.empty, np.empty)
+    A = np.column_stack(np.cross(x1, P1), np.cross(x2, P2))
+    U, D, Vt = np.linalg.svd(A)
+    X = Vt[-1, :]
+    
+    return X
+
+
 # buildProjectionMatrices(np.empty, np.column_stack((np.identity(3), np.ones(3))))
+K = [[531.122155322710, 0, 407.192550839899],
+     [0, 531.541737503901, 313.308715048366],
+     [0, 0, 1]]
+pose1 = np.column_stack((np.identity(3), np.zeros(3)))
+pose2 = np.empty
+x1 = np.empty
+x2 = np.empty
+linearTriangulation(K, pose1, pose2, x1, x2)
