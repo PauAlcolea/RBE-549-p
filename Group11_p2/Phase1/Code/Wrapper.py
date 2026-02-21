@@ -172,7 +172,7 @@ def sfm_pipeline(
     # disambiguatePose(poses)
 
     # TODO: linear triangulation to get initial 3D points
-    world_points_est = linearTriangulation(inliers, P1, P2)
+    world_points_est = linearTriangulation(K, P1, P2, inliers)
 
     # FIXME: ##### placeholder end #####
 
