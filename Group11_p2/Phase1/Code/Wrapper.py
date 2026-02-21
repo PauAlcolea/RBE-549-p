@@ -3,6 +3,7 @@
 import numpy as np
 from pathlib import Path
 from typing import List
+from argparse import ArgumentParser
 from EstimateFundamentalMatrix import estimateFundamentalMat
 from GetInliersRANSAC import getInliersRANSAC
 from EssentialMatrixFromFundamentalMatrix import estimateEssentialMatrix
@@ -107,6 +108,7 @@ def print_outputs(
     poses: List[np.ndarray] = None,
     world_points_est: np.ndarray = None,
     world_points_refined: np.ndarray = None,
+    plot: bool = False,
 ) -> None:
     """
     helper for printing and visualizing pipeline outputs
@@ -134,12 +136,13 @@ def print_outputs(
     )
     print(world_points_refined)
 
-    # visualize triangulated points
-    plot_triangulation(
-        points_set1=world_points_est,
-        points_set2=world_points_refined,
-        title=f"Triangulated points for images {current_image_id} and {other_image_id}",
-    )
+    if plot and world_points_est is not None and world_points_refined is not None:
+        # visualize triangulated points
+        plot_triangulation(
+            world_points_est,
+            world_points_refined,
+            title=f"Triangulated points for images {current_image_id} and {other_image_id}",
+        )
 
 
 def sfm_pipeline(
@@ -148,6 +151,7 @@ def sfm_pipeline(
     n_samples: int = 8,
     n_ransac_iters: int = 1000,
     inlier_thresh: float = 1.0,
+    plot: bool = False,
 ) -> None:
     # load correspondences for current image and other image
     correspondences = load_pair_matches(current_image_id, other_image_id)
@@ -175,7 +179,7 @@ def sfm_pipeline(
     pose1 = np.hstack((np.eye(3), np.zeros((3, 1))))
 
     # disambiguate the second camera pose using correspondences
-    pose2, world_points_est = disambiguatePose(poses, K, inliers)
+    pose2, world_points_est = disambiguatePose(poses, K, inliers, plot=plot)
 
     # construct 3x4 pose matrices P1, P2 = K [R | t] for nonlinear refinement
     P1 = K @ pose1
@@ -195,6 +199,7 @@ def sfm_pipeline(
         poses,
         world_points_est,
         world_points_refined,
+        plot,
     )
 
     return
@@ -204,9 +209,16 @@ def main() -> None:
     # TODO - add command line arguments for image ids, RANSAC parameters, etc.
     # TODO: visualize inliers and epipolar lines on the images
 
+    parser = ArgumentParser()
+    parser.add_argument(
+        "-p", "--plot", action="store_true", help="Whether to show plots"
+    )
+    args = parser.parse_args()
+
     sfm_pipeline(
         current_image_id=1,
         other_image_id=2,
+        plot=args.plot,
     )
 
     ######## NOTES ##########

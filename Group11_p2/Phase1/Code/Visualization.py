@@ -3,30 +3,42 @@ import numpy as np
 from pathlib import Path
 
 
-def _normalize(P):
+def _normalize(P: np.ndarray) -> np.ndarray:
     return (P - P.mean(axis=0)) / P.std(axis=0)
 
 
 def plot_triangulation(
-    points_set1: np.ndarray,
-    points_set2: np.ndarray | None = None,
+    *point_sets: np.ndarray,
     title: str = "triangulation",
 ) -> None:
     """
-    visualize triangulated 3D points in x-z plane (top-down view)
+    normalize and visualize up to four 3D point set (N, 3) in the x-z plane.
     """
-    points_set1 = _normalize(points_set1)
-    if points_set2 is not None:
-        points_set2 = _normalize(points_set2)
+
+    if not point_sets:
+        raise ValueError("At least one point set must be provided")
+    if len(point_sets) > 4:
+        raise ValueError("plot_triangulation supports at most 4 point sets")
+
+    colors = ["b", "r", "g", "m"]
 
     fig, ax = plt.subplots(figsize=(6, 6))
-    ax.scatter(points_set1[:, 0], points_set1[:, 2], s=2, c="b", alpha=0.7)
-    if points_set2 is not None:
-        ax.scatter(points_set2[:, 0], points_set2[:, 2], s=2, c="r", alpha=0.7)
+    for idx, P in enumerate(point_sets):
+        P_norm = _normalize(np.asarray(P))
+        ax.scatter(
+            P_norm[:, 0],
+            P_norm[:, 2],
+            s=2,
+            c=colors[idx],
+            alpha=0.7,
+            label=f"set {idx+1}",
+        )
+
     ax.set_xlabel("x")
     ax.set_ylabel("z")
     ax.set_title(title)
     ax.set_aspect("auto", adjustable="box")  # FIXME auto vs equal
+    ax.legend(loc="best")
     plt.show()
 
 

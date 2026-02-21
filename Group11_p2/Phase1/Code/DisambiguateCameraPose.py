@@ -1,13 +1,19 @@
 import numpy as np
 from LinearTriangulation import linearTriangulation
+from Visualization import plot_triangulation
 
 
-def disambiguatePose(camera_poses: np.ndarray, K, correspondences) -> np.ndarray:
+def disambiguatePose(
+    camera_poses: np.ndarray, K, correspondences, plot: bool = False
+) -> np.ndarray:
     """
     Checking cheirality condition to remove ambiguity
     This function must go through of the poses, and get the triangulated points for each one
 
     :param camera_poses: this is a numpy array with 4 camera poses with a shape of (4, 3, 4)
+    :param K: camera intrinsic matrix
+    :param correspondences: this is a numpy array of shape (N, 2, 2) where each row is [[u1, v1], [u2, v2]]
+    :param plot: whether to visualize the triangulated points for each candidate pose
     :return: the correct camera pose (3,4) and the triangulated points for that pose
     """
 
@@ -40,10 +46,21 @@ def disambiguatePose(camera_poses: np.ndarray, K, correspondences) -> np.ndarray
         valid_points_per_pose.append(valid_counter)
         X_per_pose.append(X_list)
 
+    # convert triangulated lists to arrays
+    X_per_pose_arrays = [np.array(X_list) for X_list in X_per_pose]
+    if plot:
+        # visualize initial triangulations for all candidate poses
+        try:
+            plot_triangulation(
+                *X_per_pose_arrays, title="initial triangulation for candidate poses"
+            )
+        except Exception:
+            pass
+
     if all(v == 0 for v in valid_points_per_pose):
         raise ValueError("All poses have zero valid points, cannot disambiguate")
 
     best_index = valid_points_per_pose.index(max(valid_points_per_pose))
     best_pose = camera_poses[best_index]
-    X_best = np.array(X_per_pose[best_index])
+    X_best = X_per_pose_arrays[best_index]
     return best_pose, X_best
