@@ -7,6 +7,8 @@ from EstimateFundamentalMatrix import estimateFundamentalMat
 from GetInliersRANSAC import getInliersRANSAC
 from EssentialMatrixFromFundamentalMatrix import estimateEssentialMatrix
 from ExtractCameraPose import extractCameraPose
+from LinearTriangulation import linearTriangulation
+from NonlinearTriangulation import nonlinearTriangulation
 
 
 def load_pair_matches(
@@ -91,6 +93,44 @@ def load_intrinsics() -> np.ndarray:
 
     K = np.array(k_list).reshape((3, 3))
     return K
+
+
+def print_outputs(
+    current_image_id: int,
+    other_image_id: int,
+    F: np.ndarray,
+    inliers: np.ndarray,
+    E: np.ndarray,
+    num_correspondences: int,
+    poses: List[np.ndarray] = None,
+    world_points_refined: np.ndarray = None,
+) -> None:
+    """
+    helper for printing outputs of pipeline
+    """
+    print(
+        f"Estimated Fundamental matrix F (RANSAC inliers) "
+        f"for images {current_image_id}-{other_image_id}:"
+    )
+    print(F)
+    print(f"Number of RANSAC inliers: {inliers.shape[0]} / {num_correspondences}")
+    print(
+        f"Estimated Essential matrix E (from F) "
+        f"for images {current_image_id}-{other_image_id}:"
+    )
+    print(E)
+    print(
+        f"Estimated camera poses (from E) for images {current_image_id}-{other_image_id}:"
+    )
+    for i, pose in enumerate(poses):
+        print(f"Pose {i + 1}:")
+        print(pose)
+    print(
+        f"Refined 3D points (from nonlinear triangulation) for images {current_image_id}-{other_image_id}:"
+    )
+    print(world_points_refined)
+
+
 def sfm_pipeline(
     current_image_id: int,
     other_image_id: int,
@@ -117,26 +157,38 @@ def sfm_pipeline(
     K = load_intrinsics()
     E = estimateEssentialMatrix(K, F)
 
-    # estimate camera pose from E
+    # estimate 4 possible camera poses from E
     poses = extractCameraPose(E, K)
 
-    print(
-        f"Estimated Fundamental matrix F (RANSAC inliers) "
-        f"for images {current_image_id}-{other_image_id}:"
+    # construct first camera projection matrix P1 = K [I | 0]
+    P1 = K @ np.hstack((np.eye(3), np.zeros((3, 1))))
+
+    # FIXME: ##### placeholder begin #####
+
+    # FIXME: use the first candidate as P2
+    P2 = poses[0]
+    # TODO: disambiguate pose by chirality
+    # disambiguatePose(poses)
+
+    # TODO: linear triangulation to get initial 3D points
+    world_points_est = linearTriangulation(inliers, P1, P2)
+
+    # FIXME: ##### placeholder end #####
+
+    # TODO: nonlinear triangulation to refine 3D points
+    world_points_refined = nonlinearTriangulation(inliers, P1, P2, world_points_est)
+
+    # print outputs
+    print_outputs(
+        current_image_id,
+        other_image_id,
+        F,
+        inliers,
+        E,
+        correspondences.shape[0],
+        poses,
+        world_points_refined,
     )
-    print(F)
-    print(f"Number of RANSAC inliers: {inliers.shape[0]} / {correspondences.shape[0]}")
-    print(
-        f"Estimated Essential matrix E (from F) "
-        f"for images {current_image_id}-{other_image_id}:"
-    )
-    print(E)
-    print(
-        f"Estimated camera poses (from E) for images {current_image_id}-{other_image_id}:"
-    )
-    for i, pose in enumerate(poses):
-        print(f"Pose {i + 1}:")
-        print(pose)
 
 
 def main() -> None:
