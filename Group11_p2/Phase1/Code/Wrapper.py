@@ -83,10 +83,14 @@ def load_intrinsics() -> np.ndarray:
         for line in f:
             parts = line.strip().split()
             k_list.extend([float(x) for x in parts])
-        K = np.array(k_list).reshape((3, 3))
-        return K
 
+    if len(k_list) != 9:
+        raise ValueError(
+            f"Expected 9 intrinsics values in {calibration_path}, found {len(k_list)}"
+        )
 
+    K = np.array(k_list).reshape((3, 3))
+    return K
 def sfm_pipeline(
     current_image_id: int,
     other_image_id: int,
