@@ -168,11 +168,14 @@ def sfm_pipeline(
 
     # FIXME: use the first candidate as P2
     P2 = poses[0]
-    # TODO: disambiguate pose by chirality
-    # disambiguatePose(poses)
-
+    
     # TODO: linear triangulation to get initial 3D points
     world_points_est = linearTriangulation(K, P1, P2, inliers)
+
+    # TODO: visulize triangulated points
+
+    # TODO: disambiguate pose by chirality
+    # disambiguatePose(poses)
 
     # FIXME: ##### placeholder end #####
 
