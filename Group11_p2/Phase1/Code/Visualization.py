@@ -16,7 +16,7 @@ def plot_triangulation(points: np.ndarray, title: str = "triangulation"):
     ax.set_xlabel("x")
     ax.set_ylabel("z")
     ax.set_title(title)
-    ax.set_aspect("equal", adjustable="box")
+    ax.set_aspect("auto", adjustable="box") # FIXME auto vs equal
     plt.show()
 
 
