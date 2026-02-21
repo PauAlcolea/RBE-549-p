@@ -1,7 +1,7 @@
 import numpy as np
 
 
-def buildProjectionMatrices(K: np.ndarray, Pose: np.ndarray) -> np.ndarray:
+def _buildProjectionMatrices(K: np.ndarray, Pose: np.ndarray) -> np.ndarray:
     """
     Docstring for buildProjectionMatrices
 
@@ -28,8 +28,8 @@ def linearTriangulation(
     :return 3d point, this will be
     """
     # get the projections from the poses
-    P1 = buildProjectionMatrices(K, pose1)
-    P2 = buildProjectionMatrices(K, pose2)
+    P1 = _buildProjectionMatrices(K, pose1)
+    P2 = _buildProjectionMatrices(K, pose2)
 
     x1_3d = np.hstack([x1, np.array([1])])
     x2_3d = np.hstack([x2, np.array([1])])
