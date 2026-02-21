@@ -7,7 +7,9 @@ from EstimateFundamentalMatrix import estimateFundamentalMat
 from GetInliersRANSAC import getInliersRANSAC
 from EssentialMatrixFromFundamentalMatrix import estimateEssentialMatrix
 from ExtractCameraPose import extractCameraPose
+from NonlinearTriangulation import nonlinearTriangulation
 from DisambiguateCameraPose import disambiguatePose
+from Visualization import plot_triangulation
 
 
 def load_pair_matches(
@@ -15,14 +17,15 @@ def load_pair_matches(
     other_image_id: int,
 ) -> np.ndarray:
     """
-    load point correspondences between current image and other image.
+    load point correspondences between current image and other image where
+    each row in the current image's matching file has the format:
 
-    for the current image i, each row in the matching file has the format:
+    n_matches  R G B  u_i  v_i  (image_id  u  v)*
 
-        n_matches  R G B  u_i  v_i  (image_id  u  v)*
-
-    save correspondence ((u_i, v_i), (u_j, v_j)) for each row where
-    one of the (image_id, u, v) entries matches other_image_id
+    return all correspondences where other_image_id is found in (image_id, u, v) entry
+    :param current_image_id: id of current image (1-based)
+    :param other_image_id: id of other image to find matches with (1-based)
+    :return: (N, 2, 2) array of correspondences, where each row is [[u_i, v_i], [u_j, v_j]]
     """
 
     phase1_dir = Path(__file__).resolve().parents[1]
@@ -71,6 +74,7 @@ def load_pair_matches(
 
     return np.stack(correspondences, axis=0)
 
+
 def load_intrinsics() -> np.ndarray:
     """
     load intrinsics matrix K from calibration.txt
@@ -91,6 +95,50 @@ def load_intrinsics() -> np.ndarray:
 
     K = np.array(k_list).reshape((3, 3))
     return K
+
+
+def print_outputs(
+    current_image_id: int,
+    other_image_id: int,
+    F: np.ndarray,
+    inliers: np.ndarray,
+    E: np.ndarray,
+    num_correspondences: int,
+    poses: List[np.ndarray] = None,
+    world_points_refined: np.ndarray = None,
+) -> None:
+    """
+    helper for printing outputs of pipeline
+    """
+    print(
+        f"Estimated Fundamental matrix F (RANSAC inliers) "
+        f"for images {current_image_id}-{other_image_id}:"
+    )
+    print(F)
+    print(f"Number of RANSAC inliers: {inliers.shape[0]} / {num_correspondences}")
+    print(
+        f"Estimated Essential matrix E (from F) "
+        f"for images {current_image_id}-{other_image_id}:"
+    )
+    print(E)
+    print(
+        f"Estimated camera poses (from E) for images {current_image_id}-{other_image_id}:"
+    )
+    if poses is not None:
+        for i, pose in enumerate(poses):
+            print(f"Pose {i + 1}:")
+            print(pose)
+    print(
+        f"Refined 3D points (from nonlinear triangulation) for images {current_image_id}-{other_image_id}:"
+    )
+    print(world_points_refined)
+
+    # visualize triangulated points
+    plot_triangulation(
+        world_points_refined,
+        title=f"Triangulated points for images {current_image_id} and {other_image_id}",
+    )
+
 
 def sfm_pipeline(
     current_image_id: int,
@@ -118,32 +166,33 @@ def sfm_pipeline(
     K = load_intrinsics()
     E = estimateEssentialMatrix(K, F)
 
-    # estimate camera pose from E
+    # estimate 4 possible camera poses from E
     poses = extractCameraPose(E, K)
 
-    # Disambiguate camera pose will call linear triangulation itself
-    # ####### I don't know yet how the correspondences work, so this might have to be 
-    final_pose = disambiguatePose(poses, K, correspondences)
+    # first camera pose [I | 0]
+    pose1 = np.hstack((np.eye(3), np.zeros((3, 1))))
 
-    return
+    # disambiguate the second camera pose using correspondences
+    pose2, world_point_est = disambiguatePose(poses, K, inliers)
 
-    print(
-        f"Estimated Fundamental matrix F (RANSAC inliers) "
-        f"for images {current_image_id}-{other_image_id}:"
+    # construct 3x4 pose matrices P1, P2 = K [R | t] for nonlinear refinement
+    P1 = K @ pose1
+    P2 = K @ pose2
+
+    # nonlinear triangulation to refine 3D points
+    world_points_refined = nonlinearTriangulation(inliers, P1, P2, world_point_est)
+
+    # print outputs
+    print_outputs(
+        current_image_id,
+        other_image_id,
+        F,
+        inliers,
+        E,
+        correspondences.shape[0],
+        poses,
+        world_points_refined,
     )
-    print(F)
-    print(f"Number of RANSAC inliers: {inliers.shape[0]} / {correspondences.shape[0]}")
-    print(
-        f"Estimated Essential matrix E (from F) "
-        f"for images {current_image_id}-{other_image_id}:"
-    )
-    print(E)
-    print(
-        f"Estimated camera poses (from E) for images {current_image_id}-{other_image_id}:"
-    )
-    for i, pose in enumerate(poses):
-        print(f"Pose {i + 1}:")
-        print(pose)
 
     return
 
@@ -156,20 +205,16 @@ def main() -> None:
         current_image_id=1,
         other_image_id=2,
     )
-    
+
     ######## NOTES ##########
 
-    # when calling estimateFundamentalMat(correspondances), the correspondances should be an np.array of shape (8, 2, 2)
-    # it should look like this: 
-    # np.array([[[x1, y1], [x1', y1']], [[x2, y2], [x2', y2']], [[x3, y3], [x3', y3']] , ... , ... [[x8, y8], [x8', y8']] ])
-    
     # the camera poses are already in the form [R|t], so that can be passed directly as one matrix to the linear triangulation function and things
-    
+
     # Questions:
-    # for the linear triangluation, do i need to make the projective matrices transposes? what is the original equation x1 = PX?
+    # for the linear triangulation, do i need to make the projective matrices transposes? what is the original equation x1 = PX?
     # What really is the camera pose from ExtractCameraPose.py? is it already the Projection Matrix?
-    # There's a chance that the the pose is extracted wrong, maybe it should be a 4x4, not a 3x4, look at the notes,
     return
+
 
 if __name__ == "__main__":
     main()

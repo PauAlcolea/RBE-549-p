@@ -7,7 +7,7 @@ def extractCameraPose(E: np.ndarray, K: np.ndarray) -> np.ndarray:
 
     :param E: Essential matrix E
     :param K: Camera intrinsic Matrix
-    :return: 4 possible poses that will get narrowed down with the triangulation
+    :return: 4 possible poses in the form of [R | t] (3x4)
     """
 
     # SVD from essential matrix
@@ -39,7 +39,8 @@ def extractCameraPose(E: np.ndarray, K: np.ndarray) -> np.ndarray:
             if np.linalg.det(r_corr) < 0:
                 t_corr = -t_corr
                 r_corr = -r_corr
-            pose = K @ r_corr @ np.column_stack((np.identity(3), t_corr))
+            # return pose as [R | t] (3x4)
+            pose = np.column_stack((r_corr, t_corr))
             P.append(pose)
 
     return np.array(P)
