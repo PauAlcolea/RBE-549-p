@@ -8,6 +8,6 @@ usage: Wrapper.py [-h] [-p [FLAG ...]]
 options:
   -h, --help            show this help message and exit
   -p, --plot [FLAG ...]
-                        Which plots to show: i=inliers, t=triangulation, r=reprojection, p=possible poses. If -p is given with no flags, all are shown.
+                        Which plots to show: i=inliers, t=triangulation, r=reprojection, p=possible poses, e=epipolar lines. If -p is given with no flags, all are shown.
   
   ```

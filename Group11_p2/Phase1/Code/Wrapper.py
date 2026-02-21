@@ -10,7 +10,12 @@ from EssentialMatrixFromFundamentalMatrix import estimateEssentialMatrix
 from ExtractCameraPose import extractCameraPose
 from NonlinearTriangulation import nonlinearTriangulation
 from DisambiguateCameraPose import disambiguatePose
-from Visualization import plot_correspondences, plot_triangulation, plot_reprojection
+from Visualization import (
+    plot_correspondences,
+    plot_triangulation,
+    plot_reprojection,
+    plot_epipolar_lines,
+)
 
 
 def load_pair_matches(
@@ -176,6 +181,16 @@ def print_outputs(
                 title=f"Nonlinear Reprojection of 3D points for images {current_image_id} and {other_image_id}",
             )
 
+        # visualize epipolar lines
+        if "e" in plot_flags:
+            plot_epipolar_lines(
+                current_image_id,
+                other_image_id,
+                F,
+                inliers,
+                title=f"Epipolar lines for images {current_image_id} and {other_image_id}",
+            )
+
 
 def sfm_pipeline(
     current_image_id: int,
@@ -211,7 +226,9 @@ def sfm_pipeline(
     pose1 = np.hstack((np.eye(3), np.zeros((3, 1))))
 
     # disambiguate the second camera pose using correspondences
-    pose2, world_points_est = disambiguatePose(poses, K, inliers, "p" in plot_flags)
+    pose2, world_points_est = disambiguatePose(
+        poses, K, inliers, bool(plot_flags) and "p" in plot_flags
+    )
 
     # construct 3x4 pose matrices P1, P2 = K [R | t] for nonlinear refinement
     P1 = K @ pose1
@@ -246,11 +263,11 @@ def main() -> None:
         "-p",
         "--plot",
         nargs="*",
-        choices=["i", "t", "r", "p"],
+        choices=["i", "t", "r", "p", "e"],
         default=None,
         metavar="FLAG",
         help=(
-            "Which plots to show: i=inliers, t=triangulation, r=reprojection, p=possible poses. "
+            "Which plots to show: i=inliers, t=triangulation, r=reprojection, p=possible poses, e=epipolar lines. "
             "If -p is given with no flags, all are shown."
         ),
     )
@@ -261,7 +278,7 @@ def main() -> None:
     if args.plot is None:
         plot_flags = None
     elif len(args.plot) == 0:
-        plot_flags = {"i", "t", "r", "p"}
+        plot_flags = {"i", "t", "r", "p", "e"}
     else:
         plot_flags = set(args.plot)
 

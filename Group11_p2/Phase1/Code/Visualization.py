@@ -130,6 +130,133 @@ def plot_correspondences(
     plt.show()
 
 
+def _epipolar_line(F: np.ndarray, u: float, v: float) -> np.ndarray:
+    """Compute epipolar line l = F x for point (u, v, 1)."""
+
+    x = np.array([u, v, 1.0], dtype=float)
+    return F @ x
+
+
+def _draw_line(
+    ax, a: float, b: float, c: float, x_offset: float, w: int, h: int, **kwargs
+):
+    """Draw line ax + by + c = 0 within image bounds [0,w) x [0,h)."""
+
+    eps = 1e-8
+    if abs(b) > eps:
+        xs = np.array([0.0, float(w - 1)])
+        ys = -(a * xs + c) / b
+    else:
+        # vertical line x = -c / a
+        if abs(a) < eps:
+            return
+        x = -c / a
+        xs = np.array([x, x])
+        ys = np.array([0.0, float(h - 1)])
+
+    ax.plot(xs + x_offset, ys, **kwargs)
+
+
+def plot_epipolar_lines(
+    current_image_id: int,
+    other_image_id: int,
+    F: np.ndarray,
+    correspondences: np.ndarray,
+    max_lines: int = 50,
+    title: str | None = None,
+) -> None:
+    """Overlay epipolar lines induced by matched points on both images.
+
+    For each correspondence (u1, v1) <-> (u2, v2):
+    - draw the epipolar line of (u1, v1) in image 2 (using F x1)
+    - draw the epipolar line of (u2, v2) in image 1 (using F^T x2)
+    """
+
+    F = np.asarray(F, dtype=float)
+    corr = np.asarray(correspondences, dtype=float)
+
+    if corr.ndim != 3 or corr.shape[1:] != (2, 2):
+        raise ValueError("correspondences must have shape (N, 2, 2)")
+
+    img_left = _load_image(current_image_id)
+    img_right = _load_image(other_image_id)
+
+    h1, w1 = img_left.shape[:2]
+    h2, w2 = img_right.shape[:2]
+    h = max(h1, h2)
+
+    canvas = np.ones((h, w1 + w2, 3), dtype=float)
+
+    def _to_float(img: np.ndarray) -> np.ndarray:
+        if img.dtype == np.uint8:
+            return img.astype(float) / 255.0
+        return img.astype(float)
+
+    img_left_f = _to_float(img_left)
+    img_right_f = _to_float(img_right)
+
+    canvas[:h1, :w1, : img_left_f.shape[2]] = img_left_f
+    canvas[:h2, w1 : w1 + w2, : img_right_f.shape[2]] = img_right_f
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.imshow(canvas)
+
+    N = corr.shape[0]
+    if N == 0:
+        raise ValueError("No correspondences provided for epipolar visualization")
+
+    # Subsample if too many lines
+    step = max(1, N // max_lines) if N > max_lines else 1
+    indices = np.arange(0, N, step)
+
+    for i in indices:
+        (u1, v1), (u2, v2) = corr[i]
+
+        # Line in image 2 from point in image 1
+        a2, b2, c2 = _epipolar_line(F, u1, v1)
+        _draw_line(
+            ax,
+            a2,
+            b2,
+            c2,
+            x_offset=w1,
+            w=w2,
+            h=h,
+            color="orange",
+            linewidth=0.75,
+            alpha=0.8,
+        )
+
+        # Line in image 1 from point in image 2
+        a1, b1, c1 = _epipolar_line(F.T, u2, v2)
+        _draw_line(
+            ax,
+            a1,
+            b1,
+            c1,
+            x_offset=0.0,
+            w=w1,
+            h=h,
+            color="cyan",
+            linewidth=0.75,
+            alpha=0.8,
+        )
+
+    # Also plot the original points for reference
+    pts1 = corr[:, 0, :]
+    pts2 = corr[:, 1, :]
+    ax.scatter(pts1[:, 0], pts1[:, 1], c="red", s=3, label="pts img1")
+    ax.scatter(pts2[:, 0] + w1, pts2[:, 1], c="lime", s=3, label="pts img2")
+
+    if title is None:
+        title = "Epipolar lines in both images"
+    ax.set_title(title)
+    ax.set_axis_off()
+    ax.legend(loc="best")
+    plt.tight_layout()
+    plt.show()
+
+
 def plot_reprojection(
     current_image_id: int,
     other_image_id: int,
