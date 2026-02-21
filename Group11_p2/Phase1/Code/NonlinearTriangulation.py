@@ -13,7 +13,7 @@ def _project_point(P: np.ndarray, X: np.ndarray) -> np.ndarray:
     X_h = np.hstack([X, 1.0])  # homogeneous world point
     x, y, z = P @ X_h
 
-    # avoid divide by zero / points behind camera
+    # FIXME: avoid divide by zero / points behind camera
     if z <= 1e-12:
         return np.array([1e9, 1e9], dtype=float)
 
@@ -83,8 +83,12 @@ def nonlinearTriangulation(
 
     X_out = np.zeros_like(world_points_est, dtype=float)
     for i in range(world_points_est.shape[0]):
-        Xi, _ = _nonlinear_triangulate_point(
+        Xi, res = _nonlinear_triangulate_point(
             correspondences[i], P1, P2, world_points_est[i]
         )
+        if not res.success:
+            print(
+                f"Warning: nonlinear triangulation optimization failed for point {i} with message: {res.message}"
+            )
         X_out[i] = Xi
     return X_out

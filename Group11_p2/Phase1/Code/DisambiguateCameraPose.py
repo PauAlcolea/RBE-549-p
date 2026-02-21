@@ -40,9 +40,10 @@ def disambiguatePose(camera_poses: np.ndarray, K, correspondences) -> np.ndarray
         valid_points_per_pose.append(valid_counter)
         X_per_pose.append(X_list)
 
+    if all(v == 0 for v in valid_points_per_pose):
+        raise ValueError("All poses have zero valid points, cannot disambiguate")
+
     best_index = valid_points_per_pose.index(max(valid_points_per_pose))
     best_pose = camera_poses[best_index]
     X_best = np.array(X_per_pose[best_index])
-    print(best_pose)
     return best_pose, X_best
-

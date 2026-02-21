@@ -3,7 +3,7 @@ import numpy as np
 
 def _buildProjectionMatrices(K: np.ndarray, Pose: np.ndarray) -> np.ndarray:
     """
-    Docstring for buildProjectionMatrices
+    build projection matrix P = K [R | t] from camera intrinsic matrix K and pose [R | t]
 
     :param K: camera internal matrix, shape = (3,3)
     :param Pose: one pose, which is [R|t], shape = (3,4)
@@ -66,5 +66,6 @@ def linearTriangulation(
     U, D, Vt = np.linalg.svd(A)
     X = Vt[-1, :]
 
+    # TODO: normalize this correctly
     X = X / X[3]
     return X[0:3]
