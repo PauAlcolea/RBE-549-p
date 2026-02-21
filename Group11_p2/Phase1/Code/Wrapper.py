@@ -7,6 +7,7 @@ from EstimateFundamentalMatrix import estimateFundamentalMat
 from GetInliersRANSAC import getInliersRANSAC
 from EssentialMatrixFromFundamentalMatrix import estimateEssentialMatrix
 from ExtractCameraPose import extractCameraPose
+from DisambiguateCameraPose import disambiguatePose
 
 
 def load_pair_matches(
@@ -120,6 +121,12 @@ def sfm_pipeline(
     # estimate camera pose from E
     poses = extractCameraPose(E, K)
 
+    # Disambiguate camera pose will call linear triangulation itself
+    # ####### I don't know yet how the correspondences work, so this might have to be 
+    final_pose = disambiguatePose(poses, K, correspondences)
+
+    return
+
     print(
         f"Estimated Fundamental matrix F (RANSAC inliers) "
         f"for images {current_image_id}-{other_image_id}:"
@@ -137,6 +144,8 @@ def sfm_pipeline(
     for i, pose in enumerate(poses):
         print(f"Pose {i + 1}:")
         print(pose)
+
+    return
 
 
 def main() -> None:
@@ -160,7 +169,7 @@ def main() -> None:
     # for the linear triangluation, do i need to make the projective matrices transposes? what is the original equation x1 = PX?
     # What really is the camera pose from ExtractCameraPose.py? is it already the Projection Matrix?
     # There's a chance that the the pose is extracted wrong, maybe it should be a 4x4, not a 3x4, look at the notes,
-    pass
+    return
 
 if __name__ == "__main__":
     main()
