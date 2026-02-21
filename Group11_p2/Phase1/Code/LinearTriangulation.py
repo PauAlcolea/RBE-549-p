@@ -66,6 +66,5 @@ def linearTriangulation(
     U, D, Vt = np.linalg.svd(A)
     X = Vt[-1, :]
 
-    # TODO: normalize this correctly
     X = X / X[3]
     return X[0:3]

@@ -247,7 +247,7 @@ def sfm_pipeline(
     other_image_id: int,
     n_samples: int = 8,
     n_ransac_iters: int = 1000,
-    inlier_thresh: float = 3.0,
+    inlier_thresh: float = 16.0,  # TODO: tuning
     plot_flags: set[str] | None = None,
 ) -> None:
     # load correspondences for current image and other image
