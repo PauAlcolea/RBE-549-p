@@ -70,7 +70,6 @@ def load_pair_matches(
 
     return np.stack(correspondences, axis=0)
 
-
 def load_intrinsics() -> np.ndarray:
     """
     load intrinsics matrix K from calibration.txt
@@ -91,6 +90,7 @@ def load_intrinsics() -> np.ndarray:
 
     K = np.array(k_list).reshape((3, 3))
     return K
+
 def sfm_pipeline(
     current_image_id: int,
     other_image_id: int,
@@ -156,8 +156,6 @@ def main() -> None:
     
     # the camera poses are already in the form [R|t], so that can be passed directly as one matrix to the linear triangulation function and things
     
-
-
     # Questions:
     # for the linear triangluation, do i need to make the projective matrices transposes? what is the original equation x1 = PX?
     # What really is the camera pose from ExtractCameraPose.py? is it already the Projection Matrix?
