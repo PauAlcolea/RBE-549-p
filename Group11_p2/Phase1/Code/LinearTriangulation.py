@@ -18,15 +18,19 @@ def linearTriangulation(K, pose1: np.ndarray, pose2: np.ndarray, x1:np.ndarray, 
     :param pose2: another camera pose
     :param K: camera intrinsic maatrix
     :param correspondences between the two cameras, x1 and x2 np.ndarrays
-    : expecting x1 and x2 in the form of [x1 y1 1] (np.array of shape (3,))
+    : expecting x1 and x2 in the form of [x1 y1] (np.array of shape (2,))
     :return 3d point, this will be 
     """
     # get the projections from the poses
-    P1 = K @ pose1
-    P2 = K @ pose2
+    P1 = (K @ pose1)
+    P2 = (K @ pose2)
 
+    x1_3d = np.hstack([x1, np.array([1])])
+    x2_3d = np.hstack([x2, np.array([1])])
 
-    A = np.column_stack(np.cross(x1, P1), np.cross(x2, P2))
+    print(P1.shape)
+
+    A = np.vstack([np.cross(x1_3d, P1, axis=-1), np.cross(x2_3d, P2, axis=-1)])
     U, D, Vt = np.linalg.svd(A)
     X = Vt[-1, :]
     
@@ -38,7 +42,7 @@ K = [[531.122155322710, 0, 407.192550839899],
      [0, 531.541737503901, 313.308715048366],
      [0, 0, 1]]
 pose1 = np.column_stack((np.identity(3), np.zeros(3)))
-pose2 = np.empty
-x1 = np.empty
-x2 = np.empty
+pose2 = np.empty_like(pose1)
+x1 = np.array([1, 2])
+x2 = np.array([5, 6])
 linearTriangulation(K, pose1, pose2, x1, x2)
