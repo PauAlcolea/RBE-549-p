@@ -16,14 +16,15 @@ def load_pair_matches(
     other_image_id: int,
 ) -> np.ndarray:
     """
-    load point correspondences between current image and other image.
+    load point correspondences between current image and other image where
+    each row in the current image's matching file has the format:
 
-    for the current image i, each row in the matching file has the format:
+    n_matches  R G B  u_i  v_i  (image_id  u  v)*
 
-        n_matches  R G B  u_i  v_i  (image_id  u  v)*
-
-    save correspondence ((u_i, v_i), (u_j, v_j)) for each row where
-    one of the (image_id, u, v) entries matches other_image_id
+    return all correspondences where other_image_id is found in (image_id, u, v) entry
+    :param current_image_id: id of current image (1-based)
+    :param other_image_id: id of other image to find matches with (1-based)
+    :return: (N, 2, 2) array of correspondences, where each row is [[u_i, v_i], [u_j, v_j]]
     """
 
     phase1_dir = Path(__file__).resolve().parents[1]
