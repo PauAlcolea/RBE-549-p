@@ -1,5 +1,4 @@
 import numpy as np
-import sys
 
 
 def extractCameraPose(E: np.ndarray, K: np.ndarray) -> np.ndarray:
