@@ -1,9 +1,10 @@
 import numpy as np
 
-def buildProjectionMatrices(K:np.ndarray, Pose:np.ndarray) -> np.ndarray:
+
+def buildProjectionMatrices(K: np.ndarray, Pose: np.ndarray) -> np.ndarray:
     """
     Docstring for buildProjectionMatrices
-    
+
     :param K: camera internal matrix, shape = (3,3)
     :param Pose: one pose, which is [R|t], shape = (3,4)
     """
@@ -12,16 +13,19 @@ def buildProjectionMatrices(K:np.ndarray, Pose:np.ndarray) -> np.ndarray:
     Projection = K @ Pose
     return Projection
 
-def linearTriangulation(K, pose1: np.ndarray, pose2: np.ndarray, x1:np.ndarray, x2:np.ndarray):
+
+def linearTriangulation(
+    K, pose1: np.ndarray, pose2: np.ndarray, x1: np.ndarray, x2: np.ndarray
+):
     """
     this function triangulates 3D points
-    
+
     :param pose1: Camera pose, this will always be zero because that is the reference
     :param pose2: another camera pose
     :param K: camera intrinsic maatrix
     :param correspondences between the two cameras, x1 and x2 np.ndarrays
     : expecting x1 and x2 in the form of [x1 y1] (np.array of shape (2,))
-    :return 3d point, this will be 
+    :return 3d point, this will be
     """
     # get the projections from the poses
     P1 = buildProjectionMatrices(K, pose1)
@@ -42,13 +46,21 @@ def linearTriangulation(K, pose1: np.ndarray, pose2: np.ndarray, x1:np.ndarray, 
 
     # equation for the cross product with determinants
     # https://www.khanacademy.org/math/multivariable-calculus/thinking-about-multivariable-function/x786f2022:vectors-and-matrices/a/cross-products-mvc
-    cross_x1_p1 = np.stack([(x1_3d[1] * P1r3 - x1_3d[2] * P1r2),
-                            (x1_3d[2] * P1r1 - x1_3d[0] * P1r3),
-                            (x1_3d[0] * P1r2 - x1_3d[1] * P1r1)])
+    cross_x1_p1 = np.stack(
+        [
+            (x1_3d[1] * P1r3 - x1_3d[2] * P1r2),
+            (x1_3d[2] * P1r1 - x1_3d[0] * P1r3),
+            (x1_3d[0] * P1r2 - x1_3d[1] * P1r1),
+        ]
+    )
 
-    cross_x2_p2 = np.stack([(x2_3d[1] * P2r3 - x2_3d[2] * P2r2),
-                            (x2_3d[2] * P2r1 - x2_3d[0] * P2r3),
-                            (x2_3d[0] * P2r2 - x2_3d[1] * P2r1)])
+    cross_x2_p2 = np.stack(
+        [
+            (x2_3d[1] * P2r3 - x2_3d[2] * P2r2),
+            (x2_3d[2] * P2r1 - x2_3d[0] * P2r3),
+            (x2_3d[0] * P2r2 - x2_3d[1] * P2r1),
+        ]
+    )
 
     A = np.vstack([cross_x1_p1, cross_x2_p2])
     U, D, Vt = np.linalg.svd(A)
