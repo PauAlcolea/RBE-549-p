@@ -2,7 +2,7 @@ import numpy as np
 from scipy.optimize import least_squares
 
 
-def _project_point(P: np.ndarray, X: np.ndarray) -> np.ndarray:
+def project_point(P: np.ndarray, X: np.ndarray) -> np.ndarray:
     """
     project a world point X to pixel coords using a 3x4 camera matrix P = K [R | t].
 
@@ -12,10 +12,8 @@ def _project_point(P: np.ndarray, X: np.ndarray) -> np.ndarray:
     """
     X_h = np.hstack([X, 1.0])  # homogeneous world point
     x, y, z = P @ X_h
-
-    # FIXME: avoid divide by zero / points behind camera
-    if z <= 1e-12:
-        return np.array([1e9, 1e9], dtype=float)
+    # prevent division by zero
+    z = max(z, 1e-8)
 
     u = x / z
     v = y / z
@@ -38,8 +36,8 @@ def _reprojection_residual(
     :return: residuals [u1 - u1_hat, v1 - v1_hat, u2 - u2_hat, v2 - v2_hat]
     """
     x1_uv, x2_uv = correspondence
-    uv1_hat = _project_point(P1, X)
-    uv2_hat = _project_point(P2, X)
+    uv1_hat = project_point(P1, X)
+    uv2_hat = project_point(P2, X)
     return np.hstack([x1_uv - uv1_hat, x2_uv - uv2_hat])
 
 
@@ -90,5 +88,7 @@ def nonlinearTriangulation(
             print(
                 f"Warning: nonlinear triangulation optimization failed for point {i} with message: {res.message}"
             )
-        X_out[i] = Xi
+            X_out[i] = world_points_est[i]
+        else:
+            X_out[i] = Xi
     return X_out

@@ -3,10 +3,6 @@ import numpy as np
 from pathlib import Path
 
 
-def _normalize(P: np.ndarray) -> np.ndarray:
-    return (P - P.mean(axis=0)) / P.std(axis=0)
-
-
 def plot_triangulation(
     *point_sets: np.ndarray,
     camera_centers: np.ndarray | None = None,

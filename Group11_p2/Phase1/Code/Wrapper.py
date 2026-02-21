@@ -8,7 +8,7 @@ from EstimateFundamentalMatrix import estimateFundamentalMat
 from GetInliersRANSAC import getInliersRANSAC
 from EssentialMatrixFromFundamentalMatrix import estimateEssentialMatrix
 from ExtractCameraPose import extractCameraPose
-from NonlinearTriangulation import nonlinearTriangulation
+from NonlinearTriangulation import nonlinearTriangulation, project_point
 from DisambiguateCameraPose import disambiguatePose
 from Visualization import (
     plot_correspondences,
@@ -101,6 +101,53 @@ def load_intrinsics() -> np.ndarray:
 
     K = np.array(k_list).reshape((3, 3))
     return K
+
+
+def filter_triangulation_outliers(
+    inliers: np.ndarray,
+    world_points_est: np.ndarray,
+    P1: np.ndarray,
+    P2: np.ndarray,
+    inlier_thresh: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    filter out triangulated points with high reprojection error or negative depth
+
+    :param inliers: (N, 2, 2) array of correspondences for inlier matches
+    :param world_points_est: (N, 3) array of triangulated 3D points from linear triangulation
+    :param P1: 3x4 camera matrix for view 1
+    :param P2: 3x4 camera matrix for view 2
+    :param inlier_thresh: reprojection error threshold for filtering
+    :return: filtered inliers and corresponding world points
+    """
+    rms_thresh = 2.0 * inlier_thresh
+    mask_list: list[bool] = []
+    # keep points with low reprojection error and positive depth in both views
+    for corr, X in zip(inliers, world_points_est):
+        x1_uv, x2_uv = corr
+        uv1_hat = project_point(P1, X)
+        uv2_hat = project_point(P2, X)
+
+        err1 = np.linalg.norm(x1_uv - uv1_hat)
+        err2 = np.linalg.norm(x2_uv - uv2_hat)
+        rms = np.sqrt(0.5 * (err1**2 + err2**2))
+
+        X_h = np.hstack([X, 1.0])
+        _, _, z1 = P1 @ X_h
+        _, _, z2 = P2 @ X_h
+
+        ok = (z1 > 0.0) and (z2 > 0.0) and (rms <= rms_thresh)
+        mask_list.append(ok)
+
+    mask = np.array(mask_list, dtype=bool)
+    if not np.any(mask):
+        inliers_filtered = inliers
+        world_points_est_filtered = world_points_est
+    else:
+        inliers_filtered = inliers[mask]
+        world_points_est_filtered = world_points_est[mask]
+
+    return inliers_filtered, world_points_est_filtered
 
 
 def print_outputs(
@@ -200,7 +247,7 @@ def sfm_pipeline(
     other_image_id: int,
     n_samples: int = 8,
     n_ransac_iters: int = 1000,
-    inlier_thresh: float = 5.0,
+    inlier_thresh: float = 3.0,
     plot_flags: set[str] | None = None,
 ) -> None:
     # load correspondences for current image and other image
@@ -237,6 +284,11 @@ def sfm_pipeline(
     P1 = K @ pose1
     P2 = K @ pose2
 
+    # remove extreme outliers from triangulated points before nonlinear refinement
+    inliers, world_points_est = filter_triangulation_outliers(
+        inliers, world_points_est, P1, P2, inlier_thresh
+    )
+
     # nonlinear triangulation to refine 3D points
     world_points_refined = nonlinearTriangulation(inliers, P1, P2, world_points_est)
 
@@ -267,7 +319,6 @@ def sfm_pipeline(
 
 def main() -> None:
     # TODO - add command line arguments for image ids, RANSAC parameters, etc.
-    # TODO: visualize epipolar lines on the images
 
     parser = ArgumentParser()
     parser.add_argument(
