@@ -8,7 +8,7 @@ def disambiguatePose(camera_poses: np.ndarray, K, correspondences) -> np.ndarray
     This function must go through of the poses, and get the triangulated points for each one
 
     :param camera_poses: this is a numpy array with 4 camera poses with a shape of (4, 3, 4)
-    :return: only one camera pose (3,4) np array
+    :return: the correct camera pose (3,4) and the triangulated points for that pose
     """
 
     identity_pose = np.hstack((np.identity(3), np.zeros((3, 1))))
