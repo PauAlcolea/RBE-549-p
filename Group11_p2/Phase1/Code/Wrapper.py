@@ -113,6 +113,7 @@ def print_outputs(
     poses: List[np.ndarray] = None,
     world_points_est: np.ndarray = None,
     world_points_refined: np.ndarray = None,
+    camera_centers: np.ndarray | None = None,
     plot_flags: set[str] | None = None,
 ) -> None:
     """
@@ -157,7 +158,9 @@ def print_outputs(
             plot_triangulation(
                 world_points_est,
                 world_points_refined,
+                camera_centers=camera_centers,
                 title=f"Triangulated points for images {current_image_id} and {other_image_id}",
+                set_labels=["Linear Triangulation", "Nonlinear Triangulation"],
             )
 
         # visualize reprojection
@@ -237,6 +240,13 @@ def sfm_pipeline(
     # nonlinear triangulation to refine 3D points
     world_points_refined = nonlinearTriangulation(inliers, P1, P2, world_points_est)
 
+    # camera centers in world coordinates C1 = (0,0,0), C2 = -R^T t
+    C1 = np.zeros(3)
+    R2 = pose2[:, :3]
+    t2 = pose2[:, 3]
+    C2 = -R2.T @ t2
+    camera_centers = np.vstack([C1, C2])
+
     # print, visualize outputs
     print_outputs(
         current_image_id,
@@ -248,6 +258,7 @@ def sfm_pipeline(
         [P1, P2],
         world_points_est,
         world_points_refined,
+        camera_centers,
         plot_flags,
     )
 

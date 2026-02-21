@@ -9,10 +9,19 @@ def _normalize(P: np.ndarray) -> np.ndarray:
 
 def plot_triangulation(
     *point_sets: np.ndarray,
+    camera_centers: np.ndarray | None = None,
+    normalize: bool = False,
+    set_labels: list[str] | None = None,
     title: str = "triangulation",
 ) -> None:
     """
-    normalize and visualize up to four 3D point set (N, 3) in the x-z plane.
+    visualize up to four 3D point sets (N, 3) in the x-z plane.
+
+    :param point_sets: variable number of point sets to plot, each of shape (N, 3)
+    :param camera_centers: optional (M, 3) array of camera centers to show as triangles
+    :param normalize: whether to apply a single normalization across all points and centers for better visualization
+    :param set_labels: optional list of labels for the point sets to show in the legend
+    :param title: figure title
     """
 
     if not point_sets:
@@ -22,17 +31,67 @@ def plot_triangulation(
 
     colors = ["b", "r", "g", "m"]
 
+    point_sets_arr = [np.asarray(P, dtype=float) for P in point_sets]
+
+    # apply single normalization across all points and centers if true
+    if normalize:
+        cam_arr = (
+            np.atleast_2d(np.asarray(camera_centers, dtype=float))
+            if camera_centers is not None
+            else None
+        )
+
+        all_pts = [P for P in point_sets_arr]
+        if cam_arr is not None:
+            all_pts.append(cam_arr)
+
+        stacked = np.vstack(all_pts)
+        mean = stacked.mean(axis=0)
+        std = stacked.std(axis=0)
+        std[std == 0] = 1.0
+
+        def _norm(X: np.ndarray) -> np.ndarray:
+            return (X - mean) / std
+
+        point_sets_plot = [_norm(P) for P in point_sets_arr]
+        cam_plot = _norm(cam_arr) if cam_arr is not None else None
+    else:
+        point_sets_plot = point_sets_arr
+        cam_plot = (
+            np.atleast_2d(np.asarray(camera_centers, dtype=float))
+            if camera_centers is not None
+            else None
+        )
+
     fig, ax = plt.subplots(figsize=(6, 6))
-    for idx, P in enumerate(point_sets):
-        P_norm = _normalize(np.asarray(P))
+    for idx, Pn in enumerate(point_sets_plot):
         ax.scatter(
-            P_norm[:, 0],
-            P_norm[:, 2],
+            Pn[:, 0],
+            Pn[:, 2],
             s=2,
             c=colors[idx],
             alpha=0.7,
-            label=f"set {idx+1}",
+            label=(
+                set_labels[idx]
+                if set_labels and idx < len(set_labels)
+                else f"set {idx+1}"
+            ),
         )
+
+    # draw camera centers as triangles
+    if cam_plot is not None:
+        markers = ["^", "^"]
+        cam_colors = ["k", "m"]
+        labels = ["cam 1", "cam 2"]
+        for i in range(cam_plot.shape[0]):
+            ax.scatter(
+                cam_plot[i, 0],
+                cam_plot[i, 2],
+                s=80,
+                c=cam_colors[i % len(cam_colors)],
+                marker=markers[i % len(markers)],
+                label=labels[i] if i < len(labels) else f"cam {i+1}",
+            )
 
     ax.set_xlabel("x")
     ax.set_ylabel("z")
