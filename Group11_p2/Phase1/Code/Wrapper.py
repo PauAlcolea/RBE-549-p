@@ -105,10 +105,11 @@ def print_outputs(
     E: np.ndarray,
     num_correspondences: int,
     poses: List[np.ndarray] = None,
+    world_points_est: np.ndarray = None,
     world_points_refined: np.ndarray = None,
 ) -> None:
     """
-    helper for printing outputs of pipeline
+    helper for printing and visualizing pipeline outputs
     """
     print(
         f"Estimated Fundamental matrix F (RANSAC inliers) "
@@ -135,7 +136,8 @@ def print_outputs(
 
     # visualize triangulated points
     plot_triangulation(
-        world_points_refined,
+        points_set1=world_points_est,
+        points_set2=world_points_refined,
         title=f"Triangulated points for images {current_image_id} and {other_image_id}",
     )
 
@@ -173,14 +175,14 @@ def sfm_pipeline(
     pose1 = np.hstack((np.eye(3), np.zeros((3, 1))))
 
     # disambiguate the second camera pose using correspondences
-    pose2, world_point_est = disambiguatePose(poses, K, inliers)
+    pose2, world_points_est = disambiguatePose(poses, K, inliers)
 
     # construct 3x4 pose matrices P1, P2 = K [R | t] for nonlinear refinement
     P1 = K @ pose1
     P2 = K @ pose2
 
     # nonlinear triangulation to refine 3D points
-    world_points_refined = nonlinearTriangulation(inliers, P1, P2, world_point_est)
+    world_points_refined = nonlinearTriangulation(inliers, P1, P2, world_points_est)
 
     # print outputs
     print_outputs(
@@ -191,6 +193,7 @@ def sfm_pipeline(
         E,
         correspondences.shape[0],
         poses,
+        world_points_est,
         world_points_refined,
     )
 

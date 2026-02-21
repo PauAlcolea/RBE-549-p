@@ -3,20 +3,30 @@ import numpy as np
 from pathlib import Path
 
 
-def plot_triangulation(points: np.ndarray, title: str = "triangulation"):
+def _normalize(P):
+    return (P - P.mean(axis=0)) / P.std(axis=0)
+
+
+def plot_triangulation(
+    points_set1: np.ndarray,
+    points_set2: np.ndarray | None = None,
+    title: str = "triangulation",
+) -> None:
     """
     visualize triangulated 3D points in x-z plane (top-down view)
     """
-
-    X = points[:, 0]
-    Z = points[:, 2]
+    points_set1 = _normalize(points_set1)
+    if points_set2 is not None:
+        points_set2 = _normalize(points_set2)
 
     fig, ax = plt.subplots(figsize=(6, 6))
-    ax.scatter(X, Z, s=2, c="b", alpha=0.7)
+    ax.scatter(points_set1[:, 0], points_set1[:, 2], s=2, c="b", alpha=0.7)
+    if points_set2 is not None:
+        ax.scatter(points_set2[:, 0], points_set2[:, 2], s=2, c="r", alpha=0.7)
     ax.set_xlabel("x")
     ax.set_ylabel("z")
     ax.set_title(title)
-    ax.set_aspect("auto", adjustable="box") # FIXME auto vs equal
+    ax.set_aspect("auto", adjustable="box")  # FIXME auto vs equal
     plt.show()
 
 
