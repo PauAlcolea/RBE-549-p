@@ -123,9 +123,10 @@ def print_outputs(
     print(
         f"Estimated camera poses (from E) for images {current_image_id}-{other_image_id}:"
     )
-    for i, pose in enumerate(poses):
-        print(f"Pose {i + 1}:")
-        print(pose)
+    if poses is not None:
+        for i, pose in enumerate(poses):
+            print(f"Pose {i + 1}:")
+            print(pose)
     print(
         f"Refined 3D points (from nonlinear triangulation) for images {current_image_id}-{other_image_id}:"
     )
@@ -167,7 +168,7 @@ def sfm_pipeline(
     # disambiguate the second camera pose using correspondences
     pose2, world_point_est = disambiguatePose(poses, K, inliers)
 
-    # TODO: visulize triangulated points
+    # TODO: visualize triangulated points
 
     # construct 3x4 pose matrices P1, P2 = K [R | t] for nonlinear refinement
     P1 = K @ pose1
@@ -205,7 +206,7 @@ def main() -> None:
     # the camera poses are already in the form [R|t], so that can be passed directly as one matrix to the linear triangulation function and things
 
     # Questions:
-    # for the linear triangluation, do i need to make the projective matrices transposes? what is the original equation x1 = PX?
+    # for the linear triangulation, do i need to make the projective matrices transposes? what is the original equation x1 = PX?
     # What really is the camera pose from ExtractCameraPose.py? is it already the Projection Matrix?
     return
 

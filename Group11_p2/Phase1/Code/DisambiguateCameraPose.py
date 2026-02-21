@@ -20,7 +20,7 @@ def disambiguatePose(camera_poses: np.ndarray, K, correspondences) -> np.ndarray
 
     # iterate through the poses and compare them to the identity pose
     for pose in camera_poses:
-        # for each pose, go through all of the correspondances, between poses
+        # for each pose, go through all of the correspondences, between poses
         X_list: list[np.ndarray] = []
 
         for x1, x2 in correspondences:
@@ -46,11 +46,3 @@ def disambiguatePose(camera_poses: np.ndarray, K, correspondences) -> np.ndarray
     print(best_pose)
     return best_pose, X_best
 
-
-a = np.array(
-    [
-        [-8.82430806e01, -7.27387578e01, -6.59407878e02, -2.56770069e02],
-        [-7.90547804e01, 5.60840883e02, -2.44758688e02, -5.74798177e02],
-        [5.98381760e-01, 3.23000663e-01, -7.33218823e-01, -7.71963692e-01],
-    ]
-)
