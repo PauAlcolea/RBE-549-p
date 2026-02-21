@@ -173,7 +173,7 @@ def sfm_pipeline(
     P1 = K @ pose1
     P2 = K @ pose2
 
-    # TODO: nonlinear triangulation to refine 3D points
+    # nonlinear triangulation to refine 3D points
     world_points_refined = nonlinearTriangulation(inliers, P1, P2, world_point_est)
 
     # print outputs
