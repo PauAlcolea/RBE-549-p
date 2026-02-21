@@ -31,6 +31,7 @@ def _reprojection_residual(
     """
     compute reprojection residuals of world point X in two views
 
+    :param X: 3D world point (3,)
     :param correspondence: [[u1, v1], [u2, v2]]
     :param P1: 3x4 camera matrix for view 1
     :param P2: 3x4 camera matrix for view 2
