@@ -9,6 +9,7 @@ from EssentialMatrixFromFundamentalMatrix import estimateEssentialMatrix
 from ExtractCameraPose import extractCameraPose
 from NonlinearTriangulation import nonlinearTriangulation
 from DisambiguateCameraPose import disambiguatePose
+from Visualization import plot_triangulation
 
 
 def load_pair_matches(
@@ -132,6 +133,12 @@ def print_outputs(
     )
     print(world_points_refined)
 
+    # visualize triangulated points
+    plot_triangulation(
+        world_points_refined,
+        title=f"Triangulated points for images {current_image_id} and {other_image_id}",
+    )
+
 
 def sfm_pipeline(
     current_image_id: int,
@@ -167,8 +174,6 @@ def sfm_pipeline(
 
     # disambiguate the second camera pose using correspondences
     pose2, world_point_est = disambiguatePose(poses, K, inliers)
-
-    # TODO: visualize triangulated points
 
     # construct 3x4 pose matrices P1, P2 = K [R | t] for nonlinear refinement
     P1 = K @ pose1
