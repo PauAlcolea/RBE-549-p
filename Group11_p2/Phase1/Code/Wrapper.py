@@ -10,7 +10,7 @@ from EssentialMatrixFromFundamentalMatrix import estimateEssentialMatrix
 from ExtractCameraPose import extractCameraPose
 from NonlinearTriangulation import nonlinearTriangulation
 from DisambiguateCameraPose import disambiguatePose
-from Visualization import plot_correspondences, plot_triangulation
+from Visualization import plot_correspondences, plot_triangulation, plot_reprojection
 
 
 def load_pair_matches(
@@ -153,6 +153,26 @@ def print_outputs(
             title=f"Triangulated points for images {current_image_id} and {other_image_id}",
         )
 
+        # visualize reprojection
+        plot_reprojection(
+            current_image_id,
+            other_image_id,
+            inliers,
+            poses[0],
+            poses[1],
+            world_points=world_points_est,
+            title=f"Linear Reprojection of 3D points for images {current_image_id} and {other_image_id}",
+        )
+        plot_reprojection(
+            current_image_id,
+            other_image_id,
+            inliers,
+            poses[0],
+            poses[1],
+            world_points=world_points_refined,
+            title=f"Nonlinear Reprojection of 3D points for images {current_image_id} and {other_image_id}",
+        )
+
 
 def sfm_pipeline(
     current_image_id: int,
@@ -197,7 +217,7 @@ def sfm_pipeline(
     # nonlinear triangulation to refine 3D points
     world_points_refined = nonlinearTriangulation(inliers, P1, P2, world_points_est)
 
-    # print outputs
+    # print, visualize outputs
     print_outputs(
         current_image_id,
         other_image_id,
@@ -205,7 +225,7 @@ def sfm_pipeline(
         inliers,
         E,
         correspondences,
-        poses,
+        [P1, P2],
         world_points_est,
         world_points_refined,
         plot,
