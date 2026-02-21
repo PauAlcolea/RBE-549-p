@@ -9,6 +9,7 @@ from EssentialMatrixFromFundamentalMatrix import estimateEssentialMatrix
 from ExtractCameraPose import extractCameraPose
 from LinearTriangulation import linearTriangulation
 from NonlinearTriangulation import nonlinearTriangulation
+from DisambiguateCameraPose import disambiguatePose
 
 
 def load_pair_matches(
@@ -72,7 +73,6 @@ def load_pair_matches(
         return np.empty((0, 2, 2), dtype=float)
 
     return np.stack(correspondences, axis=0)
-
 
 def load_intrinsics() -> np.ndarray:
     """
@@ -164,20 +164,14 @@ def sfm_pipeline(
     # construct first camera projection matrix P1 = K [I | 0]
     P1 = K @ np.hstack((np.eye(3), np.zeros((3, 1))))
 
-    # FIXME: ##### placeholder begin #####
-
-    # FIXME: use the first candidate as P2
-    P2 = poses[0]
+    # Disambiguate camera pose will call linear triangulation itself
+    # ####### I don't know yet how the correspondences work, so this might have to be 
+    P2 = disambiguatePose(poses, K, correspondences)
     
     # TODO: linear triangulation to get initial 3D points
     world_points_est = linearTriangulation(K, P1, P2, inliers)
 
     # TODO: visulize triangulated points
-
-    # TODO: disambiguate pose by chirality
-    # disambiguatePose(poses)
-
-    # FIXME: ##### placeholder end #####
 
     # TODO: nonlinear triangulation to refine 3D points
     world_points_refined = nonlinearTriangulation(inliers, P1, P2, world_points_est)
@@ -191,8 +185,10 @@ def sfm_pipeline(
         E,
         correspondences.shape[0],
         poses,
-        world_points_refined,
+        world_points_refined
     )
+
+    return
 
 
 def main() -> None:
@@ -203,7 +199,20 @@ def main() -> None:
         current_image_id=1,
         other_image_id=2,
     )
+    
+    ######## NOTES ##########
 
+    # when calling estimateFundamentalMat(correspondances), the correspondances should be an np.array of shape (8, 2, 2)
+    # it should look like this: 
+    # np.array([[[x1, y1], [x1', y1']], [[x2, y2], [x2', y2']], [[x3, y3], [x3', y3']] , ... , ... [[x8, y8], [x8', y8']] ])
+    
+    # the camera poses are already in the form [R|t], so that can be passed directly as one matrix to the linear triangulation function and things
+    
+    # Questions:
+    # for the linear triangluation, do i need to make the projective matrices transposes? what is the original equation x1 = PX?
+    # What really is the camera pose from ExtractCameraPose.py? is it already the Projection Matrix?
+    # There's a chance that the the pose is extracted wrong, maybe it should be a 4x4, not a 3x4, look at the notes,
+    return
 
 if __name__ == "__main__":
     main()
