@@ -15,6 +15,8 @@ def disambiguatePose(camera_poses: np.ndarray, K, correspondences) -> np.ndarray
 
     # the following list will contain the number of points that satisfy the cheirality condition
     valid_points_per_pose: list[int] = []
+    # store triangulated points for each pose
+    X_per_pose: list[list[np.ndarray]] = []
 
     # iterate through the poses and compare them to the identity pose
     for pose in camera_poses:
@@ -36,14 +38,13 @@ def disambiguatePose(camera_poses: np.ndarray, K, correspondences) -> np.ndarray
                 valid_counter += 1
 
         valid_points_per_pose.append(valid_counter)
+        X_per_pose.append(X_list)
 
     best_index = valid_points_per_pose.index(max(valid_points_per_pose))
     best_pose = camera_poses[best_index]
+    X_best = np.array(X_per_pose[best_index])
     print(best_pose)
-    X_best = []
-    for x1, x2 in correspondences:
-        X_best.append(linearTriangulation(K, identity_pose, best_pose, x1, x2))
-    return best_pose, np.array(X_best)
+    return best_pose, X_best
 
 
 a = np.array(
