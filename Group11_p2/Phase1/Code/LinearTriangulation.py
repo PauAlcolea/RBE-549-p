@@ -7,11 +7,9 @@ def buildProjectionMatrices(K:np.ndarray, Pose:np.ndarray) -> np.ndarray:
     :param K: camera internal matrix, shape = (3,3)
     :param Pose: one pose, which is [R|t], shape = (3,4)
     """
-    R = Pose[:, 0:3]
-    C = Pose[:, 3]
-    
+    # Pose is [R | t]; projection matrix is P = K [R | t]
     # the projection equation is taken from the slides: https://youtu.be/Ap6qft93cCM?t=2195
-    Projection = K @ R @ np.column_stack((np.identity(3), C))
+    Projection = K @ Pose
     return Projection
 
 def linearTriangulation(K, pose1: np.ndarray, pose2: np.ndarray, x1:np.ndarray, x2:np.ndarray):
@@ -56,4 +54,5 @@ def linearTriangulation(K, pose1: np.ndarray, pose2: np.ndarray, x1:np.ndarray, 
     U, D, Vt = np.linalg.svd(A)
     X = Vt[-1, :]
 
-    return X[0:3]           ### Unsure about this!!!!!, the fourth value isn't always 1 .....
+    X = X / X[3]
+    return X[0:3]
