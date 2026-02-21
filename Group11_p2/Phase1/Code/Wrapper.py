@@ -159,7 +159,7 @@ def sfm_pipeline(
     other_image_id: int,
     n_samples: int = 8,
     n_ransac_iters: int = 1000,
-    inlier_thresh: float = 1.0,
+    inlier_thresh: float = 5.0,
     plot: bool = False,
 ) -> None:
     # load correspondences for current image and other image

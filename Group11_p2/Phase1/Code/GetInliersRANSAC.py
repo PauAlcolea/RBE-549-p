@@ -7,6 +7,7 @@ def getInliersRANSAC(
 ) -> np.ndarray:
     """
     get inliers from RANSAC
+    error metric is Sampson distance, as used in MATLAB estimateFundamentalMatrix()
 
     :param correspondences: (N, 2, 2) array, each [[u1, v1], [u2, v2]]
     :param n_iterations: number of RANSAC iterations
@@ -40,8 +41,21 @@ def getInliersRANSAC(
             )
         )
 
-        # use einsum to compute point2.T @ F_subset @ point1
-        errors = np.abs(np.einsum("bi,ij,bj->b", pts2, F_subset, pts1))
+        # algebraic error x2^T @ F @ x1 has arbitrary scale so
+        # we use Sampson distance to get more meaningful error in pixels
+
+        # numerator: (x2^T F x1)^2
+        num = np.einsum("bi,bi->b", pts2 @ F_subset, pts1) ** 2
+        # Fx: epipolar lines of pts1 in image 2
+        Fx1 = (F_subset @ pts1.T).T
+        # F^T x': epipolar lines of pts2 in image 1
+        Ftx2 = (F_subset.T @ pts2.T).T
+        # denominator: squared gradients
+        den = Fx1[:, 0] ** 2 + Fx1[:, 1] ** 2 + Ftx2[:, 0] ** 2 + Ftx2[:, 1] ** 2
+        # avoid divide by zero
+        den[den == 0] = np.finfo(float).eps
+
+        errors = num / den  # pixels^2
         inlier_mask = errors < inlier_thresh
         inlier_indices = np.where(inlier_mask)[0]
         inlier_count = inlier_mask.sum()
