@@ -10,7 +10,7 @@ from EssentialMatrixFromFundamentalMatrix import estimateEssentialMatrix
 from ExtractCameraPose import extractCameraPose
 from NonlinearTriangulation import nonlinearTriangulation
 from DisambiguateCameraPose import disambiguatePose
-from Visualization import plot_triangulation
+from Visualization import plot_correspondences, plot_triangulation
 
 
 def load_pair_matches(
@@ -104,7 +104,7 @@ def print_outputs(
     F: np.ndarray,
     inliers: np.ndarray,
     E: np.ndarray,
-    num_correspondences: int,
+    correspondences: np.ndarray,
     poses: List[np.ndarray] = None,
     world_points_est: np.ndarray = None,
     world_points_refined: np.ndarray = None,
@@ -118,7 +118,7 @@ def print_outputs(
         f"for images {current_image_id}-{other_image_id}:"
     )
     print(F)
-    print(f"Number of RANSAC inliers: {inliers.shape[0]} / {num_correspondences}")
+    print(f"Number of RANSAC inliers: {inliers.shape[0]} / {correspondences.shape[0]}")
     print(
         f"Estimated Essential matrix E (from F) "
         f"for images {current_image_id}-{other_image_id}:"
@@ -137,6 +137,15 @@ def print_outputs(
     print(world_points_refined)
 
     if plot and world_points_est is not None and world_points_refined is not None:
+        # visualize matches and inliers
+        plot_correspondences(
+            current_image_id,
+            other_image_id,
+            correspondences,
+            inliers=inliers,
+            title=f"Correspondences between images {current_image_id} and {other_image_id}",
+        )
+
         # visualize triangulated points
         plot_triangulation(
             world_points_est,
@@ -195,7 +204,7 @@ def sfm_pipeline(
         F,
         inliers,
         E,
-        correspondences.shape[0],
+        correspondences,
         poses,
         world_points_est,
         world_points_refined,

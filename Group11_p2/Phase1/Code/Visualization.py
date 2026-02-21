@@ -56,8 +56,7 @@ def plot_correspondences(
     current_image_id: int,
     other_image_id: int,
     correspondences: np.ndarray,
-    inliers_only: bool = False,
-    inlier_mask: np.ndarray | None = None,
+    inliers: np.ndarray = None,
     title: str | None = None,
 ) -> None:
     """Show two images side by side with correspondences connected by lines.
@@ -70,22 +69,19 @@ def plot_correspondences(
         Id of the right image.
     correspondences : (N, 2, 2) ndarray
         Each row is [[u1, v1], [u2, v2]].
-    inliers_only : bool, optional
-        If True, only draw matches where inlier_mask is True.
-    inlier_mask : (N,) ndarray of bool, optional
-        Mask indicating which correspondences are inliers.
+    inliers : (N, 2, 2) ndarray
+        Subset of correspondences that are inliers
     title : str, optional
         Figure title.
     """
 
-    if inliers_only:
-        if inlier_mask is None:
-            raise ValueError("inliers_only=True but inlier_mask is None")
-        if inlier_mask.shape[0] != correspondences.shape[0]:
-            raise ValueError("inlier_mask and correspondences must have same length")
-        corr = correspondences[inlier_mask]
-    else:
-        corr = correspondences
+    inlier_mask = (
+        np.isin(correspondences, inliers).all(axis=(1, 2))
+        if inliers is not None
+        else None
+    )
+
+    corr = correspondences
 
     img_left = _load_image(current_image_id)
     img_right = _load_image(other_image_id)
@@ -112,17 +108,22 @@ def plot_correspondences(
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.imshow(canvas)
 
-    # Draw lines between correspondences.
-    for p1, p2 in corr:
+    # Draw lines between correspondences: green for inliers, red for outliers.
+    for idx, (p1, p2) in enumerate(corr):
         u1, v1 = p1
         u2, v2 = p2
+        is_inlier = inlier_mask is not None and inlier_mask[idx]
+        line_color = "green" if is_inlier else "red"
         # right image x-coordinate is offset by w1
-        ax.plot([u1, u2 + w1], [v1, v2], color="green", linewidth=0.5)
-        ax.scatter([u1, u2 + w1], [v1, v2], c=["cyan", "red"], s=5)
+        ax.plot([u1, u2 + w1], [v1, v2], color=line_color, linewidth=0.5)
+        ax.scatter([u1, u2 + w1], [v1, v2], c=[line_color, line_color], s=5)
+    # show legend for inliers and outliers
+    if inlier_mask is not None:
+        ax.scatter([], [], c="green", label="inliers", s=5)
+        ax.scatter([], [], c="red", label="outliers", s=5)
+        ax.legend(loc="best")
 
     ax.set_axis_off()
-    if title is None:
-        title = "Correspondences" if not inliers_only else "RANSAC inliers"
     ax.set_title(title)
     plt.tight_layout()
     plt.show()
