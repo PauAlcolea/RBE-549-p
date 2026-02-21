@@ -108,7 +108,7 @@ def print_outputs(
     poses: List[np.ndarray] = None,
     world_points_est: np.ndarray = None,
     world_points_refined: np.ndarray = None,
-    plot: bool = False,
+    plot_flags: set[str] | None = None,
 ) -> None:
     """
     helper for printing and visualizing pipeline outputs
@@ -136,42 +136,45 @@ def print_outputs(
     )
     print(world_points_refined)
 
-    if plot and world_points_est is not None and world_points_refined is not None:
+    if plot_flags is not None:
         # visualize matches and inliers
-        plot_correspondences(
-            current_image_id,
-            other_image_id,
-            correspondences,
-            inliers=inliers,
-            title=f"Correspondences between images {current_image_id} and {other_image_id}",
-        )
+        if "i" in plot_flags:
+            plot_correspondences(
+                current_image_id,
+                other_image_id,
+                correspondences,
+                inliers=inliers,
+                title=f"Correspondences between images {current_image_id} and {other_image_id}",
+            )
 
         # visualize triangulated points
-        plot_triangulation(
-            world_points_est,
-            world_points_refined,
-            title=f"Triangulated points for images {current_image_id} and {other_image_id}",
-        )
+        if "t" in plot_flags:
+            plot_triangulation(
+                world_points_est,
+                world_points_refined,
+                title=f"Triangulated points for images {current_image_id} and {other_image_id}",
+            )
 
         # visualize reprojection
-        plot_reprojection(
-            current_image_id,
-            other_image_id,
-            inliers,
-            poses[0],
-            poses[1],
-            world_points=world_points_est,
-            title=f"Linear Reprojection of 3D points for images {current_image_id} and {other_image_id}",
-        )
-        plot_reprojection(
-            current_image_id,
-            other_image_id,
-            inliers,
-            poses[0],
-            poses[1],
-            world_points=world_points_refined,
-            title=f"Nonlinear Reprojection of 3D points for images {current_image_id} and {other_image_id}",
-        )
+        if "r" in plot_flags:
+            plot_reprojection(
+                current_image_id,
+                other_image_id,
+                inliers,
+                poses[0],
+                poses[1],
+                world_points=world_points_est,
+                title=f"Linear Reprojection of 3D points for images {current_image_id} and {other_image_id}",
+            )
+            plot_reprojection(
+                current_image_id,
+                other_image_id,
+                inliers,
+                poses[0],
+                poses[1],
+                world_points=world_points_refined,
+                title=f"Nonlinear Reprojection of 3D points for images {current_image_id} and {other_image_id}",
+            )
 
 
 def sfm_pipeline(
@@ -180,7 +183,7 @@ def sfm_pipeline(
     n_samples: int = 8,
     n_ransac_iters: int = 1000,
     inlier_thresh: float = 5.0,
-    plot: bool = False,
+    plot_flags: set[str] | None = None,
 ) -> None:
     # load correspondences for current image and other image
     correspondences = load_pair_matches(current_image_id, other_image_id)
@@ -208,7 +211,7 @@ def sfm_pipeline(
     pose1 = np.hstack((np.eye(3), np.zeros((3, 1))))
 
     # disambiguate the second camera pose using correspondences
-    pose2, world_points_est = disambiguatePose(poses, K, inliers, plot=plot)
+    pose2, world_points_est = disambiguatePose(poses, K, inliers, "p" in plot_flags)
 
     # construct 3x4 pose matrices P1, P2 = K [R | t] for nonlinear refinement
     P1 = K @ pose1
@@ -228,7 +231,7 @@ def sfm_pipeline(
         [P1, P2],
         world_points_est,
         world_points_refined,
-        plot,
+        plot_flags,
     )
 
     return
@@ -236,18 +239,36 @@ def sfm_pipeline(
 
 def main() -> None:
     # TODO - add command line arguments for image ids, RANSAC parameters, etc.
-    # TODO: visualize inliers and epipolar lines on the images
+    # TODO: visualize epipolar lines on the images
 
     parser = ArgumentParser()
     parser.add_argument(
-        "-p", "--plot", action="store_true", help="Whether to show plots"
+        "-p",
+        "--plot",
+        nargs="*",
+        choices=["i", "t", "r", "p"],
+        default=None,
+        metavar="FLAG",
+        help=(
+            "Which plots to show: i=inliers, t=triangulation, r=reprojection, p=possible poses. "
+            "If -p is given with no flags, all are shown."
+        ),
     )
+
     args = parser.parse_args()
+
+    # Interpret plotting flags: None => no plotting; [] => all plots.
+    if args.plot is None:
+        plot_flags = None
+    elif len(args.plot) == 0:
+        plot_flags = {"i", "t", "r", "p"}
+    else:
+        plot_flags = set(args.plot)
 
     sfm_pipeline(
         current_image_id=1,
         other_image_id=2,
-        plot=args.plot,
+        plot_flags=plot_flags,
     )
 
     ######## NOTES ##########
