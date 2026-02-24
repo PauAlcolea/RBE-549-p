@@ -2,20 +2,20 @@ import numpy as np
 from LinearPnP import linearPnP
 
 
-def pnpRANSAC(xs, Xs, K):
+def pnpRANSAC(xs, Xs, K, n_iterations=1000, inlier_thresh=30):
     """
     this function performs RANSAC to add more views to the map, it does so to remove outliers
 
     :param xs: all of the 2D points for the new view that are common with the existing map
     :param Xs: all of the 3D points that the 2D points are the projection of
     :param K: the camera internal matrix
+    :param n_iterations: number of RANSAC iterations
+    :param inlier_thresh: threshold for inlier detection, in pixels^2
     """
     n = 0  # maximum inlier count so far, used to select the best set
-    M = 1000  # How many iterations will this run for?
     N = 6  # How many inliers are going to be passed to the Linear PnP
-    e_threshold = 4
 
-    for _ in range(M):
+    for _ in range(n_iterations):
         # choose 6 points and get the 2d and the 3d
         indx = np.random.choice(len(xs), N, replace=False)
         x_N = xs[indx]
@@ -42,7 +42,7 @@ def pnpRANSAC(xs, Xs, K):
             ) ** 2
 
             # if error is below threshold, it counts as inlier
-            if e < e_threshold:
+            if e < inlier_thresh:
                 inliers_xs.append(xs[i])
                 inliers_Xs.append(Xs[i])
 
