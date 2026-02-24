@@ -472,7 +472,7 @@ def sfm_pipeline(
             if plot_flags is not None and "p" in plot_flags:
                 pnp_reprojections.append(
                     _test_pnp_reprojection(
-                        Xs, xs, xs_base, P1, K, pose_new, current_image_id, new_image_id
+                        Xs, xs, xs_base, P1, P_new, current_image_id, new_image_id
                     )
                 )
 
