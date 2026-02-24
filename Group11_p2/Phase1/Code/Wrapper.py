@@ -380,6 +380,18 @@ def sfm_pipeline(
     extra_image_ids: list[int] | None = None,
     plot_flags: set[str] | None = None,
 ) -> None:
+    """
+    main wrapper function for SfM pipeline
+
+    :param current_image_id: id of current image (1-based)
+    :param other_image_id: id of other image to find matches with (1-based)
+    :param n_samples: number of correspondences to sample for RANSAC (default 8 for fundamental matrix estimation)
+    :param n_ransac_iters: number of RANSAC iterations for fundamental matrix estimation (default 1000)
+    :param inlier_thresh: reprojection error threshold for RANSAC inlier classification
+    :param extra_image_ids: list of additional image ids to estimate poses for using PnP-RANSAC
+    :param plot_flags: optional set of flags to control which plots to show
+    """
+
     # load correspondences for current image and other image
     correspondences = load_pair_matches(current_image_id, other_image_id)
 
@@ -484,7 +496,7 @@ def sfm_pipeline(
 
 
 def main() -> None:
-    # TODO - add command line arguments for image ids, RANSAC parameters, etc.
+    # TODO - add command line arguments for image ids, etc
 
     parser = ArgumentParser()
     parser.add_argument(
@@ -517,11 +529,6 @@ def main() -> None:
         plot_flags=plot_flags,
     )
 
-    ######## NOTES ##########
-
-    # Questions:
-    # for the linear triangulation, do i need to make the projective matrices transposes? what is the original equation x1 = PX?
-    # What really is the camera pose from ExtractCameraPose.py? is it already the Projection Matrix?
     return
 
 
