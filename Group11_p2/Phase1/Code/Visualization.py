@@ -76,17 +76,15 @@ def plot_triangulation(
 
     # draw camera centers as triangles
     if cam_plot is not None:
-        markers = ["^", "^"]
-        cam_colors = ["k", "m"]
-        labels = ["cam 1", "cam 2"]
+        cam_colors = plt.cm.Set1(np.linspace(0, 1, cam_plot.shape[0]))
         for i in range(cam_plot.shape[0]):
             ax.scatter(
                 cam_plot[i, 0],
                 cam_plot[i, 2],
                 s=80,
-                c=cam_colors[i % len(cam_colors)],
-                marker=markers[i % len(markers)],
-                label=labels[i] if i < len(labels) else f"cam {i+1}",
+                color=cam_colors[i],
+                marker="^",
+                label=f"cam {i+1}",
             )
 
     ax.set_xlabel("x")
