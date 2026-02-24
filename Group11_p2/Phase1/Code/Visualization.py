@@ -311,32 +311,33 @@ def plot_epipolar_lines(
 
 
 def plot_reprojection(
-    current_image_id: int,
-    other_image_id: int,
+    image_id: int,
     correspondences: np.ndarray,
-    P1: np.ndarray,
-    P2: np.ndarray,
+    P: np.ndarray,
     world_points: np.ndarray,
     title: str | None = None,
 ) -> None:
     """
-    visualize reprojection of 3D points into both images
+    visualize reprojection of 3D points onto image
 
     Parameters
     ----------
-    current_image_id : int
-        Id of the left image (1-based, used to load `<id>.png`).
-    other_image_id : int
-        Id of the right image.
+    image_id : int
+        Id of the image (1-based, used to load `<id>.png`).
     correspondences : (N, 2, 2) ndarray
         Each row is [[u1, v1], [u2, v2]] for the same 3D point.
-    P1, P2 : (3, 4) ndarray
-        Camera projection matrices P = K [R | t] for the two views.
+    P: (3, 4) ndarray
+        Camera projection matrix P = K [R | t] for the view.
     world_points : (N, 3) ndarray
         3D points associated with the correspondences.
     title : str, optional
         Figure title.
     """
+
+    def _to_float(img: np.ndarray) -> np.ndarray:
+        if img.dtype == np.uint8:
+            return img.astype(float) / 255.0
+        return img.astype(float)
 
     correspondences = np.asarray(correspondences)
     world_points = np.asarray(world_points)
@@ -344,48 +345,25 @@ def plot_reprojection(
     if correspondences.shape[0] != world_points.shape[0]:
         raise ValueError("correspondences and world_points must have the same length")
 
-    img_left = _load_image(current_image_id)
-    img_right = _load_image(other_image_id)
+    img = _load_image(image_id)
+    img_f = _to_float(img)
 
-    h1, w1 = img_left.shape[:2]
-    h2, w2 = img_right.shape[:2]
-    h = max(h1, h2)
-
-    # Create a canvas that places the two images side by side.
-    canvas = np.ones((h, w1 + w2, 3), dtype=float)
-
-    def _to_float(img: np.ndarray) -> np.ndarray:
-        if img.dtype == np.uint8:
-            return img.astype(float) / 255.0
-        return img.astype(float)
-
-    img_left_f = _to_float(img_left)
-    img_right_f = _to_float(img_right)
-
-    canvas[:h1, :w1, : img_left_f.shape[2]] = img_left_f
-    canvas[:h2, w1 : w1 + w2, : img_right_f.shape[2]] = img_right_f
-
-    # Project 3D points into both cameras.
+    # Project 3D points into camera
     X_h = np.hstack([world_points, np.ones((world_points.shape[0], 1), dtype=float)])
 
-    proj1 = (P1 @ X_h.T).T  # (N, 3)
-    proj2 = (P2 @ X_h.T).T  # (N, 3)
+    proj1 = (P @ X_h.T).T
 
     # Avoid division by zero / points behind camera.
     eps = 1e-12
     mask1 = proj1[:, 2] > eps
-    mask2 = proj2[:, 2] > eps
 
     u1_hat = proj1[:, 0] / np.where(mask1, proj1[:, 2], 1.0)
     v1_hat = proj1[:, 1] / np.where(mask1, proj1[:, 2], 1.0)
-    u2_hat = proj2[:, 0] / np.where(mask2, proj2[:, 2], 1.0)
-    v2_hat = proj2[:, 1] / np.where(mask2, proj2[:, 2], 1.0)
 
     obs1 = correspondences[:, 0, :]
-    obs2 = correspondences[:, 1, :]
 
     fig, ax = plt.subplots(figsize=(10, 5))
-    ax.imshow(canvas)
+    ax.imshow(img_f)
 
     # Observed 2D points (red) and reprojected points (green) for each image.
     ax.scatter(obs1[:, 0], obs1[:, 1], c="red", s=5, label="obs img1")
@@ -393,34 +371,16 @@ def plot_reprojection(
         u1_hat[mask1],
         v1_hat[mask1],
         c="lime",
-        marker="+",
-        s=25,
+        s=5,
         label="reproj img1",
     )
 
-    ax.scatter(obs2[:, 0] + w1, obs2[:, 1], c="red", s=5, label="obs img2")
-    ax.scatter(
-        u2_hat[mask2] + w1,
-        v2_hat[mask2],
-        c="cyan",
-        marker="+",
-        s=25,
-        label="reproj img2",
-    )
-
-    # Optionally draw small line segments from observed to reprojected locations.
+    # draw small line segments from observed to reprojected locations.
     for i in range(world_points.shape[0]):
         if mask1[i]:
             ax.plot(
                 [obs1[i, 0], u1_hat[i]],
                 [obs1[i, 1], v1_hat[i]],
-                color="yellow",
-                linewidth=0.5,
-            )
-        if mask2[i]:
-            ax.plot(
-                [obs2[i, 0] + w1, u2_hat[i] + w1],
-                [obs2[i, 1], v2_hat[i]],
                 color="yellow",
                 linewidth=0.5,
             )

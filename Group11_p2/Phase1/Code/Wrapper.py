@@ -322,24 +322,21 @@ def print_outputs(
 
         # visualize reprojection
         if "r" in plot_flags:
-            plot_reprojection(
-                current_image_id,
-                other_image_id,
-                inliers,
-                poses[0],
-                poses[1],
-                world_points=world_points_est,
-                title=f"Linear Reprojection of 3D points for images {current_image_id} and {other_image_id}",
-            )
-            plot_reprojection(
-                current_image_id,
-                other_image_id,
-                inliers,
-                poses[0],
-                poses[1],
-                world_points=world_points_refined,
-                title=f"Nonlinear Reprojection of 3D points for images {current_image_id} and {other_image_id}",
-            )
+            for i, pose in enumerate(poses[:2]):
+                plot_reprojection(
+                    i+1,
+                    inliers,
+                    pose,
+                    world_points=world_points_est,
+                    title=f"Linear Reprojection of 3D points for image {i+1}",
+                )
+                plot_reprojection(
+                    i+1,
+                    inliers,
+                    pose,
+                    world_points=world_points_refined,
+                    title=f"Nonlinear Reprojection of 3D points for image {i+1}",
+                )
 
         # visualize epipolar lines
         if "e" in plot_flags:
