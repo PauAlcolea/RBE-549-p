@@ -1,6 +1,6 @@
 import numpy as np
 
-def linearPnP(xs: list[np.ndarray], Xs: list[np.ndarray], K: np.ndarray):
+def linearPnP(xs: np.ndarray, Xs: np.ndarray, K: np.ndarray):
     """
     this function is used to calculate the pose of the camera for the added viewpoint
     https://www.youtube.com/watch?v=tv56SgT_e_8&t=1s
@@ -11,17 +11,18 @@ def linearPnP(xs: list[np.ndarray], Xs: list[np.ndarray], K: np.ndarray):
     :param X is a list of 6 3D points that correspond to x
     :K camera intrinsic matrix (3,3)
     """
-    A = np.array([])
+
+    N = xs.shape[0]
+    A = np.zeros((2*N, 12))
+
     # build A so that A*p = 0
     # p is the vector of P the projection matrix, it is of size (12,)
-    for (x, y), (X, Y, Z) in zip(xs, Xs):
-        a1 = np.array([X, Y, Z, 1, 0, 0, 0, 0, -x*X, -x*Y, -x*Z, -x])
-        a2 = np.array([0, 0, 0, 0, X, Y, Z, 1, -y*X, -y*Y, -y*Z, -y])
+    for i in range(N):
+        x, y = xs[i]
+        X, Y, Z = Xs[i]
 
-        if A.size == 0:
-            A = np.vstack([a1, a2])
-        else:
-            A = np.vstack([A, a1, a2])
+        A[2*i] = np.array([X, Y, Z, 1, 0, 0, 0, 0, -x*X, -x*Y, -x*Z, -x])
+        A[2*i + 1] = np.array([0, 0, 0, 0, X, Y, Z, 1, -y*X, -y*Y, -y*Z, -y])
 
     U, D, Vt = np.linalg.svd(A)
 
@@ -29,9 +30,7 @@ def linearPnP(xs: list[np.ndarray], Xs: list[np.ndarray], K: np.ndarray):
     p = Vt[-1, :]
 
     P = np.zeros(shape=(3,4))
-    for i in range(4):
-        for j in range(3):
-            P[j][i] = p[i + j*4]
+    P = p.reshape(3, 4)             # Get the shape of the projection matrix back to a 3x4
 
     P3 = P[:, 0:3]
     K_inv = np.linalg.inv(K)
@@ -71,18 +70,18 @@ def test_linearPnP_synthetic():
     # Generate random 3D world points
     np.random.seed(42)
     num_points = 6  # minimum required per assignment
-    Xs = [np.random.uniform(-1, 1, 3) for _ in range(num_points)]
+    Xs = Xs = np.random.uniform(-1, 1, (num_points, 3))
 
     # Project using P = K R [I | -C]
     t_gt = -R_gt @ C_gt
     P_gt = K @ np.hstack([R_gt, t_gt.reshape(3,1)])
 
-    xs = []
-    for X in Xs:
-        X_h = np.append(X, 1)
+    xs = np.zeros((num_points, 2))
+    for i in range(num_points):
+        X_h = np.append(Xs[i], 1)
         x_h = P_gt @ X_h
         x_h /= x_h[2]
-        xs.append(x_h[:2])
+        xs[i] = x_h[:2]
 
     # Run your function
     R_est, T_est = linearPnP(xs, Xs, K)
@@ -104,4 +103,4 @@ def test_linearPnP_synthetic():
     print("Mean reprojection error:", np.mean(errors))  # Should be ~0.0
     return
 
-test_linearPnP_synthetic()
+# test_linearPnP_synthetic()

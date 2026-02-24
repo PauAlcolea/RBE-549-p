@@ -10,6 +10,7 @@ from EssentialMatrixFromFundamentalMatrix import estimateEssentialMatrix
 from ExtractCameraPose import extractCameraPose
 from NonlinearTriangulation import nonlinearTriangulation, project_point
 from DisambiguateCameraPose import disambiguatePose
+from PnPRANSAC import pnpRANSAC
 from Visualization import (
     plot_correspondences,
     plot_triangulation,
@@ -298,6 +299,12 @@ def sfm_pipeline(
     t2 = pose2[:, 3]
     C2 = -R2.T @ t2
     camera_centers = np.vstack([C1, C2])
+
+    # # # before calling pnpRansac, xs must be all of the 2d projection points that the third image has in common with the already established map
+    # # # Xs are the 3D coordinates of those points in the world frame
+    # # # these should both be np arrays
+    # # # R3 and T3 are the rotation matrix and the center for the new camera that is being added
+    # R3, T3 = pnpRANSAC(xs, Xs, K)
 
     # print, visualize outputs
     print_outputs(
