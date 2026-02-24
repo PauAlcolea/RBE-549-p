@@ -6,6 +6,7 @@ Group11_p1/Phase1/Output/*
 
 # Virtual environment
 .venv/*
+.vscode/*
 
 #.DS_Store
 **/.DS_Store
