@@ -1,13 +1,17 @@
 import numpy as np
-from LinearPnP import linearPnP
-from PnPRANSAC import pnpRANSAC
 from scipy.optimize import least_squares
 from scipy.spatial.transform import Rotation as Rot 
 
 
 def reprojection_error(params: np.ndarray, K: np.ndarray, xs:np.ndarray, Xs:np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """
-    :return q and T, this will be optimiezd by the least squares
+    This helper function is used in the optimizer, it gets inputted the parameters in a 1d array and then extracts the T and q to 
+    calculate the geometric difference
+
+    :param params are T and q in the form of a 1d array
+    :param K is the camera intrinsic matrix
+    :param xs and Xs are the 2d image and 3d world points that correspond to each other
+    :return the residuals to be optimized
     """
 
     # extract all of the parameters
@@ -18,8 +22,7 @@ def reprojection_error(params: np.ndarray, K: np.ndarray, xs:np.ndarray, Xs:np.n
     q = q / np.linalg.norm(q)
 
     # turn quaternion back into a rotation matrix
-    rot = Rot.from_quat(q)
-    R = rot.as_matrix()
+    R = Rot.from_quat(q).as_matrix()
 
     P = K @ np.hstack([R, T.reshape(3,1)])
     P_1 = P[0, :]
@@ -44,16 +47,14 @@ def nonlinearPnP(xs: np.ndarray, Xs: np.ndarray, K: np.ndarray, R0, T0) -> tuple
     """
     this function is used to calculate the pose of the camera for the added viewpoint in a non-linear manner
     This involves proper optimization by reducing the reprojection error as opposed to algebraic error minimized by the linear pnp
-
     
-    :param x is a list of 6 2D points, they are the image projected points of X onto the image plane
-        each point is an np.ndarray (x, y)
-    :param X is a list of 6 3D points that correspond to x
-    :K camera intrinsic matrix (3,3)
+    :praram xs and Xs are the correspondences between projected points and world poitns
+    :param K camera intrinsic matrix (3,3)
+    :param R0 and T0 are initial values used as initial parameters for the optimization, these can come from linear pnp or pnpRansac in Wrapper
+    :return the optimized version of R and T
     """  
-    # make a function that takes rotation and makes it quaternion and vice versa
-    rot = Rot.from_matrix(R0)
-    q0 = rot.as_quat()
+    # use library to transform rotation matrices to quaternions and viceversa
+    q0 = Rot.from_matrix(R0).as_quat()
 
     initial_parameters = np.hstack((T0, q0))
 
