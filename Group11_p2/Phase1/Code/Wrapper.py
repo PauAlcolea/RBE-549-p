@@ -352,7 +352,7 @@ def print_outputs(
 
         # visualize epipolar lines
         if "e" in plot_flags:
-            for i in range(1, len(poses)):
+            for i in range(1, len(poses + poses_pnp)):
                 plot_epipolar_lines(
                     i,
                     i + 1,
