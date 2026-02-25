@@ -3,7 +3,7 @@ from LinearPnP import linearPnP
 from scipy.optimize import least_squares
 
 
-def reprojection_error(guess: tuple[np.ndarray, np.ndarray], K: np.ndarray, xs:np.ndarray, Xs:np.ndarray)->tuple[np.ndarray, np.ndarray]:
+def reprojection_error(guess: tuple[np.ndarray, np.ndarray], K: np.ndarray, xs:np.ndarray, Xs:np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """
     :return R and T, this will be optimiezd by the least squares
     """
@@ -15,8 +15,18 @@ def reprojection_error(guess: tuple[np.ndarray, np.ndarray], K: np.ndarray, xs:n
     P_2 = P[1, :]
     P_3 = P[2, :]
 
+    for (u, v), X in zip(xs, Xs):
 
-    return loss_list
+        X_tilde = np.append(X, 1)
+
+        e1 = (u - (P_1 @ X_tilde) / (P_3 @ X_tilde))
+        e2 = v - (P_2 @ X_tilde) / (P_3 @ X_tilde)
+        error = e1**2 + e2**2
+        
+        loss_list.append(error)
+
+    residuals = np.concatenate(loss_list)
+    return residuals
 
 
 def nonlinearPnP(xs: np.ndarray, Xs: np.ndarray, K: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
