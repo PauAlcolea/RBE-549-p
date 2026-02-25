@@ -1,12 +1,11 @@
 import numpy as np
 
 
-def extractCameraPose(E: np.ndarray, K: np.ndarray) -> np.ndarray:
+def extractCameraPose(E: np.ndarray) -> np.ndarray:
     """
     This function will extract the four different possible camera poses out of the Essential Matrix E
 
     :param E: Essential matrix E
-    :param K: Camera intrinsic Matrix
     :return: 4 possible poses in the form of [R | t] (3x4)
     """
 
