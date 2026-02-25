@@ -289,14 +289,14 @@ def print_outputs(
                 if i <= 2:  # show triangulation reprojections for the initial pair
                     plot_reprojection(
                         i,
-                        inliers,
+                        inliers[:, 0, :],
                         pose,
                         world_points=world_points_est,
                         title=f"Linear Reprojection of 3D points for image {i}",
                     )
                     plot_reprojection(
                         i,
-                        inliers,
+                        inliers[:, 0, :],
                         pose,
                         world_points=world_points_refined,
                         title=f"Nonlinear Reprojection of 3D points for image {i}",
@@ -304,7 +304,7 @@ def print_outputs(
                 else:  # show PnP reprojections for additional views FIXME is this right?
                     plot_reprojection(
                         i,
-                        inliers_pnp[i - 3],
+                        inliers_pnp[i - 3][:, 0, :],
                         pose,
                         world_points=world_points_pnp[i - 3],
                         title=f"Linear PnP Reprojection of 3D points for image {i}",

@@ -312,7 +312,7 @@ def plot_epipolar_lines(
 
 def plot_reprojection(
     image_id: int,
-    correspondences: np.ndarray,
+    observed: np.ndarray,
     P: np.ndarray,
     world_points: np.ndarray,
     title: str | None = None,
@@ -324,12 +324,12 @@ def plot_reprojection(
     ----------
     image_id : int
         Id of the image (1-based, used to load `<id>.png`).
-    correspondences : (N, 2, 2) ndarray
-        Each row is [[u1, v1], [u2, v2]] for the same 3D point.
+    observed : (N, 2) ndarray
+        Observed 2D points in the image.
     P: (3, 4) ndarray
         Camera projection matrix P = K [R | t] for the view.
     world_points : (N, 3) ndarray
-        3D points associated with the correspondences.
+        3D points associated with the observed points.
     title : str, optional
         Figure title.
     """
@@ -339,11 +339,11 @@ def plot_reprojection(
             return img.astype(float) / 255.0
         return img.astype(float)
 
-    correspondences = np.asarray(correspondences)
+    observed = np.asarray(observed)
     world_points = np.asarray(world_points)
 
-    if correspondences.shape[0] != world_points.shape[0]:
-        raise ValueError("correspondences and world_points must have the same length")
+    if observed.shape[0] != world_points.shape[0]:
+        raise ValueError("observed and world_points must have the same length")
 
     img = _load_image(image_id)
     img_f = _to_float(img)
@@ -360,13 +360,11 @@ def plot_reprojection(
     u1_hat = proj1[:, 0] / np.where(mask1, proj1[:, 2], 1.0)
     v1_hat = proj1[:, 1] / np.where(mask1, proj1[:, 2], 1.0)
 
-    obs1 = correspondences[:, 0, :]
-
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.imshow(img_f)
 
     # Observed 2D points (red) and reprojected points (green) for each image.
-    ax.scatter(obs1[:, 0], obs1[:, 1], c="red", s=5, label="obs img1")
+    ax.scatter(observed[:, 0], observed[:, 1], c="red", s=5, label="obs img1")
     ax.scatter(
         u1_hat[mask1],
         v1_hat[mask1],
@@ -379,8 +377,8 @@ def plot_reprojection(
     for i in range(world_points.shape[0]):
         if mask1[i]:
             ax.plot(
-                [obs1[i, 0], u1_hat[i]],
-                [obs1[i, 1], v1_hat[i]],
+                [observed[i, 0], u1_hat[i]],
+                [observed[i, 1], v1_hat[i]],
                 color="yellow",
                 linewidth=0.5,
             )
