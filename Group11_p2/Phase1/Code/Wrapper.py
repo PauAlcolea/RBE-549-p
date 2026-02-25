@@ -213,52 +213,6 @@ def build_pnp_correspondences(
     return xs, Xs, xs_base
 
 
-def _test_pnp_reprojection(
-    Xs: np.ndarray,
-    xs: np.ndarray,
-    xs_base,
-    P1,
-    P_new: np.ndarray,
-    current_image_id,
-    new_image_id,
-) -> None:
-    """
-    helper to visualize PnP reprojections for each new view.
-    calculate reprojection error and pack data for visualization
-
-    :param Xs: (N, 3) array of 3D world points used for PnP
-    :param xs: (N, 2) array of corresponding 2D points in the new image
-    :param xs_base: (N, 2) array of corresponding 2D points in the base image (for visualization only)
-    :param P1: 3x4 camera matrix for the base image (for visualization only)
-    :param P_new: 3x4 camera matrix for the new image (for visualization only)
-    :param current_image_id: id of the base image (for visualization only)
-    :param new_image_id: id of the new image (for visualization only)
-
-    :return: dict of data for visualizing PnP reprojections in the main print_outputs function
-    """
-
-    # project 3D points back into new image to compute reprojection error and visualize
-    Xs_h = np.hstack([Xs, np.ones((Xs.shape[0], 1), dtype=float)])
-    proj_new = (P_new @ Xs_h.T).T
-    z_new = proj_new[:, 2:3]
-    z_new[z_new == 0] = 1.0
-    uv_new_hat = proj_new[:, :2] / z_new
-    reproj_err = np.linalg.norm(xs - uv_new_hat, axis=1)
-
-    pnp_reprojections = {
-        "current_image_id": current_image_id,
-        "new_image_id": new_image_id,
-        "corr_pnp": np.stack([xs_base, xs], axis=1),
-        "P_base": P1,
-        "P_new": P_new,
-        "world_points": Xs,
-        "title": f"PnP reprojection for base {current_image_id} and image {new_image_id}",
-        "reproj_err": reproj_err,
-    }
-
-    return pnp_reprojections
-
-
 def print_outputs(
     current_image_id: int,
     other_image_id: int,
@@ -269,8 +223,9 @@ def print_outputs(
     poses: List[np.ndarray] = None,
     world_points_est: np.ndarray = None,
     world_points_refined: np.ndarray = None,
+    world_points_pnp: List[np.ndarray] = None,
+    inliers_pnp: List[np.ndarray] = None,
     camera_centers: np.ndarray | None = None,
-    pnp_reprojections: list[dict] | None = None,
     plot_flags: set[str] | None = None,
 ) -> None:
     """
@@ -322,21 +277,30 @@ def print_outputs(
 
         # visualize reprojection
         if "r" in plot_flags:
-            for i, pose in enumerate(poses[:2]):
-                plot_reprojection(
-                    i+1,
-                    inliers,
-                    pose,
-                    world_points=world_points_est,
-                    title=f"Linear Reprojection of 3D points for image {i+1}",
-                )
-                plot_reprojection(
-                    i+1,
-                    inliers,
-                    pose,
-                    world_points=world_points_refined,
-                    title=f"Nonlinear Reprojection of 3D points for image {i+1}",
-                )
+            for i, pose in enumerate(poses, start=1):
+                if i <= 2:  # show triangulation reprojections for the initial pair
+                    plot_reprojection(
+                        i,
+                        inliers,
+                        pose,
+                        world_points=world_points_est,
+                        title=f"Linear Reprojection of 3D points for image {i}",
+                    )
+                    plot_reprojection(
+                        i,
+                        inliers,
+                        pose,
+                        world_points=world_points_refined,
+                        title=f"Nonlinear Reprojection of 3D points for image {i}",
+                    )
+                else:  # show PnP reprojections for additional views FIXME is this right?
+                    plot_reprojection(
+                        i,
+                        inliers_pnp[i - 3],
+                        pose,
+                        world_points=world_points_pnp[i - 3],
+                        title=f"Linear PnP Reprojection of 3D points for image {i}",
+                    )
 
         # visualize epipolar lines
         if "e" in plot_flags:
@@ -347,25 +311,6 @@ def print_outputs(
                 inliers,
                 title=f"Epipolar lines for images {current_image_id} and {other_image_id}",
             )
-
-        # visualize PnP reprojections for any additional views
-        if pnp_reprojections:
-            for cfg in pnp_reprojections:
-                if cfg["reproj_err"].size > 0:
-                    print(
-                        f"PnP reprojection error for image {cfg['new_image_id']} (pixels): "
-                        f"mean={cfg['reproj_err'].mean():.2f}, median={np.median(cfg['reproj_err']):.2f}, max={cfg['reproj_err'].max():.2f}"
-                    )
-                if "p" in plot_flags:
-                    plot_reprojection(
-                        cfg["current_image_id"],
-                        cfg["new_image_id"],
-                        cfg["corr_pnp"],
-                        cfg["P_base"],
-                        cfg["P_new"],
-                        world_points=cfg["world_points"],
-                        title=cfg["title"],
-                    )
 
 
 def sfm_pipeline(
@@ -440,8 +385,8 @@ def sfm_pipeline(
     camera_centers = np.vstack([C1, C2])
 
     # estimate additional camera poses using PnP-RANSAC
-    pnp_reprojections: list[dict] = []  # for testing
     if extra_image_ids is not None:
+        inliers_pnp, world_points_pnp = [], []
         for new_image_id in extra_image_ids:
             xs, Xs, xs_base = build_pnp_correspondences(
                 inliers,
@@ -461,17 +406,11 @@ def sfm_pipeline(
             P_new = K @ pose_new  # K [R | t]
             pose_matrices.append(P_new)
 
-            # add new view to camera centers list
+            # add new view and points to lists for visualization
             C_new = -R_new.T @ t_new
             camera_centers = np.vstack([camera_centers, C_new])
-
-            # call helper to visualize PnP reprojections for each new view
-            if plot_flags is not None and "p" in plot_flags:
-                pnp_reprojections.append(
-                    _test_pnp_reprojection(
-                        Xs, xs, xs_base, P1, P_new, current_image_id, new_image_id
-                    )
-                )
+            inliers_pnp.append(np.stack([xs_base, xs], axis=1))
+            world_points_pnp.append(Xs)
 
     # print, visualize outputs
     print_outputs(
@@ -484,8 +423,9 @@ def sfm_pipeline(
         pose_matrices,
         world_points_est,
         world_points_refined,
+        world_points_pnp,
+        inliers_pnp,
         camera_centers,
-        pnp_reprojections,
         plot_flags,
     )
 
@@ -522,7 +462,7 @@ def main() -> None:
     sfm_pipeline(
         current_image_id=1,
         other_image_id=2,
-        extra_image_ids=[3, 4],
+        extra_image_ids=[3, 4, 5],
         plot_flags=plot_flags,
     )
 
