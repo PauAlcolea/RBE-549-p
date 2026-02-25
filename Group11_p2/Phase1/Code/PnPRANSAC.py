@@ -56,4 +56,4 @@ def pnpRANSAC(xs, Xs, K, n_iterations=1000, inlier_thresh=30):
         xs=np.array(most_inliers_xs), Xs=np.array(most_inliers_Xs), K=K
     )
 
-    return final_R, final_T
+    return final_R, final_T, np.array(most_inliers_xs), np.array(most_inliers_Xs)
