@@ -271,9 +271,16 @@ def print_outputs(
             plot_triangulation(
                 world_points_est,
                 world_points_refined,
-                camera_centers=camera_centers,
+                camera_centers=camera_centers[
+                    :2
+                ],  # only show camera centers for initial pair
                 title=f"Triangulated points for images {current_image_id} and {other_image_id}",
                 set_labels=["Linear Triangulation", "Nonlinear Triangulation"],
+            )
+            plot_triangulation(
+                *world_points_pnp,
+                camera_centers=camera_centers,
+                title=f"PnP points for all views",
             )
 
         # visualize reprojection
