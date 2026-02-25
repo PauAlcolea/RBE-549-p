@@ -111,7 +111,7 @@ def filter_triangulation_outliers(
     world_points_est: np.ndarray,
     P1: np.ndarray,
     P2: np.ndarray,
-    inlier_thresh: float,
+    inlier_thresh: float = 16.0,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     filter out triangulated points with high reprojection error or negative depth
@@ -365,9 +365,6 @@ def print_outputs(
 def sfm_pipeline(
     current_image_id: int,
     other_image_id: int,
-    n_samples: int = 8,
-    n_ransac_iters: int = 1000,
-    inlier_thresh: float = 16.0,  # TODO: tuning
     extra_image_ids: list[int] | None = None,
     plot_flags: set[str] | None = None,
 ) -> None:
@@ -376,9 +373,6 @@ def sfm_pipeline(
 
     :param current_image_id: id of current image (1-based)
     :param other_image_id: id of other image to find matches with (1-based)
-    :param n_samples: number of correspondences to sample for RANSAC (default 8 for fundamental matrix estimation)
-    :param n_ransac_iters: number of RANSAC iterations for fundamental matrix estimation (default 1000)
-    :param inlier_thresh: reprojection error threshold for RANSAC inlier classification
     :param extra_image_ids: list of additional image ids to estimate poses for using PnP-RANSAC
     :param plot_flags: optional set of flags to control which plots to show
     """
@@ -386,15 +380,15 @@ def sfm_pipeline(
     # load correspondences for current image and other image
     correspondences = load_pair_matches(current_image_id, other_image_id)
 
-    if correspondences.shape[0] < n_samples:
+    if correspondences.shape[0] < 8:
         raise ValueError(
             f"Not enough correspondences between image {current_image_id} and {other_image_id}: "
-            f"found {correspondences.shape[0]}, need at least {n_samples}"
+            f"found {correspondences.shape[0]}, need at least 8"
         )
 
     # estimate fundamental matrix F using inliers from RANSAC
     F = np.zeros((3, 3))
-    inliers = getInliersRANSAC(correspondences, n_ransac_iters, inlier_thresh)
+    inliers = getInliersRANSAC(correspondences)
     if inliers.size >= 8:
         F = estimateFundamentalMat(inliers)
 
@@ -420,7 +414,7 @@ def sfm_pipeline(
 
     # remove extreme outliers from triangulated points before nonlinear refinement
     inliers, world_points_est = filter_triangulation_outliers(
-        inliers, world_points_est, P1, P2, inlier_thresh
+        inliers, world_points_est, P1, P2
     )
 
     # nonlinear triangulation to refine 3D points
@@ -452,7 +446,7 @@ def sfm_pipeline(
                 continue
 
             # PnP-RANSAC to estimate pose for new view
-            R_pnp, t_pnp, xs_inliers, Xs_inliers = pnpRANSAC(xs, Xs, K, n_ransac_iters)
+            R_pnp, t_pnp, xs_inliers, Xs_inliers = pnpRANSAC(xs, Xs, K)
 
             # non linear pnp
             R_pnp_refined, t_pnp_refined = nonlinearPnP(

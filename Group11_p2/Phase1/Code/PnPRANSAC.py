@@ -2,7 +2,13 @@ import numpy as np
 from LinearPnP import linearPnP
 
 
-def pnpRANSAC(xs, Xs, K, n_iterations=1000, inlier_thresh=30):
+def pnpRANSAC(
+    xs: np.ndarray,
+    Xs: np.ndarray,
+    K: np.ndarray,
+    n_iterations: int = 1000,
+    inlier_thresh: float = 80.0,
+):
     """
     this function performs RANSAC to add more views to the map, it does so to remove outliers
 
