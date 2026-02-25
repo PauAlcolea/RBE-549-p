@@ -363,7 +363,7 @@ def sfm_pipeline(
     E = estimateEssentialMatrix(K, F)
 
     # estimate 4 possible camera poses from E
-    poses = extractCameraPose(E, K)
+    poses = extractCameraPose(E)
 
     # first camera pose [I | 0]
     pose1 = np.hstack((np.eye(3), np.zeros((3, 1))))
@@ -410,7 +410,7 @@ def sfm_pipeline(
                 )
                 continue
 
-            R_new, t_new = pnpRANSAC(xs, Xs, K)
+            R_new, t_new = pnpRANSAC(xs, Xs, K, n_ransac_iters)
             pose_new = np.hstack([R_new, t_new.reshape(3, 1)])
             P_new = K @ pose_new  # K [R | t]
             pose_matrices.append(P_new)
