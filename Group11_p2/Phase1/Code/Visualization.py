@@ -76,17 +76,15 @@ def plot_triangulation(
 
     # draw camera centers as triangles
     if cam_plot is not None:
-        markers = ["^", "^"]
-        cam_colors = ["k", "m"]
-        labels = ["cam 1", "cam 2"]
+        cam_colors = plt.cm.Set1(np.linspace(0, 1, cam_plot.shape[0]))
         for i in range(cam_plot.shape[0]):
             ax.scatter(
                 cam_plot[i, 0],
                 cam_plot[i, 2],
                 s=80,
-                c=cam_colors[i % len(cam_colors)],
-                marker=markers[i % len(markers)],
-                label=labels[i] if i < len(labels) else f"cam {i+1}",
+                color=cam_colors[i],
+                marker="^",
+                label=f"cam {i+1}",
             )
 
     ax.set_xlabel("x")
@@ -313,116 +311,74 @@ def plot_epipolar_lines(
 
 
 def plot_reprojection(
-    current_image_id: int,
-    other_image_id: int,
-    correspondences: np.ndarray,
-    P1: np.ndarray,
-    P2: np.ndarray,
+    image_id: int,
+    observed: np.ndarray,
+    P: np.ndarray,
     world_points: np.ndarray,
     title: str | None = None,
 ) -> None:
     """
-    visualize reprojection of 3D points into both images
+    visualize reprojection of 3D points onto image
 
     Parameters
     ----------
-    current_image_id : int
-        Id of the left image (1-based, used to load `<id>.png`).
-    other_image_id : int
-        Id of the right image.
-    correspondences : (N, 2, 2) ndarray
-        Each row is [[u1, v1], [u2, v2]] for the same 3D point.
-    P1, P2 : (3, 4) ndarray
-        Camera projection matrices P = K [R | t] for the two views.
+    image_id : int
+        Id of the image (1-based, used to load `<id>.png`).
+    observed : (N, 2) ndarray
+        Observed 2D points in the image.
+    P: (3, 4) ndarray
+        Camera projection matrix P = K [R | t] for the view.
     world_points : (N, 3) ndarray
-        3D points associated with the correspondences.
+        3D points associated with the observed points.
     title : str, optional
         Figure title.
     """
-
-    correspondences = np.asarray(correspondences)
-    world_points = np.asarray(world_points)
-
-    if correspondences.shape[0] != world_points.shape[0]:
-        raise ValueError("correspondences and world_points must have the same length")
-
-    img_left = _load_image(current_image_id)
-    img_right = _load_image(other_image_id)
-
-    h1, w1 = img_left.shape[:2]
-    h2, w2 = img_right.shape[:2]
-    h = max(h1, h2)
-
-    # Create a canvas that places the two images side by side.
-    canvas = np.ones((h, w1 + w2, 3), dtype=float)
 
     def _to_float(img: np.ndarray) -> np.ndarray:
         if img.dtype == np.uint8:
             return img.astype(float) / 255.0
         return img.astype(float)
 
-    img_left_f = _to_float(img_left)
-    img_right_f = _to_float(img_right)
+    observed = np.asarray(observed)
+    world_points = np.asarray(world_points)
 
-    canvas[:h1, :w1, : img_left_f.shape[2]] = img_left_f
-    canvas[:h2, w1 : w1 + w2, : img_right_f.shape[2]] = img_right_f
+    if observed.shape[0] != world_points.shape[0]:
+        raise ValueError("observed and world_points must have the same length")
 
-    # Project 3D points into both cameras.
+    img = _load_image(image_id)
+    img_f = _to_float(img)
+
+    # Project 3D points into camera
     X_h = np.hstack([world_points, np.ones((world_points.shape[0], 1), dtype=float)])
 
-    proj1 = (P1 @ X_h.T).T  # (N, 3)
-    proj2 = (P2 @ X_h.T).T  # (N, 3)
+    proj1 = (P @ X_h.T).T
 
     # Avoid division by zero / points behind camera.
     eps = 1e-12
     mask1 = proj1[:, 2] > eps
-    mask2 = proj2[:, 2] > eps
 
     u1_hat = proj1[:, 0] / np.where(mask1, proj1[:, 2], 1.0)
     v1_hat = proj1[:, 1] / np.where(mask1, proj1[:, 2], 1.0)
-    u2_hat = proj2[:, 0] / np.where(mask2, proj2[:, 2], 1.0)
-    v2_hat = proj2[:, 1] / np.where(mask2, proj2[:, 2], 1.0)
-
-    obs1 = correspondences[:, 0, :]
-    obs2 = correspondences[:, 1, :]
 
     fig, ax = plt.subplots(figsize=(10, 5))
-    ax.imshow(canvas)
+    ax.imshow(img_f)
 
     # Observed 2D points (red) and reprojected points (green) for each image.
-    ax.scatter(obs1[:, 0], obs1[:, 1], c="red", s=5, label="obs img1")
+    ax.scatter(observed[:, 0], observed[:, 1], c="red", s=5, label="obs img1")
     ax.scatter(
         u1_hat[mask1],
         v1_hat[mask1],
         c="lime",
-        marker="+",
-        s=25,
+        s=5,
         label="reproj img1",
     )
 
-    ax.scatter(obs2[:, 0] + w1, obs2[:, 1], c="red", s=5, label="obs img2")
-    ax.scatter(
-        u2_hat[mask2] + w1,
-        v2_hat[mask2],
-        c="cyan",
-        marker="+",
-        s=25,
-        label="reproj img2",
-    )
-
-    # Optionally draw small line segments from observed to reprojected locations.
+    # draw small line segments from observed to reprojected locations.
     for i in range(world_points.shape[0]):
         if mask1[i]:
             ax.plot(
-                [obs1[i, 0], u1_hat[i]],
-                [obs1[i, 1], v1_hat[i]],
-                color="yellow",
-                linewidth=0.5,
-            )
-        if mask2[i]:
-            ax.plot(
-                [obs2[i, 0] + w1, u2_hat[i] + w1],
-                [obs2[i, 1], v2_hat[i]],
+                [observed[i, 0], u1_hat[i]],
+                [observed[i, 1], v1_hat[i]],
                 color="yellow",
                 linewidth=0.5,
             )
