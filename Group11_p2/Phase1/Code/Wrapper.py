@@ -11,6 +11,7 @@ from ExtractCameraPose import extractCameraPose
 from NonlinearTriangulation import nonlinearTriangulation, project_point
 from DisambiguateCameraPose import disambiguatePose
 from PnPRANSAC import pnpRANSAC
+from NonlinearPnP import nonlinearPnP
 from Visualization import (
     plot_correspondences,
     plot_triangulation,
@@ -415,11 +416,23 @@ def sfm_pipeline(
             P_new = K @ pose_new  # K [R | t]
             pose_matrices.append(P_new)
 
+            # non linear pnp
+            R_new_refined, t_new_refined = nonlinearPnP(xs, Xs, K, R_new, t_new)
+            # pose_new_ref = np.hstack([R_new_refined, t_new_refined.reshape(3, 1)])
+            # P_new_ref = K @ pose_new_ref  # K [R | t]
+            # pose_matrices.append(P_new_ref)
+
             # add new view and points to lists for visualization
             C_new = -R_new.T @ t_new
             camera_centers = np.vstack([camera_centers, C_new])
             inliers_pnp.append(np.stack([xs_base, xs], axis=1))
             world_points_pnp.append(Xs)
+
+            # visualization of non-linear ##### UNSURE ABOUT THIS, this is why I commented it out #####
+            # C_new_ref = -R_new_refined.T @ t_new_refined
+            # camera_centers_ref = np.vstack([camera_centers, C_new_ref])
+            # inliers_pnp.append(np.stack([xs_base, xs], axis=1))
+            # world_points_pnp.append(Xs)
 
     # print, visualize outputs
     print_outputs(
