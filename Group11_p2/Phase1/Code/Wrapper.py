@@ -257,6 +257,7 @@ def print_outputs(
     if plot_flags is not None:
         # visualize matches and inliers
         if "i" in plot_flags:
+            # TODO: also visualize correspondences for additional views??
             plot_correspondences(
                 current_image_id,
                 other_image_id,
@@ -304,13 +305,14 @@ def print_outputs(
 
         # visualize epipolar lines
         if "e" in plot_flags:
-            plot_epipolar_lines(
-                current_image_id,
-                other_image_id,
-                F,
-                inliers,
-                title=f"Epipolar lines for images {current_image_id} and {other_image_id}",
-            )
+            for i in range(1, len(poses)):
+                plot_epipolar_lines(
+                    i,
+                    i + 1,
+                    F,
+                    inliers,
+                    title=f"Epipolar lines for images {i} and {i+1}",
+                )
 
 
 def sfm_pipeline(
