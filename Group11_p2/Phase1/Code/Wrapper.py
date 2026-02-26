@@ -391,6 +391,11 @@ def sfm_pipeline(
     inliers = getInliersRANSAC(correspondences)
     if inliers.size >= 8:
         F = estimateFundamentalMat(inliers)
+    else:
+        raise ValueError(
+            f"Not enough inliers between image {current_image_id} and {other_image_id}: "
+            f"found {inliers.size}, need at least 8"
+        )
 
     # estimate essential matrix E from F
     K = load_intrinsics()
@@ -453,6 +458,15 @@ def sfm_pipeline(
                 xs_inliers, Xs_inliers, K, R_pnp, t_pnp
             )
 
+
+            ### Here we should take any new image and do triangulation with any of the already registered images and add all those new points to the map
+            ### don't add matches that already have 3d points in the map, add the new ones t world_points_refined
+            ### Something like:
+            ### new pose = _pose_from_Rt(R_pnp_refined, t_pnp_refined, K)
+            ### new_points = triangulate_new_points(registered_poses, new_pose, matches, existing_tracks)
+            ### world_points_refined = np.vstack([world_points_refined, new_points])
+
+
             # for visualization: store PnP poses and camera centers
             pose_matrices_pnp.append(_pose_from_Rt(R_pnp, t_pnp, K))
             pose_matrices_pnp_ref.append(_pose_from_Rt(R_pnp_refined, t_pnp_refined, K))
@@ -464,6 +478,12 @@ def sfm_pipeline(
                 np.stack([_filter_base_uv(xs_base, xs, xs_inliers), xs_inliers], axis=1)
             )
             world_points_pnp.append(Xs_inliers)
+
+    # all of the points are world_points_refined
+    # all of the poses are pose_matrices + pose_matrices_pnp_ref
+    all_poses = np.concatenate((pose_matrices, pose_matrices_pnp_ref))
+    
+
 
     # print, visualize outputs
     print_outputs(
