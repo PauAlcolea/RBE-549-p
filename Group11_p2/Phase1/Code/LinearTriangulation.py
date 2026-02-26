@@ -20,11 +20,11 @@ def linearTriangulation(
     """
     this function triangulates 3D points
 
-    :param pose1: Camera pose, this will always be zero because that is the reference
-    :param pose2: another camera pose
+    :param pose1: Camera pose [R|t], this will always be zero because that is the reference
+    :param pose2: another camera pose [R|t]
     :param K: camera intrinsic matrix
-    :param correspondences between the two cameras, x1 and x2 np.ndarrays
-    : expecting x1 and x2 in the form of [x1 y1] (np.array of shape (2,))
+    :param x1: 2D point in the first image, shape = (2,)
+    :param x2: 2D point in the second image, shape = (2,)
     :return: 3D point as a NumPy array of shape (3,), in homogeneous coordinates normalized to X[3] = 1
     """
     # get the projections from the poses
