@@ -364,13 +364,15 @@ def plot_reprojection(
     ax.imshow(img_f)
 
     # Observed 2D points (red) and reprojected points (green) for each image.
-    ax.scatter(observed[:, 0], observed[:, 1], c="red", s=5, label="obs img1")
+    ax.scatter(
+        observed[:, 0], observed[:, 1], c="red", s=5, label=f"obs img {image_id}"
+    )
     ax.scatter(
         u1_hat[mask1],
         v1_hat[mask1],
         c="lime",
         s=5,
-        label="reproj img1",
+        label=f"reproj img {image_id}",
     )
 
     # draw small line segments from observed to reprojected locations.
@@ -384,7 +386,7 @@ def plot_reprojection(
             )
 
     if title is None:
-        title = "Reprojection in both images"
+        title = f"Reprojection in image {image_id}"
     ax.set_title(title)
     ax.set_axis_off()
     ax.legend(loc="best")
