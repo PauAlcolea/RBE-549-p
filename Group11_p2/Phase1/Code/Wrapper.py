@@ -221,26 +221,42 @@ def _pose_from_Rt(R: np.ndarray, t: np.ndarray, K: np.ndarray) -> np.ndarray:
     return K @ np.hstack([R, t.reshape(3, 1)])
 
 
-def _filter_base_uv(
-    xs_base: np.ndarray, xs: np.ndarray, xs_inliers: np.ndarray
+def triangulate_additional_points(
+    pose1: np.ndarray,
+    R_pnp_refined: np.ndarray,
+    t_pnp_refined: np.ndarray,
+    corr_base_new: np.ndarray,
+    K: np.ndarray,
 ) -> np.ndarray:
     """
-    helper to filter base image points using inliers found in Pnp-RANSAC. helpful for visualization
+    use new refined PnP pose to triangulate additional points for new view
 
-    :param xs_base: (N, 2) array of 2D points in the base image
-    :param xs: (N, 2) array of 2D points in the new image
-    :param xs_inliers: (Ni, 2) array of inlier 2D points in the new image found by PnP-RANSAC
+    :param pose1: 3x4 pose matrix [R|t] for initial view
+    :param R_pnp_refined: refined rotation from nonlinear PnP for new view
+    :param t_pnp_refined: refined translation from nonlinear PnP for new view
+    :param corr_base_new: (N, 2, 2) array of pixel-space correspondences between base image and new image, where each row is [[u_base, v_base], [u_new, v_new]]
+    :param K: camera intrinsics matrix
+
+    :return: (M, 2, 2) array of inlier correspondences between base and new image, and (M, 3) array of corresponding refined 3D points
     """
-    # For each inlier 2D point in the new image, find the matching
-    # base-image point from xs_base by nearest-neighbor lookup
-    xs_base_inliers_list: list[np.ndarray] = []
-    for uv_new in xs_inliers:
-        diffs = np.linalg.norm(xs - uv_new, axis=1)
-        idx = int(np.argmin(diffs))
-        xs_base_inliers_list.append(xs_base[idx])
-
-    xs_base_inliers = np.asarray(xs_base_inliers_list, dtype=float)
-    return xs_base_inliers
+    X_est_list = []
+    for uv_base, uv_new in corr_base_new:
+        X_est = linearTriangulation(
+            K,
+            pose1,
+            np.hstack([R_pnp_refined, t_pnp_refined.reshape(3, 1)]),
+            uv_base,
+            uv_new,
+        )
+        X_est_list.append(X_est)
+    X_est = np.stack(X_est_list, axis=0)
+    P1 = _pose_from_Rt(np.eye(3), np.zeros(3), K)
+    P_pnp = _pose_from_Rt(R_pnp_refined, t_pnp_refined, K)
+    inliers_new, X_est = filter_triangulation_outliers(
+        corr_base_new, X_est, P1, P_pnp, inlier_thresh=4.0
+    )
+    X_refined = nonlinearTriangulation(inliers_new, P1, P_pnp, X_est)
+    return inliers_new, X_refined
 
 
 def print_outputs(
@@ -454,27 +470,13 @@ def sfm_pipeline(
             )
 
             # triangulate additional points for new refined view
-            X_est_list = []
-            for uv_base, uv_new in corr_base_new:
-                X_est = linearTriangulation(
-                    K,
-                    pose1,
-                    np.hstack([R_pnp_refined, t_pnp_refined.reshape(3, 1)]),
-                    uv_base,
-                    uv_new,
-                )
-                X_est_list.append(X_est)
-            X_est = np.stack(X_est_list, axis=0)
-
-            P_pnp = _pose_from_Rt(R_pnp_refined, t_pnp_refined, K)
-            inliers_new, X_est = filter_triangulation_outliers(
-                corr_base_new, X_est, P1, P_pnp, inlier_thresh=4.0
+            inliers_new, X_refined = triangulate_additional_points(
+                pose1, R_pnp_refined, t_pnp_refined, corr_base_new, K
             )
-            X_refined = nonlinearTriangulation(inliers_new, P1, P_pnp, X_est)
 
             # for visualization: store PnP poses and camera centers
             pose_matrices_pnp.append(_pose_from_Rt(R_pnp, t_pnp, K))
-            pose_matrices_pnp_ref.append(P_pnp)
+            pose_matrices_pnp_ref.append(_pose_from_Rt(R_pnp_refined, t_pnp_refined, K))
             camera_centers.append(-R_pnp_refined.T @ t_pnp_refined)
 
             # for visualization: store inliers and corresponding 3D points
