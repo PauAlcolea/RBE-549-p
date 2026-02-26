@@ -193,7 +193,7 @@ def build_pnp_correspondences(
     for uv_base, uv_new in corr_base_new:
         # of correspondences between base and new image, keep those that match pre-computed inliers
         diffs = np.linalg.norm(base_points - uv_base, axis=1)
-        idx = np.where(diffs < 5e-3)[0]
+        idx = np.where(diffs < 1e-2)[0]
         if idx.size == 0:
             continue
 
@@ -351,10 +351,6 @@ def print_outputs(
         for i, pose in enumerate(poses):
             print(f"Pose {i + 1}:")
             print(pose)
-    print(
-        f"Refined 3D points (from nonlinear triangulation) for images {current_image_id}-{other_image_id}:"
-    )
-    print(world_points_refined)
 
     if plot_flags is not None:
         # visualize matches and inliers
