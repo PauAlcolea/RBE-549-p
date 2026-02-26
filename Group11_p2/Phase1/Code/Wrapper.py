@@ -227,6 +227,7 @@ def _triangulate_for_new_view(
     t_pnp_refined: np.ndarray,
     corr_base_new: np.ndarray,
     K: np.ndarray,
+    filter_thresh: float = 3.0,
 ) -> np.ndarray:
     """
     helper to use new refined PnP pose to triangulate additional points for single new view
@@ -236,6 +237,7 @@ def _triangulate_for_new_view(
     :param t_pnp_refined: refined translation from nonlinear PnP for new view
     :param corr_base_new: (N, 2, 2) array of pixel-space correspondences between base image and new image, where each row is [[u_base, v_base], [u_new, v_new]]
     :param K: camera intrinsics matrix
+    :param filter_thresh: threshold for filtering triangulated points based on distance from median, as a multiple of the median distance
 
     :return: (M, 2, 2) array of inlier correspondences between base and new image, and (M, 3) array of corresponding refined 3D points
     """
@@ -256,6 +258,13 @@ def _triangulate_for_new_view(
         corr_base_new, X_est, P1, P_pnp, inlier_thresh=4.0
     )
     X_refined = nonlinearTriangulation(inliers_new, P1, P_pnp, X_est)
+    # filter outliers based on distance from median
+    r = np.linalg.norm(X_refined, axis=1)
+    r_med = np.median(r)
+    mask = (r > 0) & (r < filter_thresh * r_med)
+    X_refined = X_refined[mask]
+    inliers_new = inliers_new[mask]
+
     return inliers_new, X_refined
 
 
