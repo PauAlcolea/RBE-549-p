@@ -112,7 +112,7 @@ def filter_triangulation_outliers(
     world_points_est: np.ndarray,
     P1: np.ndarray,
     P2: np.ndarray,
-    inlier_thresh: float = 5.0,
+    inlier_thresh: float,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     filter out triangulated points with high reprojection error or negative depth
@@ -250,7 +250,7 @@ def _triangulate_for_new_view(
         )
         X_est_list.append(X_est)
     X_est = np.stack(X_est_list, axis=0)
-    P1 = _pose_from_Rt(np.eye(3), np.zeros(3), K)
+    P1 = K @ pose1
     P_pnp = _pose_from_Rt(R_pnp_refined, t_pnp_refined, K)
     inliers_new, X_est = filter_triangulation_outliers(
         corr_base_new, X_est, P1, P_pnp, inlier_thresh=4.0
@@ -474,7 +474,7 @@ def sfm_pipeline(
 
     # remove extreme outliers from triangulated points before nonlinear refinement
     inliers, world_points_est = filter_triangulation_outliers(
-        inliers, world_points_est, P1, P2
+        inliers, world_points_est, P1, P2, inlier_thresh=5.0
     )
 
     # nonlinear triangulation to refine 3D points
@@ -511,7 +511,9 @@ def sfm_pipeline(
                 continue
 
             # PnP-RANSAC to estimate pose for new view
-            R_pnp, t_pnp, xs_inliers, Xs_inliers = pnpRANSAC(xs, Xs, K)
+            R_pnp, t_pnp, xs_inliers, Xs_inliers = pnpRANSAC(
+                xs, Xs, K, inlier_thresh=100
+            )
 
             # non linear pnp
             R_pnp_refined, t_pnp_refined = nonlinearPnP(
