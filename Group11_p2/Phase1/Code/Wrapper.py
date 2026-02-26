@@ -111,7 +111,7 @@ def filter_triangulation_outliers(
     world_points_est: np.ndarray,
     P1: np.ndarray,
     P2: np.ndarray,
-    inlier_thresh: float,
+    inlier_thresh: float = 16.0,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     filter out triangulated points with high reprojection error or negative depth
@@ -192,7 +192,7 @@ def build_pnp_correspondences(
     for uv_base, uv_new in corr_base_new:
         # of correspondences between base and new image, keep those that match pre-computed inliers
         diffs = np.linalg.norm(base_points - uv_base, axis=1)
-        idx = np.where(diffs < 1e-3)[0]
+        idx = np.where(diffs < 5e-3)[0]
         if idx.size == 0:
             continue
 
@@ -214,14 +214,46 @@ def build_pnp_correspondences(
     return xs, Xs, xs_base
 
 
+def _pose_from_Rt(R: np.ndarray, t: np.ndarray, K: np.ndarray) -> np.ndarray:
+    """
+    helper to construct 3x4 pose matrix P = K [R | t] from rotation R and translation t
+    """
+    return K @ np.hstack([R, t.reshape(3, 1)])
+
+
+def _filter_base_uv(
+    xs_base: np.ndarray, xs: np.ndarray, xs_inliers: np.ndarray
+) -> np.ndarray:
+    """
+    helper to filter base image points using inliers found in Pnp-RANSAC. helpful for visualization
+
+    :param xs_base: (N, 2) array of 2D points in the base image
+    :param xs: (N, 2) array of 2D points in the new image
+    :param xs_inliers: (Ni, 2) array of inlier 2D points in the new image found by PnP-RANSAC
+    """
+    # For each inlier 2D point in the new image, find the matching
+    # base-image point from xs_base by nearest-neighbor lookup
+    xs_base_inliers_list: list[np.ndarray] = []
+    for uv_new in xs_inliers:
+        diffs = np.linalg.norm(xs - uv_new, axis=1)
+        idx = int(np.argmin(diffs))
+        xs_base_inliers_list.append(xs_base[idx])
+
+    xs_base_inliers = np.asarray(xs_base_inliers_list, dtype=float)
+    return xs_base_inliers
+
+
 def print_outputs(
     current_image_id: int,
     other_image_id: int,
+    extra_image_ids: list[int] | None,
     F: np.ndarray,
     inliers: np.ndarray,
     E: np.ndarray,
     correspondences: np.ndarray,
     poses: List[np.ndarray] = None,
+    poses_pnp: List[np.ndarray] = None,
+    poses_pnp_refined: List[np.ndarray] = None,
     world_points_est: np.ndarray = None,
     world_points_refined: np.ndarray = None,
     world_points_pnp: List[np.ndarray] = None,
@@ -287,33 +319,40 @@ def print_outputs(
         # visualize reprojection
         if "r" in plot_flags:
             for i, pose in enumerate(poses, start=1):
-                if i <= 2:  # show triangulation reprojections for the initial pair
-                    plot_reprojection(
-                        i,
-                        inliers[:, 0, :],
-                        pose,
-                        world_points=world_points_est,
-                        title=f"Linear Reprojection of 3D points for image {i}",
-                    )
-                    plot_reprojection(
-                        i,
-                        inliers[:, 0, :],
-                        pose,
-                        world_points=world_points_refined,
-                        title=f"Nonlinear Reprojection of 3D points for image {i}",
-                    )
-                else:  # show PnP reprojections for additional views FIXME is this right?
-                    plot_reprojection(
-                        i,
-                        inliers_pnp[i - 3][:, 0, :],
-                        pose,
-                        world_points=world_points_pnp[i - 3],
-                        title=f"Linear PnP Reprojection of 3D points for image {i}",
-                    )
+                plot_reprojection(
+                    i,
+                    inliers[:, 0, :],
+                    pose,
+                    world_points=world_points_est,
+                    title=f"Linear Reprojection of 3D points for image {i}",
+                )
+                plot_reprojection(
+                    i,
+                    inliers[:, 0, :],
+                    pose,
+                    world_points=world_points_refined,
+                    title=f"Nonlinear Reprojection of 3D points for image {i}",
+                )
+            for j, (pose, img_id) in enumerate(zip(poses_pnp, extra_image_ids)):
+                plot_reprojection(
+                    img_id,
+                    inliers_pnp[j][:, 1, :],
+                    pose,
+                    world_points=world_points_pnp[j],
+                    title=f"Linear PnP Reprojection of 3D points for image {img_id}",
+                )
+            for k, (pose, img_id) in enumerate(zip(poses_pnp_refined, extra_image_ids)):
+                plot_reprojection(
+                    img_id,
+                    inliers_pnp[k][:, 1, :],
+                    pose,
+                    world_points=world_points_pnp[k],
+                    title=f"Nonlinear PnP Reprojection of 3D points for image {img_id}",
+                )
 
         # visualize epipolar lines
         if "e" in plot_flags:
-            for i in range(1, len(poses)):
+            for i in range(1, len(poses + poses_pnp)):
                 plot_epipolar_lines(
                     i,
                     i + 1,
@@ -326,9 +365,6 @@ def print_outputs(
 def sfm_pipeline(
     current_image_id: int,
     other_image_id: int,
-    n_samples: int = 8,
-    n_ransac_iters: int = 1000,
-    inlier_thresh: float = 16.0,  # TODO: tuning
     extra_image_ids: list[int] | None = None,
     plot_flags: set[str] | None = None,
 ) -> None:
@@ -337,9 +373,6 @@ def sfm_pipeline(
 
     :param current_image_id: id of current image (1-based)
     :param other_image_id: id of other image to find matches with (1-based)
-    :param n_samples: number of correspondences to sample for RANSAC (default 8 for fundamental matrix estimation)
-    :param n_ransac_iters: number of RANSAC iterations for fundamental matrix estimation (default 1000)
-    :param inlier_thresh: reprojection error threshold for RANSAC inlier classification
     :param extra_image_ids: list of additional image ids to estimate poses for using PnP-RANSAC
     :param plot_flags: optional set of flags to control which plots to show
     """
@@ -347,15 +380,15 @@ def sfm_pipeline(
     # load correspondences for current image and other image
     correspondences = load_pair_matches(current_image_id, other_image_id)
 
-    if correspondences.shape[0] < n_samples:
+    if correspondences.shape[0] < 8:
         raise ValueError(
             f"Not enough correspondences between image {current_image_id} and {other_image_id}: "
-            f"found {correspondences.shape[0]}, need at least {n_samples}"
+            f"found {correspondences.shape[0]}, need at least 8"
         )
 
     # estimate fundamental matrix F using inliers from RANSAC
     F = np.zeros((3, 3))
-    inliers = getInliersRANSAC(correspondences, n_ransac_iters, inlier_thresh)
+    inliers = getInliersRANSAC(correspondences)
     if inliers.size >= 8:
         F = estimateFundamentalMat(inliers)
 
@@ -381,21 +414,22 @@ def sfm_pipeline(
 
     # remove extreme outliers from triangulated points before nonlinear refinement
     inliers, world_points_est = filter_triangulation_outliers(
-        inliers, world_points_est, P1, P2, inlier_thresh
+        inliers, world_points_est, P1, P2
     )
 
     # nonlinear triangulation to refine 3D points
     world_points_refined = nonlinearTriangulation(inliers, P1, P2, world_points_est)
 
-    # camera centers in world coordinates C1 = (0,0,0), C2 = -R^T t
+    # for visualization: camera centers in world coordinates C1 = (0,0,0), C2 = -R^T t
     C1 = np.zeros(3)
     R2 = pose2[:, :3]
     t2 = pose2[:, 3]
     C2 = -R2.T @ t2
-    camera_centers = np.vstack([C1, C2])
+    camera_centers = [C1, C2]
 
-    # estimate additional camera poses using PnP-RANSAC
+    # estimate additional camera poses using PnP-RANSAC and nonlinear PnP
     if extra_image_ids is not None:
+        pose_matrices_pnp, pose_matrices_pnp_ref = [], []
         inliers_pnp, world_points_pnp = [], []
         for new_image_id in extra_image_ids:
             xs, Xs, xs_base = build_pnp_correspondences(
@@ -411,38 +445,38 @@ def sfm_pipeline(
                 )
                 continue
 
-            R_new, t_new = pnpRANSAC(xs, Xs, K, n_ransac_iters)
-            pose_new = np.hstack([R_new, t_new.reshape(3, 1)])
-            P_new = K @ pose_new  # K [R | t]
-            pose_matrices.append(P_new)
+            # PnP-RANSAC to estimate pose for new view
+            R_pnp, t_pnp, xs_inliers, Xs_inliers = pnpRANSAC(xs, Xs, K)
 
             # non linear pnp
-            R_new_refined, t_new_refined = nonlinearPnP(xs, Xs, K, R_new, t_new)
-            # pose_new_ref = np.hstack([R_new_refined, t_new_refined.reshape(3, 1)])
-            # P_new_ref = K @ pose_new_ref  # K [R | t]
-            # pose_matrices.append(P_new_ref)
+            R_pnp_refined, t_pnp_refined = nonlinearPnP(
+                xs_inliers, Xs_inliers, K, R_pnp, t_pnp
+            )
 
-            # add new view and points to lists for visualization
-            C_new = -R_new.T @ t_new
-            camera_centers = np.vstack([camera_centers, C_new])
-            inliers_pnp.append(np.stack([xs_base, xs], axis=1))
-            world_points_pnp.append(Xs)
+            # for visualization: store PnP poses and camera centers
+            pose_matrices_pnp.append(_pose_from_Rt(R_pnp, t_pnp, K))
+            pose_matrices_pnp_ref.append(_pose_from_Rt(R_pnp_refined, t_pnp_refined, K))
+            # camera_centers_pnp.append(-R_pnp.T @ t_pnp)
+            camera_centers.append(-R_pnp_refined.T @ t_pnp_refined)
 
-            # visualization of non-linear ##### UNSURE ABOUT THIS, this is why I commented it out #####
-            # C_new_ref = -R_new_refined.T @ t_new_refined
-            # camera_centers_ref = np.vstack([camera_centers, C_new_ref])
-            # inliers_pnp.append(np.stack([xs_base, xs], axis=1))
-            # world_points_pnp.append(Xs)
+            # for visualization: store inliers and corresponding 3D points
+            inliers_pnp.append(
+                np.stack([_filter_base_uv(xs_base, xs, xs_inliers), xs_inliers], axis=1)
+            )
+            world_points_pnp.append(Xs_inliers)
 
     # print, visualize outputs
     print_outputs(
         current_image_id,
         other_image_id,
+        extra_image_ids,
         F,
         inliers,
         E,
         correspondences,
         pose_matrices,
+        pose_matrices_pnp,
+        pose_matrices_pnp_ref,
         world_points_est,
         world_points_refined,
         world_points_pnp,

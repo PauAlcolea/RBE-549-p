@@ -3,7 +3,7 @@ from EstimateFundamentalMatrix import estimateFundamentalMat
 
 
 def getInliersRANSAC(
-    correspondences: np.ndarray, n_iterations: int, inlier_thresh: float
+    correspondences: np.ndarray, n_iterations: int = 1000, inlier_thresh: float = 50.0
 ) -> np.ndarray:
     """
     get inliers from RANSAC
@@ -11,7 +11,7 @@ def getInliersRANSAC(
 
     :param correspondences: (N, 2, 2) array, each [[u1, v1], [u2, v2]]
     :param n_iterations: number of RANSAC iterations
-    :param inlier_thresh: threshold for inlier detection
+    :param inlier_thresh: threshold for inlier detection, in pixels^2
     :return: (M, 2, 2) array of inliers
     """
     best_inlier_indices = None
