@@ -30,12 +30,10 @@ def visibilityMatrix(all_poses, final_3D_world, points_for_poses) -> np.ndarray:
     # for each pose, go through all of the points
     # check that point along with the projection of all of the 2d correspondences of that pose projected onto 3d
         # if any point is close enough to that point, mark the cell as 1, otherwise as 0
-
-    for i, pose in enumerate(all_poses):
-        for j, point in enumerate(final_3D_world):
-            for point_2d in points_for_poses[i]:
-                point3d = point_2d @ pose
-                if closeEnough(point3d, point, threshold=0.01):
-                    V[i][j] = 1
-    
+    for i, (P, observed_Xs) in enumerate(zip(all_poses, points_for_poses)):
+        for j, X in enumerate(final_3D_world):
+            for obsX in observed_Xs:
+                if closeEnough(X, obsX, threshold=1e-6):
+                    V[i, j] = 1
+                    break
     return V

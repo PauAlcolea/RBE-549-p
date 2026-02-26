@@ -12,6 +12,8 @@ from NonlinearTriangulation import nonlinearTriangulation, project_point
 from DisambiguateCameraPose import disambiguatePose
 from PnPRANSAC import pnpRANSAC
 from NonlinearPnP import nonlinearPnP
+from BuildVisibilityMatrix import visibilityMatrix
+from BundleAdjustment import bundleAdjustment
 from Visualization import (
     plot_correspondences,
     plot_triangulation,
@@ -483,7 +485,18 @@ def sfm_pipeline(
     # all of the poses are pose_matrices + pose_matrices_pnp_ref
     all_poses = np.concatenate((pose_matrices, pose_matrices_pnp_ref))
     
+    # this will have to be altered whenever we add more triangulation after the pnp
+    # cameras 1, 2
+    points_for_poses = [world_points_refined, world_points_refined]
 
+    # cameras 3, 4, 5
+    for Xs_inliers in world_points_pnp:
+        points_for_poses.append(Xs_inliers)
+
+    V = visibilityMatrix(all_poses, world_points_refined, points_for_poses)
+    print("V shape:", V.shape)          
+    print("Points visible per camera:", V.sum(axis=1))
+    print("Cameras per point:", V.sum(axis=0))
 
     # print, visualize outputs
     print_outputs(
