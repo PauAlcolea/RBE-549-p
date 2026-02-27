@@ -525,7 +525,7 @@ def sfm_pipeline(
             # PnP-RANSAC to estimate pose for new view
             R_pnp, t_pnp, xs_inliers, Xs_inliers = pnpRANSAC(
                 xs, Xs, K, inlier_thresh=100
-            )
+            ) #### is this threshold too big?
 
             # non linear pnp
             R_pnp_refined, t_pnp_refined = nonlinearPnP(
@@ -548,6 +548,31 @@ def sfm_pipeline(
             # for visualization: store inliers and corresponding 3D points
             image_points_pnp.append(all_new_inliers)
             world_points_pnp.append(all_new_Xs)
+
+
+    # all of the points are world_points_refined
+    # all of the poses are pose_matrices + pose_matrices_pnp_ref
+    all_poses = np.concatenate((pose_matrices, pose_matrices_pnp_ref))
+
+    all_world_points = np.concatenate([world_points_refined] + world_points_pnp, axis=0)
+
+    # this will have to be altered whenever we add more triangulation after the pnp
+    # cameras 1, 2
+    points_for_poses = [world_points_refined, world_points_refined]
+
+    # cameras 3, 4, 5
+    for Xs_inliers in world_points_pnp:
+        points_for_poses.append(Xs_inliers)
+
+    V = visibilityMatrix(all_poses, all_world_points, points_for_poses)
+    print("V shape:", V.shape) 
+
+    observed_points_2d = [inliers[:, 0, :], inliers[:, 1, :]]
+    for new_inliers in image_points_pnp:
+        xs_new_camera = new_inliers[:, 1, :]
+        observed_points_2d.append(xs_new_camera)
+    
+    final_poses, final_points = bundleAdjustment(K, V, all_poses, all_world_points, observed_points_2d)
 
     # print, visualize outputs
     print_outputs(
