@@ -16,6 +16,8 @@ def project_point(X, R, t, K):
 def pack(Rs, ts, Xs) -> np.ndarray:
     """
     This helper function is used for the optimization. The parameters need to be packed so that they can be inputted into scipy.optimize
+    it takes the rodrigues vectors of the Rotation matrix, which is simpler and packs easier
+    the packing goes [R1, t1, R2, t2, ... Rm, tm, X1, X2, X3 ... Xn]
     """
     params = []
     for R, t in zip(Rs, ts):
@@ -64,13 +66,22 @@ def residual(params, points_2d, n_cameras, n_points, V, K, point2d_idx_map):
     is in the image plane in which it apears for each image
 
     the visibility matrix tells if camera i observes 3d point Xj
+    :param params are the packed parameters including all of the Rs, Ts and Xs
+    :param points_2d are all of the 2d points, a list or array where each element is a list or array for all the points of one camera
+    :param n_cameras number of cameras
+    :param n_points number of points
+    :param K intrinsic camera matrix
+    :param V is visibility matrix
+    :param point2d_idx_map is to connect every 2d point with the 3d point that it is a projection of
     """
     Rs, ts, Xs = unpack(params, n_cameras, n_points)
 
     res = []
 
+    # go through every camera and every point
     for i, (R, t) in enumerate(zip(Rs, ts)):
         for j, X in enumerate(Xs):
+            # check if that camera actually sees that point
             if V[i, j] == 1:
                 x_proj = project_point(X, R, t, K)
                 
@@ -83,8 +94,12 @@ def residual(params, points_2d, n_cameras, n_points, V, K, point2d_idx_map):
     return np.concatenate(res)
 
 def build_sparcity(num_cams, num_points, V):
+    """
+    This function is used to make a spacrity that cna be passed to the optimizer so that it runs much faster
+    it knonws which derivatives are zero so that the optimizer doesn't have to calulate them
+    """
     n_params = num_cams * 6 + num_points * 3
-    # each pair of camera and points will give you 2 residuals
+    # each pair of camera and points will give you 2 residuals, error for u and error for v
     n_residuals = int(np.sum(V)) * 2
     
     sparsity = lil_matrix((n_residuals, n_params), dtype=int)
@@ -92,9 +107,11 @@ def build_sparcity(num_cams, num_points, V):
     for i in range(num_cams):
         for j in range(num_points):
             if V[i, j] == 1:
-                # this residual depends on camera i's 6 params
+                # each camera has 6 parameters, 3 for rotation and 3 for translation
+                # 2 residuals depend on these 6 params
                 sparsity[res_idx:res_idx+2, i*6:i*6+6] = 1
-                # and on point j's 3 params
+                # each point has 3 parameters, X, Y and Z
+                # 2 residuals depend on these 3 params
                 sparsity[res_idx:res_idx+2, num_cams*6 + j*3:num_cams*6 + j*3+3] = 1
                 res_idx += 2
     return sparsity
