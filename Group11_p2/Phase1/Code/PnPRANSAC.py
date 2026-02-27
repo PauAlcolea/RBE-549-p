@@ -20,6 +20,8 @@ def pnpRANSAC(
     """
     n = 0  # maximum inlier count so far, used to select the best set
     N = 6  # How many inliers are going to be passed to the Linear PnP
+    most_inliers_xs = []
+    most_inliers_Xs = []
 
     for _ in range(n_iterations):
         # choose 6 points and get the 2d and the 3d
@@ -56,6 +58,11 @@ def pnpRANSAC(
             n = len(inliers_Xs)
             most_inliers_xs = inliers_xs  # keep track of the set of points that has the most inliers, these will be fed back to pnp for final R, T
             most_inliers_Xs = inliers_Xs
+
+    # ensure we have enough inliers; if not, return original input for stability
+    if len(most_inliers_xs) < 6:
+        most_inliers_xs = xs.tolist()
+        most_inliers_Xs = Xs.tolist()
 
     # now pass that set of most inliers back to the linear pnp to get the real pose
     final_R, final_T = linearPnP(
