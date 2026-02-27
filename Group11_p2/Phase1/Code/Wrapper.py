@@ -495,8 +495,9 @@ def sfm_pipeline(
 
     V = visibilityMatrix(all_poses, world_points_refined, points_for_poses)
     print("V shape:", V.shape)          
-    print("Points visible per camera:", V.sum(axis=1))
-    print("Cameras per point:", V.sum(axis=0))
+
+    # bundleAdjustment(V, all_poses, world_points_refined)
+    # return
 
     # print, visualize outputs
     print_outputs(
