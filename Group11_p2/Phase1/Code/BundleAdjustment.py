@@ -4,14 +4,19 @@ from scipy.optimize import least_squares
 import cv2
 
 
-def project_point(X, R, t, K):
+def project_points(Xs, R, t, K):
     """
-    helper function to take a 3d point and project it onto an image plane
+    helper function to take N 3d points and project them onto an image plane
+    this is faster than looping through each point and projecting it separately
+
+    :param Xs: (N, 3) array of 3D points
+    :param R, t, K: camera parameters
+    :return: (N, 2) array of projected points
     """
-    X_h = np.hstack([X, 1.0])
+    Xs_h = np.column_stack([Xs, np.ones(len(Xs))])  # Add homogeneous coordinate
     P = K @ np.hstack([R, t.reshape(3, 1)])
-    x_proj_h = P @ X_h
-    x_proj = x_proj_h[0:2] / x_proj_h[2]
+    x_proj_h = (P @ Xs_h.T).T  # (N, 3)
+    x_proj = x_proj_h[:, :2] / x_proj_h[:, 2:3]  # Normalize by z
     return x_proj
 
 
@@ -79,58 +84,82 @@ def residual(params, points_2d, n_cameras, n_points, V, K, point2d_idx_map):
     is in the image plane in which it apears for each image
 
     the visibility matrix tells if camera i observes 3d point Xj
-    :param params are the packed parameters including all of the Rs, Ts and Xs
-    :param points_2d are all of the 2d points, a list or array where each element is a list or array for all the points of one camera
-    :param n_cameras number of cameras
-    :param n_points number of points
-    :param K intrinsic camera matrix
-    :param V is visibility matrix
-    :param point2d_idx_map is to connect every 2d point with the 3d point that it is a projection of
+
+    :param params: the packed parameters including all of the Rs, Ts and Xs
+    :param points_2d: all of the 2d points, a list or array where each element is a list or array for all the points of one camera
+    :param n_cameras: number of cameras
+    :param n_points: number of points
+    :param K: intrinsic camera matrix
+    :param V: visibility matrix
+    :param point2d_idx_map: connects every 2d point with the 3d point that it is a projection of
     """
     Rs, ts, Xs = unpack(params, n_cameras, n_points)
 
     res = []
 
-    # go through every camera and every point
-    for i, (R, t) in enumerate(zip(Rs, ts)):
-        for j, X in enumerate(Xs):
-            # check if that camera actually sees that point
-            if V[i, j] == 1:
-                x_proj = project_point(X, R, t, K)
+    # go through every camera
+    for i in range(n_cameras):
+        # get all points visible to this camera
+        visible_point_indices = [j for j in range(n_points) if V[i, j] == 1]
+        if not visible_point_indices:
+            continue
 
-                # see what row in points_2d corresponds with X_j
-                ind_in_points2d = point2d_idx_map[i][j]
-                x_obs = points_2d[i][ind_in_points2d]
-                residual = x_obs - x_proj
-                res.append(residual)
+        # vectorized projection for all visible points
+        visible_Xs = np.array([Xs[j] for j in visible_point_indices])
+        x_proj = project_points(visible_Xs, Rs[i], ts[i], K)
+
+        # get corresponding observed points
+        ind_in_points2d = [point2d_idx_map[i][j] for j in visible_point_indices]
+        x_obs = points_2d[i][ind_in_points2d]
+
+        # compute residuals for this camera
+        residual = x_obs - x_proj
+        res.append(residual.flatten())
 
     return np.concatenate(res)
 
 
-def build_sparcity(num_cams, num_points, V):
+def build_sparsity(num_cams, num_points, V):
     """
-    This function is used to make a spacrity that cna be passed to the optimizer so that it runs much faster
-    it knonws which derivatives are zero so that the optimizer doesn't have to calulate them
+    This function is used to make a sparsity matrix that can be passed to the optimizer so that it runs much faster
+    it knows which derivatives are zero so that the optimizer doesn't have to calculate them
     """
     n_params = num_cams * 6 + num_points * 3
     # each pair of camera and points will give you 2 residuals, error for u and error for v
     n_residuals = int(np.sum(V)) * 2
 
-    sparsity = lil_matrix((n_residuals, n_params), dtype=int)
+    # pre-allocate arrays for sparse matrix construction
+    rows, cols = [], []
+
     res_idx = 0
     for i in range(num_cams):
         for j in range(num_points):
             if V[i, j] == 1:
-                # each camera has 6 parameters, 3 for rotation and 3 for translation
-                # 2 residuals depend on these 6 params
-                sparsity[res_idx : res_idx + 2, i * 6 : i * 6 + 6] = 1
-                # each point has 3 parameters, X, Y and Z
-                # 2 residuals depend on these 3 params
-                sparsity[
-                    res_idx : res_idx + 2,
-                    num_cams * 6 + j * 3 : num_cams * 6 + j * 3 + 3,
-                ] = 1
+                # Each observation contributes 2 residuals (u, v)
+                for r in range(2):
+                    row = res_idx + r
+
+                    # each camera has 6 parameters, 3 for rotation and 3 for translation
+                    # 2 residuals depend on these 6 params
+                    camera_cols = list(range(i * 6, i * 6 + 6))
+                    rows.extend([row] * 6)
+                    cols.extend(camera_cols)
+
+                    # each point has 3 parameters, X, Y and Z
+                    # 2 residuals depend on these 3 params
+                    point_cols = list(
+                        range(num_cams * 6 + j * 3, num_cams * 6 + j * 3 + 3)
+                    )
+                    rows.extend([row] * 3)
+                    cols.extend(point_cols)
+
                 res_idx += 2
+
+    # create sparse matrix
+    data = np.ones(len(rows))
+    sparsity = lil_matrix((n_residuals, n_params), dtype=int)
+    sparsity[rows, cols] = data
+
     return sparsity
 
 
@@ -163,8 +192,7 @@ def bundleAdjustment(
     n_points = V.shape[1]
 
     # map all of the 2d points to their 3d counterpart to be able to do the residual calculation properly
-    # making a dictionary to 3d points corresponding to which wors in points_2d[i]
-    # the counter is what keeps track of the row in which the point in question is
+    # making a dictionary to 3d points corresponding to which rows in points_2d[i]
     cam_point_ind_map = []
     for i in range(n_cameras):
         idx_map = {}
@@ -176,12 +204,12 @@ def bundleAdjustment(
         cam_point_ind_map.append(idx_map)
 
     initial_params = pack(Rs, ts, points_world)
-    sparcity = build_sparcity(n_cameras, n_points, V)
+    sparsity = build_sparsity(n_cameras, n_points, V)
     result = least_squares(
         residual,
         initial_params,
         args=(points_2d, n_cameras, n_points, V, K, cam_point_ind_map),
-        jac_sparsity=sparcity,
+        jac_sparsity=sparsity,
     )
 
     Rs_opt, ts_opt, Xs_opt = unpack(result.x, n_cameras, n_points)
