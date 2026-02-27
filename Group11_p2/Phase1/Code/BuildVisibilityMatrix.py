@@ -1,9 +1,10 @@
 import numpy as np
 
+
 def closeEnough(point1: np.ndarray, point2: np.ndarray, threshold=0.01) -> bool:
     """
     this is a helper function that works to figure out if point1 is close enough to point2 to assume that it is referring to the same one
-    this is used to see if a point is being seen by a camera or not. Point1 might be calculated from a 2d point / being projected 
+    this is used to see if a point is being seen by a camera or not. Point1 might be calculated from a 2d point / being projected
     point3 is the world point
 
     :param point1 3d projected point from a pose and a 2d ponint
@@ -12,7 +13,8 @@ def closeEnough(point1: np.ndarray, point2: np.ndarray, threshold=0.01) -> bool:
     :return whether it is a valid match (true) or not (false)
     """
     distance = np.linalg.norm(point1 - point2)
-    return (distance < threshold)
+    return distance < threshold
+
 
 def visibilityMatrix(all_poses, final_3D_world, points_for_poses) -> np.ndarray:
     """
@@ -29,7 +31,7 @@ def visibilityMatrix(all_poses, final_3D_world, points_for_poses) -> np.ndarray:
     # go through all of the poses
     # for each pose, go through all of the points
     # check that point along with the projection of all of the 2d correspondences of that pose projected onto 3d
-        # if any point is close enough to that point, mark the cell as 1, otherwise as 0
+    # if any point is close enough to that point, mark the cell as 1, otherwise as 0
     for i, (P, observed_Xs) in enumerate(zip(all_poses, points_for_poses)):
         for j, X in enumerate(final_3D_world):
             for obsX in observed_Xs:

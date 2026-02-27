@@ -3,15 +3,17 @@ from scipy.sparse import lil_matrix
 from scipy.optimize import least_squares
 import cv2
 
+
 def project_point(X, R, t, K):
     """
     helper function to take a 3d point and project it onto an image plane
     """
     X_h = np.hstack([X, 1.0])
-    P = K @ np.hstack([R, t.reshape(3,1)])
+    P = K @ np.hstack([R, t.reshape(3, 1)])
     x_proj_h = P @ X_h
     x_proj = x_proj_h[0:2] / x_proj_h[2]
     return x_proj
+
 
 def pack(Rs, ts, Xs) -> np.ndarray:
     """
@@ -22,17 +24,27 @@ def pack(Rs, ts, Xs) -> np.ndarray:
     params = []
     for R, t in zip(Rs, ts):
         rvec, _ = cv2.Rodrigues(R)
-        params.append(np.concatenate((rvec.reshape(3,), t)))
+        params.append(
+            np.concatenate(
+                (
+                    rvec.reshape(
+                        3,
+                    ),
+                    t,
+                )
+            )
+        )
 
     for X in Xs:
         params.append(X)
 
     return np.concatenate(params)
 
+
 def unpack(params, num_cams, num_points):
     """
     Unpack the 1D parameter vector into camera rotations, translations, and 3D points.
-    
+
     :param params: 1D array of parameters (output of pack)
     :param num_cams: number of camera poses
     :param num_points: number of 3D points
@@ -44,25 +56,26 @@ def unpack(params, num_cams, num_points):
 
     idx = 0
     for _ in range(num_cams):
-        rvec = params[idx:idx+3]
+        rvec = params[idx : idx + 3]
         R, _ = cv2.Rodrigues(rvec)
         idx += 3
-        t = params[idx:idx+3]
+        t = params[idx : idx + 3]
         idx += 3
         Rs.append(R)
         ts.append(t)
 
     for _ in range(num_points):
-        X = params[idx:idx+3]
+        X = params[idx : idx + 3]
         idx += 3
         Xs.append(X)
 
     return Rs, ts, Xs
 
+
 def residual(params, points_2d, n_cameras, n_points, V, K, point2d_idx_map):
     """
     this function will return the residual and will be used for the actual least squares optimization
-    points_world are all of the 3d points on the map, The optimizer is going to need to know what the 2d point projection of each X 
+    points_world are all of the 3d points on the map, The optimizer is going to need to know what the 2d point projection of each X
     is in the image plane in which it apears for each image
 
     the visibility matrix tells if camera i observes 3d point Xj
@@ -84,7 +97,7 @@ def residual(params, points_2d, n_cameras, n_points, V, K, point2d_idx_map):
             # check if that camera actually sees that point
             if V[i, j] == 1:
                 x_proj = project_point(X, R, t, K)
-                
+
                 # see what row in points_2d corresponds with X_j
                 ind_in_points2d = point2d_idx_map[i][j]
                 x_obs = points_2d[i][ind_in_points2d]
@@ -92,6 +105,7 @@ def residual(params, points_2d, n_cameras, n_points, V, K, point2d_idx_map):
                 res.append(residual)
 
     return np.concatenate(res)
+
 
 def build_sparcity(num_cams, num_points, V):
     """
@@ -101,7 +115,7 @@ def build_sparcity(num_cams, num_points, V):
     n_params = num_cams * 6 + num_points * 3
     # each pair of camera and points will give you 2 residuals, error for u and error for v
     n_residuals = int(np.sum(V)) * 2
-    
+
     sparsity = lil_matrix((n_residuals, n_params), dtype=int)
     res_idx = 0
     for i in range(num_cams):
@@ -109,19 +123,24 @@ def build_sparcity(num_cams, num_points, V):
             if V[i, j] == 1:
                 # each camera has 6 parameters, 3 for rotation and 3 for translation
                 # 2 residuals depend on these 6 params
-                sparsity[res_idx:res_idx+2, i*6:i*6+6] = 1
+                sparsity[res_idx : res_idx + 2, i * 6 : i * 6 + 6] = 1
                 # each point has 3 parameters, X, Y and Z
                 # 2 residuals depend on these 3 params
-                sparsity[res_idx:res_idx+2, num_cams*6 + j*3:num_cams*6 + j*3+3] = 1
+                sparsity[
+                    res_idx : res_idx + 2,
+                    num_cams * 6 + j * 3 : num_cams * 6 + j * 3 + 3,
+                ] = 1
                 res_idx += 2
     return sparsity
 
-def bundleAdjustment(K: np.ndarray,
-                     V: np.ndarray, 
-                     all_poses:np.ndarray, 
-                     points_world:np.ndarray,
-                     points_2d
-                     ) -> tuple[np.ndarray, np.ndarray]:
+
+def bundleAdjustment(
+    K: np.ndarray,
+    V: np.ndarray,
+    all_poses: np.ndarray,
+    points_world: np.ndarray,
+    points_2d,
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Refine the camera poses and 3D world points by optimization and minimization of the reprojection error
 
@@ -143,13 +162,13 @@ def bundleAdjustment(K: np.ndarray,
     n_cameras = V.shape[0]
     n_points = V.shape[1]
 
-    # map all of the 2d points to their 3d counterpart to be able to do the residual calculation properly 
+    # map all of the 2d points to their 3d counterpart to be able to do the residual calculation properly
     # making a dictionary to 3d points corresponding to which wors in points_2d[i]
     # the counter is what keeps track of the row in which the point in question is
     cam_point_ind_map = []
     for i in range(n_cameras):
         idx_map = {}
-        point_counter= 0
+        point_counter = 0
         for j in range(n_points):
             if V[i, j] == 1:
                 idx_map[j] = point_counter
@@ -158,14 +177,18 @@ def bundleAdjustment(K: np.ndarray,
 
     initial_params = pack(Rs, ts, points_world)
     sparcity = build_sparcity(n_cameras, n_points, V)
-    result = least_squares(residual, 
-                           initial_params, 
-                           args=(points_2d, n_cameras, n_points, V, K, cam_point_ind_map),
-                           jac_sparsity=sparcity)
-    
+    result = least_squares(
+        residual,
+        initial_params,
+        args=(points_2d, n_cameras, n_points, V, K, cam_point_ind_map),
+        jac_sparsity=sparcity,
+    )
+
     Rs_opt, ts_opt, Xs_opt = unpack(result.x, n_cameras, n_points)
-    # make array of a list created with list comprehension  
-    final_poses = np.array([K @ np.hstack([R, t.reshape(3,1)]) for R, t in zip(Rs_opt, ts_opt)])
+    # make array of a list created with list comprehension
+    final_poses = np.array(
+        [K @ np.hstack([R, t.reshape(3, 1)]) for R, t in zip(Rs_opt, ts_opt)]
+    )
     final_points = np.array(Xs_opt)
 
     return final_poses, final_points
