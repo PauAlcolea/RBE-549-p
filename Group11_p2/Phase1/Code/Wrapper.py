@@ -329,6 +329,8 @@ def print_outputs(
     world_points_refined: np.ndarray = None,
     world_points_pnp: List[np.ndarray] = None,
     image_points_pnp: List[np.ndarray] = None,
+    bundle_adjustment_poses: List[np.ndarray] = None,
+    bundle_adjustment_points: np.ndarray = None,
     camera_centers: np.ndarray | None = None,
     plot_flags: set[str] | None = None,
 ) -> None:
@@ -382,6 +384,11 @@ def print_outputs(
                 camera_centers=camera_centers,
                 title=f"PnP points for all views",
             )
+            plot_triangulation(
+                bundle_adjustment_points,
+                camera_centers=camera_centers,
+                title=f"Bundle Adjustment points for all views",
+            )
 
         # visualize reprojection
         if "r" in plot_flags:
@@ -415,6 +422,16 @@ def print_outputs(
                     pose,
                     world_points=world_points_pnp[k],
                     title=f"Nonlinear PnP Reprojection of 3D points for image {img_id}",
+                )
+            for m, (pose, img_id) in enumerate(
+                zip(bundle_adjustment_poses, extra_image_ids)
+            ):
+                plot_reprojection(
+                    img_id,
+                    image_points_pnp[m][:, 1, :],
+                    pose,
+                    world_points=bundle_adjustment_points,
+                    title=f"Bundle Adjustment Reprojection of 3D points for image {img_id}",
                 )
 
         # visualize epipolar lines
@@ -591,6 +608,8 @@ def sfm_pipeline(
         world_points_refined,
         world_points_pnp,
         image_points_pnp,
+        final_poses,
+        final_points,
         camera_centers,
         plot_flags,
     )
