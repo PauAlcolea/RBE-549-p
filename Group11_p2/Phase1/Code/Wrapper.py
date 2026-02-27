@@ -566,31 +566,49 @@ def sfm_pipeline(
             image_points_pnp.append(all_new_inliers)
             world_points_pnp.append(all_new_Xs)
 
-    # all of the points are world_points_refined
-    # all of the poses are pose_matrices + pose_matrices_pnp_ref
+    # combine all camera poses K [R | t]: initial pair + additional views
     all_poses = np.concatenate((pose_matrices, pose_matrices_pnp_ref))
 
+    # world points for all views
     all_world_points = np.concatenate([world_points_refined] + world_points_pnp, axis=0)
 
-    # this will have to be altered whenever we add more triangulation after the pnp
-    # cameras 1, 2
+    # build visibility matrix and 2D point correspondences for bundle adjustment
+    # each camera observes specific 3D points based on triangulation
+
+    # for initial pair: both observe world_points_refined
     points_for_poses = [world_points_refined, world_points_refined]
 
-    # cameras 3, 4, 5
+    # for additional views: each observes points from world_points_pnp
     for Xs_inliers in world_points_pnp:
         points_for_poses.append(Xs_inliers)
 
     V = visibilityMatrix(all_poses, all_world_points, points_for_poses)
     print("V shape:", V.shape)
 
-    observed_points_2d = [inliers[:, 0, :], inliers[:, 1, :]]
+    # Organize 2D observations for bundle adjustment
+    # Each views's 2D points must correspond to 3D points where V[i, :] == 1
+    observed_points_2d = [
+        inliers[:, 0, :],
+        inliers[:, 1, :],
+    ]  # cameras 1, 2 observe initial points
+    # for additional views, use the inliers from PnP triangulation which correspond to the points they observe
     for new_inliers in image_points_pnp:
         xs_new_camera = new_inliers[:, 1, :]
         observed_points_2d.append(xs_new_camera)
 
+    # bundle adjustment to refine all camera poses and 3D points
     final_poses, final_points = bundleAdjustment(
         K, V, all_poses, all_world_points, observed_points_2d
     )
+
+    # for visualization: update camera centers for refined poses
+    refined_camera_centers = []
+    K_inv = np.linalg.inv(K)
+    for P in final_poses:
+        Rt = K_inv @ P
+        R, t = Rt[:, :3], Rt[:, 3]
+        C = -R.T @ t
+        refined_camera_centers.append(C)
 
     # print, visualize outputs
     print_outputs(
@@ -610,7 +628,7 @@ def sfm_pipeline(
         image_points_pnp,
         final_poses,
         final_points,
-        camera_centers,
+        refined_camera_centers,
         plot_flags,
     )
 
