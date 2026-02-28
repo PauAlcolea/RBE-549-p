@@ -393,7 +393,6 @@ def print_outputs(
     pnp_outputs: PnPOutputs,
     ba_outputs: BundleAdjustmentOutputs,
     plot_flags: set[str] | None = None,
-    verbose: bool = False,
 ) -> None:
     """
     helper for printing and visualizing pipeline outputs
@@ -404,27 +403,6 @@ def print_outputs(
     pnp_err_linear, pnp_err_refined = pnp_reproj_errors(pnp_outputs)
     ba_err = ba_reproj_error(ba_outputs)
 
-    if verbose:
-        print(
-            f"Estimated Fundamental matrix F (RANSAC inliers) "
-            f"for images {current_image_id}-{other_image_id}:"
-        )
-        print(F)
-        print(
-            f"Number of RANSAC inliers: {base_pair_outputs.inliers.shape[0]} / {correspondences.shape[0]}"
-        )
-        print(
-            f"Estimated Essential matrix E (from F) "
-            f"for images {current_image_id}-{other_image_id}:"
-        )
-        print(E)
-        print(
-            f"Estimated camera poses (from E) for images {current_image_id}-{other_image_id}:"
-        )
-        for i, pose in enumerate(base_pair_outputs.proj_matrices):
-            print(f"Pose {i + 1}:")
-            print(pose)
-        print("V shape:", ba_outputs.visibility.shape)
     print(
         "Linear triangulation reprojection error "
         f"(mean across both views): {base_pair_err_linear:.4f} px"
@@ -736,9 +714,6 @@ def sfm_pipeline(
     all_image_points.extend(i[:, 1, :] for i in pnp_points_uv)
     all_image_points = [np.asarray(pts, dtype=float) for pts in all_image_points]
 
-    if verbose:
-        print("Beginning bundle adjustment...")
-
     # bundle adjustment to refine all camera poses and 3D points
     final_poses, final_points = bundleAdjustment(
         K, V, all_proj_matrices, all_world_points, all_image_points
@@ -790,7 +765,6 @@ def sfm_pipeline(
         pnp_outputs,
         ba_outputs,
         plot_flags,
-        verbose,
     )
 
     return
