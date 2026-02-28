@@ -4,7 +4,6 @@ import numpy as np
 from pathlib import Path
 from typing import List, NamedTuple
 from argparse import ArgumentParser
-from EstimateFundamentalMatrix import estimateFundamentalMat
 from GetInliersRANSAC import getInliersRANSAC
 from EssentialMatrixFromFundamentalMatrix import estimateEssentialMatrix
 from ExtractCameraPose import extractCameraPose
@@ -29,14 +28,19 @@ class BasePairOutputs(NamedTuple):
     world_linear: np.ndarray
     world_refined: np.ndarray
     camera_centers: List[np.ndarray]
+    reproj_err_linear: float
+    reproj_err_refined: float
 
 
 class PnPOutputs(NamedTuple):
+    image_ids: List[int]
     proj_matrices_linear: List[np.ndarray]
     proj_matrices_refined: List[np.ndarray]
     world_points: List[np.ndarray]
     image_points: List[np.ndarray]
     camera_centers: List[np.ndarray]
+    reproj_err_linear: List[float]
+    reproj_err_refined: List[float]
 
 
 class BundleAdjustmentOutputs(NamedTuple):
@@ -45,6 +49,7 @@ class BundleAdjustmentOutputs(NamedTuple):
     observed_points: List[np.ndarray]
     visibility: np.ndarray
     camera_centers: List[np.ndarray]
+    reproj_err: float
 
 
 def load_pair_matches(
@@ -178,6 +183,58 @@ def filter_triangulation_outliers(
         world_points_est_filtered = world_points_est[mask]
 
     return inliers_filtered, world_points_est_filtered
+
+
+def compute_reproj_err(
+    world_points: np.ndarray,
+    image_points: np.ndarray | List[np.ndarray],
+    proj_matrices: np.ndarray | List[np.ndarray],
+    visibility: np.ndarray | None = None,
+) -> float:
+    """
+    compute reprojection error for one or more views
+
+    If `visibility` is None, each view is assumed to observe all `world_points`.
+    If `visibility` is provided, row `i` specifies which world points are observed by
+    view `i`, and `image_points[i]` must be ordered to match those visible points.
+
+    :param world_points: (N, 3) array of 3D world points
+    :param image_points: one (N, 2) array or a list of per-view observed 2D point arrays
+    :param proj_matrices: one 3x4 projection matrix or a list of per-view projection matrices
+    :param visibility: optional (num_views, N) visibility matrix
+    :return: mean reprojection error
+    """
+
+    def _as_list_of_arrays(x):
+        return (
+            [np.asarray(v, dtype=float) for v in x]
+            if isinstance(x, list)
+            else [np.asarray(x, dtype=float)]
+        )
+
+    world_points = np.asarray(world_points, dtype=float)
+    image_points_list = _as_list_of_arrays(image_points)
+    proj_matrix_list = _as_list_of_arrays(proj_matrices)
+
+    all_errors = []
+
+    for i, (x_obs, P) in enumerate(zip(image_points_list, proj_matrix_list)):
+        visible_world_points = (
+            world_points
+            if visibility is None
+            else world_points[np.where(visibility[i] == 1)[0]]
+        )
+
+        if len(x_obs) == 0:
+            continue
+
+        view_errors = [
+            np.linalg.norm(x - project_point(P, X))
+            for X, x in zip(visible_world_points, x_obs)
+        ]
+        all_errors.extend(view_errors)
+
+    return float(np.mean(all_errors))
 
 
 def build_pnp_correspondences(
@@ -373,6 +430,30 @@ def print_outputs(
     for i, pose in enumerate(base_pair_outputs.proj_matrices):
         print(f"Pose {i + 1}:")
         print(pose)
+    print(
+        "Linear triangulation reprojection error "
+        f"(mean across both views): {base_pair_outputs.reproj_err_linear:.4f} px"
+    )
+    print(
+        "Nonlinear triangulation reprojection error "
+        f"(mean across both views): {base_pair_outputs.reproj_err_refined:.4f} px"
+    )
+
+    if extra_image_ids:
+        for img_id, err_lin, err_ref in zip(
+            pnp_outputs.image_ids,
+            pnp_outputs.reproj_err_linear,
+            pnp_outputs.reproj_err_refined,
+        ):
+            print(f"Linear PnP reprojection error for image {img_id}: {err_lin:.4f} px")
+            print(
+                f"Nonlinear PnP reprojection error for image {img_id}: {err_ref:.4f} px"
+            )
+
+    print(
+        "Bundle adjustment reprojection error "
+        f"(mean across all visible observations): {ba_outputs.reproj_err:.4f} px"
+    )
     print("V shape:", ba_outputs.visibility.shape)
 
     if plot_flags is None:
@@ -398,12 +479,11 @@ def print_outputs(
             set_labels=["Linear Triangulation", "Nonlinear Triangulation"],
         )
 
-        if pnp_outputs.world_points:
-            plot_triangulation(
-                *pnp_outputs.world_points,
-                camera_centers=pnp_outputs.camera_centers,
-                title=f"PnP points for all views",
-            )
+        plot_triangulation(
+            *pnp_outputs.world_points,
+            camera_centers=pnp_outputs.camera_centers,
+            title=f"PnP points for all views",
+        )
 
         plot_triangulation(
             ba_outputs.points,
@@ -429,16 +509,17 @@ def print_outputs(
     # visualize reprojection
     if "r" in plot_flags:
         for i, pose in enumerate(base_pair_outputs.proj_matrices, start=1):
+            observed = base_pair_outputs.inliers[:, i - 1, :]
             plot_reprojection(
                 i,
-                base_pair_outputs.inliers[:, 0, :],
+                observed,
                 pose,
                 world_points=base_pair_outputs.world_linear,
                 title=f"Linear Reprojection of 3D points for image {i}",
             )
             plot_reprojection(
                 i,
-                base_pair_outputs.inliers[:, 0, :],
+                observed,
                 pose,
                 world_points=base_pair_outputs.world_refined,
                 title=f"Nonlinear Reprojection of 3D points for image {i}",
@@ -446,7 +527,7 @@ def print_outputs(
 
         if extra_image_ids:
             for j, (pose, img_id) in enumerate(
-                zip(pnp_outputs.proj_matrices_linear, extra_image_ids)
+                zip(pnp_outputs.proj_matrices_linear, pnp_outputs.image_ids)
             ):
                 plot_reprojection(
                     img_id,
@@ -457,7 +538,7 @@ def print_outputs(
                 )
 
             for k, (pose, img_id) in enumerate(
-                zip(pnp_outputs.proj_matrices_refined, extra_image_ids)
+                zip(pnp_outputs.proj_matrices_refined, pnp_outputs.image_ids)
             ):
                 plot_reprojection(
                     img_id,
@@ -467,7 +548,7 @@ def print_outputs(
                     title=f"Nonlinear PnP Reprojection of 3D points for image {img_id}",
                 )
 
-        ba_image_ids = [current_image_id, other_image_id] + (extra_image_ids or [])
+        ba_image_ids = [current_image_id, other_image_id] + pnp_outputs.image_ids
         for cam_idx, (pose, img_id) in enumerate(
             zip(ba_outputs.proj_matrices, ba_image_ids)
         ):
@@ -563,12 +644,27 @@ def sfm_pipeline(
     C2 = -R2.T @ t2
     initial_camera_centers = [C1, C2]
 
+    # compute reprojection error for linear and nonlinear triangulation
+    base_pair_err_linear = compute_reproj_err(
+        base_pair_XYZ_est,
+        [base_pair_inliers_filt[:, 0, :], base_pair_inliers_filt[:, 1, :]],
+        base_pair_proj_matrices,
+    )
+    base_pair_err_ref = compute_reproj_err(
+        base_pair_XYZ_ref,
+        [base_pair_inliers_filt[:, 0, :], base_pair_inliers_filt[:, 1, :]],
+        base_pair_proj_matrices,
+    )
+
     # projection matrices, point correspondences, and camera centers used for PnP
     proj_matrices_pnp: List[np.ndarray] = []
     proj_matrices_pnp_ref: List[np.ndarray] = []
     pnp_points_uv: List[np.ndarray] = []
     pnp_points_XYZ: List[np.ndarray] = []
     camera_centers_pnp = initial_camera_centers.copy()
+    pnp_image_ids: List[int] = []
+    pnp_err_linear: List[float] = []
+    pnp_err_refined: List[float] = []
 
     # for added views: PnP/nonlinear PnP to estimate pose, then triangulate additional points with all previous views
     if extra_image_ids is not None:
@@ -595,10 +691,18 @@ def sfm_pipeline(
             R_pnp_est, t_pnp_est, inliers_pnp_uv, inliers_pnp_XYZ = pnpRANSAC(
                 uv_new_view, XYZ_new_view, K, inlier_thresh=100
             )  #### is this threshold too big?
+            proj_pnp_est = _proj_from_Rt(R_pnp_est, t_pnp_est, K)
+            pnp_linear_err = compute_reproj_err(
+                inliers_pnp_XYZ, inliers_pnp_uv, proj_pnp_est
+            )
 
             # non linear pnp to refine pose for new view
             R_pnp_refined, t_pnp_refined = nonlinearPnP(
                 inliers_pnp_uv, inliers_pnp_XYZ, K, R_pnp_est, t_pnp_est
+            )
+            proj_pnp_ref = _proj_from_Rt(R_pnp_refined, t_pnp_refined, K)
+            pnp_refined_err = compute_reproj_err(
+                inliers_pnp_XYZ, inliers_pnp_uv, proj_pnp_ref
             )
 
             # triangulate additional points for new refined view
@@ -610,16 +714,19 @@ def sfm_pipeline(
             )
 
             # for visualization: store PnP projection matrices and camera centers
-            proj_matrices_pnp.append(_proj_from_Rt(R_pnp_est, t_pnp_est, K))
-            proj_matrices_pnp_ref.append(_proj_from_Rt(R_pnp_refined, t_pnp_refined, K))
+            proj_matrices_pnp.append(proj_pnp_est)
+            proj_matrices_pnp_ref.append(proj_pnp_ref)
             camera_centers_pnp.append(-R_pnp_refined.T @ t_pnp_refined)
+            pnp_image_ids.append(new_image_id)
+            pnp_err_linear.append(pnp_linear_err)
+            pnp_err_refined.append(pnp_refined_err)
 
             # for visualization: store inliers and corresponding 3D points
             pnp_points_uv.append(new_matches_uv)
             pnp_points_XYZ.append(new_triangulated_XYZ)
 
     # combine all camera projection matrices K [R | t]: initial pair + additional views
-    all_proj_matrices = np.concatenate((base_pair_proj_matrices, proj_matrices_pnp_ref))
+    all_proj_matrices = base_pair_proj_matrices + proj_matrices_pnp_ref
 
     # world points for all views
     all_world_points = np.concatenate([base_pair_XYZ_ref] + pnp_points_XYZ, axis=0)
@@ -656,6 +763,9 @@ def sfm_pipeline(
         C = -R.T @ t
         refined_camera_centers.append(C)
     final_proj_matrices = [_proj_from_Rt(Rt[:, :3], Rt[:, 3], K) for Rt in final_poses]
+    ba_reproj_err = compute_reproj_err(
+        final_points, all_image_points, final_proj_matrices, visibility=V
+    )
 
     # for visualization: organize outputs into named tuples for cleaner print function
     base_pair_outputs = BasePairOutputs(
@@ -664,14 +774,19 @@ def sfm_pipeline(
         world_linear=base_pair_XYZ_est,
         world_refined=base_pair_XYZ_ref,
         camera_centers=initial_camera_centers,
+        reproj_err_linear=base_pair_err_linear,
+        reproj_err_refined=base_pair_err_ref,
     )
 
     pnp_outputs = PnPOutputs(
+        image_ids=pnp_image_ids,
         proj_matrices_linear=proj_matrices_pnp,
         proj_matrices_refined=proj_matrices_pnp_ref,
         world_points=pnp_points_XYZ,
         image_points=pnp_points_uv,
         camera_centers=camera_centers_pnp,
+        reproj_err_linear=pnp_err_linear,
+        reproj_err_refined=pnp_err_refined,
     )
 
     ba_outputs = BundleAdjustmentOutputs(
@@ -680,6 +795,7 @@ def sfm_pipeline(
         observed_points=all_image_points,
         visibility=V,
         camera_centers=refined_camera_centers,
+        reproj_err=ba_reproj_err,
     )
 
     # print, visualize outputs

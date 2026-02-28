@@ -11,6 +11,8 @@ def linearPnP(xs: np.ndarray, Xs: np.ndarray, K: np.ndarray):
         each point is an np.ndarray (x, y)
     :param X: a list of 6 3D points that correspond to x
     :param K: camera intrinsic matrix (3,3)
+
+    :return: the estimated R and T for the new camera pose
     """
 
     N = xs.shape[0]
