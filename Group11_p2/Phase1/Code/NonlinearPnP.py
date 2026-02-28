@@ -64,11 +64,9 @@ def nonlinearPnP(
 
     initial_parameters = np.hstack((T0, q0))
 
-    print("Starting Non-Linear Optimization: ")
     result = least_squares(
         reprojection_error, initial_parameters, args=(K, xs, Xs), method="lm"
     )
-    print("Optimization Complete")
 
     optimized_params = result.x
     T_opt = optimized_params[0:3]

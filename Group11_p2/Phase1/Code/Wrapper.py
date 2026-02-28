@@ -407,29 +407,32 @@ def print_outputs(
     pnp_outputs: PnPOutputs,
     ba_outputs: BundleAdjustmentOutputs,
     plot_flags: set[str] | None = None,
+    verbose: bool = False,
 ) -> None:
     """
     helper for printing and visualizing pipeline outputs
     """
-    print(
-        f"Estimated Fundamental matrix F (RANSAC inliers) "
-        f"for images {current_image_id}-{other_image_id}:"
-    )
-    print(F)
-    print(
-        f"Number of RANSAC inliers: {base_pair_outputs.inliers.shape[0]} / {correspondences.shape[0]}"
-    )
-    print(
-        f"Estimated Essential matrix E (from F) "
-        f"for images {current_image_id}-{other_image_id}:"
-    )
-    print(E)
-    print(
-        f"Estimated camera poses (from E) for images {current_image_id}-{other_image_id}:"
-    )
-    for i, pose in enumerate(base_pair_outputs.proj_matrices):
-        print(f"Pose {i + 1}:")
-        print(pose)
+    if verbose:
+        print(
+            f"Estimated Fundamental matrix F (RANSAC inliers) "
+            f"for images {current_image_id}-{other_image_id}:"
+        )
+        print(F)
+        print(
+            f"Number of RANSAC inliers: {base_pair_outputs.inliers.shape[0]} / {correspondences.shape[0]}"
+        )
+        print(
+            f"Estimated Essential matrix E (from F) "
+            f"for images {current_image_id}-{other_image_id}:"
+        )
+        print(E)
+        print(
+            f"Estimated camera poses (from E) for images {current_image_id}-{other_image_id}:"
+        )
+        for i, pose in enumerate(base_pair_outputs.proj_matrices):
+            print(f"Pose {i + 1}:")
+            print(pose)
+        print("V shape:", ba_outputs.visibility.shape)
     print(
         "Linear triangulation reprojection error "
         f"(mean across both views): {base_pair_outputs.reproj_err_linear:.4f} px"
@@ -454,7 +457,6 @@ def print_outputs(
         "Bundle adjustment reprojection error "
         f"(mean across all visible observations): {ba_outputs.reproj_err:.4f} px"
     )
-    print("V shape:", ba_outputs.visibility.shape)
 
     if plot_flags is None:
         return
@@ -582,6 +584,7 @@ def sfm_pipeline(
     other_image_id: int,
     extra_image_ids: list[int] | None = None,
     plot_flags: set[str] | None = None,
+    verbose: bool = False,
 ) -> None:
     """
     main wrapper function for SfM pipeline
@@ -590,6 +593,7 @@ def sfm_pipeline(
     :param other_image_id: id of other image to find matches with (1-based)
     :param extra_image_ids: list of additional image ids to estimate poses for using PnP-RANSAC
     :param plot_flags: optional set of flags to control which plots to show
+    :param verbose: whether to print outputs along the way
     """
 
     # load correspondences for current image and other image
@@ -655,6 +659,13 @@ def sfm_pipeline(
         [base_pair_inliers_filt[:, 0, :], base_pair_inliers_filt[:, 1, :]],
         base_pair_proj_matrices,
     )
+    if verbose:
+        print(
+            f"Images 1-2: linear triangulation reprojection error: {base_pair_err_linear:.4f} px"
+        )
+        print(
+            f"Images 1-2: nonlinear triangulation reprojection error: {base_pair_err_ref:.4f} px"
+        )
 
     # projection matrices, point correspondences, and camera centers used for PnP
     proj_matrices_pnp: List[np.ndarray] = []
@@ -680,6 +691,10 @@ def sfm_pipeline(
                 base_image_id=current_image_id,
                 new_image_id=new_image_id,
             )
+            if verbose:
+                print(
+                    f"Image {new_image_id}: found {uv_new_view.shape[0]}/{matches_w_base.shape[0]} 2D-3D correspondences for PnP"
+                )
 
             if uv_new_view.shape[0] < 6:
                 print(
@@ -704,6 +719,11 @@ def sfm_pipeline(
             pnp_refined_err = compute_reproj_err(
                 inliers_pnp_XYZ, inliers_pnp_uv, proj_pnp_ref
             )
+
+            if verbose:
+                print(
+                    f"Image {new_image_id}: linear error = {pnp_linear_err}, refined error = {pnp_refined_err}"
+                )
 
             # triangulate additional points for new refined view
             all_poses_Rt[new_image_id] = np.hstack(
@@ -741,6 +761,13 @@ def sfm_pipeline(
 
     # build visibility matrix where V[i, j] = 1 if camera i observes world point j, else 0
     V = visibilityMatrix(all_world_points, points_for_poses)
+    if verbose:
+        print("Number of world points:", all_world_points.shape[0])
+        print("Number of observations (nonzero entries in V):", np.sum(V))
+        print(
+            "Average number of points observed per camera:",
+            np.sum(V) / len(all_proj_matrices),
+        )
 
     # Organize 2D observations for bundle adjustment
     # Each views's 2D points must correspond to 3D points where V[i, :] == 1
@@ -750,6 +777,9 @@ def sfm_pipeline(
     # for additional views, use the inliers from PnP triangulation which correspond to the points they observe
     all_image_points.extend(i[:, 1, :] for i in pnp_points_uv)
     all_image_points = [np.asarray(pts, dtype=float) for pts in all_image_points]
+
+    if verbose:
+        print("Beginning bundle adjustment...")
 
     # bundle adjustment to refine all camera poses and 3D points
     final_poses, final_points = bundleAdjustment(
@@ -810,14 +840,13 @@ def sfm_pipeline(
         pnp_outputs,
         ba_outputs,
         plot_flags,
+        verbose,
     )
 
     return
 
 
 def main() -> None:
-    # TODO - add command line arguments for image ids, etc
-
     parser = ArgumentParser()
     parser.add_argument(
         "-p",
@@ -830,6 +859,12 @@ def main() -> None:
             "Which plots to show: i=inliers, t=triangulation, r=reprojection, p=possible poses, e=epipolar lines. "
             "If -p is given with no flags, all are shown."
         ),
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Print additional information while running",
     )
 
     args = parser.parse_args()
@@ -847,6 +882,7 @@ def main() -> None:
         other_image_id=2,
         extra_image_ids=[3, 4, 5],
         plot_flags=plot_flags,
+        verbose=args.verbose,
     )
 
     return
