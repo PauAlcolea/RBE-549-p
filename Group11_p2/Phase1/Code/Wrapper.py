@@ -242,6 +242,7 @@ def build_pnp_correspondences(
     world_points: np.ndarray,
     base_image_id: int,
     new_image_id: int,
+    thresh: float = 1e-3,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     helper to build 2D-3D correspondences between base image and new image for PnP,
@@ -252,6 +253,7 @@ def build_pnp_correspondences(
     :param world_points: (M, 3) array of 3D points corresponding to the inliers
     :param base_image_id: id of the base image (1-based)
     :param new_image_id: id of the new image to find matches with (1-based)
+    :param thresh: pixel threshold for matching known inlier points with correspondences in base image
 
     :return (xs, Xs, xs_base): tuple where
     :return xs: (N, 2) array of 2D points in the new image
@@ -277,7 +279,7 @@ def build_pnp_correspondences(
     for uv_base, uv_new in matches_w_base:
         # of correspondences between base and new image, keep those that match pre-computed inliers
         diffs = np.linalg.norm(base_points - uv_base, axis=1)
-        idx = np.where(diffs < 1e-2)[0]
+        idx = np.where(diffs < thresh)[0]
         if idx.size == 0:
             continue
 
@@ -606,7 +608,9 @@ def sfm_pipeline(
         )
 
     # estimate fundamental matrix F using inliers from RANSAC
-    F, base_pair_inlier_matches = getInliersRANSAC(correspondences_2d=base_pair_matches)
+    F, base_pair_inlier_matches = getInliersRANSAC(
+        correspondences_2d=base_pair_matches, inlier_thresh=40.0
+    )
 
     # estimate essential matrix E from F
     K = load_intrinsics()
@@ -690,6 +694,7 @@ def sfm_pipeline(
                 world_points=base_pair_XYZ_ref,
                 base_image_id=current_image_id,
                 new_image_id=new_image_id,
+                thresh=1,
             )
             if verbose:
                 print(
@@ -704,8 +709,8 @@ def sfm_pipeline(
 
             # PnP-RANSAC to estimate pose for new view
             R_pnp_est, t_pnp_est, inliers_pnp_uv, inliers_pnp_XYZ = pnpRANSAC(
-                uv_new_view, XYZ_new_view, K, inlier_thresh=100
-            )  #### is this threshold too big?
+                uv_new_view, XYZ_new_view, K, inlier_thresh=60
+            )
             proj_pnp_est = _proj_from_Rt(R_pnp_est, t_pnp_est, K)
             pnp_linear_err = compute_reproj_err(
                 inliers_pnp_XYZ, inliers_pnp_uv, proj_pnp_est
