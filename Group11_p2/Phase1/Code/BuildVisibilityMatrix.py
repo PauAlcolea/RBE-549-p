@@ -23,17 +23,17 @@ def closeEnough(observed_Xs, final_3D_world, threshold=1e-6) -> bool:
     return matches
 
 
-def visibilityMatrix(all_poses, final_3D_world, points_for_poses) -> np.ndarray:
+def visibilityMatrix(final_3D_world, points_for_poses) -> np.ndarray:
     """
     This function builds the Visibility Matrix, a binary matrix that represents if a point is seen by a camera
 
-    :param all_poses: in the system, these correspond to all the different views from were we are reconstructing the image
+
     :param final_3D_world: is the set of all 3D points available, no matter what camera sees them
-    :param points_for_poses: I envision this beeing a list with the same number of elements as poses / cameras / viewpoints
+    :param points_for_poses: I envision this being a list with the same number of elements as poses / cameras / viewpoints
         each element should be a list or array of some sort containing all of the 3D or 2D points for that viewpoint
     :return: the visubility matrix ixj
     """
-    V = np.zeros(shape=(len(all_poses), len(final_3D_world)))
+    V = np.zeros(shape=(len(points_for_poses), len(final_3D_world)))
 
     # go through all of the poses
     # take vectorized approach: for each view, compute distances to all world points at once and check for matches

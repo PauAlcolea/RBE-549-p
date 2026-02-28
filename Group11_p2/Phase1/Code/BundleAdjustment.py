@@ -166,25 +166,25 @@ def build_sparsity(num_cams, num_points, V):
 def bundleAdjustment(
     K: np.ndarray,
     V: np.ndarray,
-    all_poses: np.ndarray,
+    all_proj_matrices: np.ndarray,
     points_world: np.ndarray,
     points_2d,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Refine the camera poses and 3D world points by optimization and minimization of the reprojection error
 
-    :param K is the camera intrinsitc matrix, used to get R and t back
-    :param V is the visibility matrix
-    :param all poses are all of the poses of all of the cameras, these will need to be changed to R and t
-    :param final_3D_world is all of the 3D world points after pnp
-    :param points_2d these should be the observed points for each camera, in the form of a list of array with an initial variable of number of cams
+    :param K: the camera intrinsitc matrix, used to get R and t back
+    :param V: the visibility matrix
+    :param all_proj_matrices: all of the projection matrices K[R|t] for all of the cameras
+    :param points_world: all of the 3D world points after pnp
+    :param points_2d: these should be the observed points for each camera, in the form of a list of array with an initial variable of number of cams
         (num_points, 2) -> [u,v]
-    :return the adjusted final poses and the adjustted final 3D world points in the forms of np.arrays
+    :return: the adjusted final poses [R|t] and the adjusted final 3D world points in the forms of np.arrays
     """
 
     # the poses are gotten from K @ np.hstack([R, t.reshape(3, 1)]), so to get R and t I must reverse
     K_inv = np.linalg.inv(K)
-    Rts = [K_inv @ P for P in all_poses]
+    Rts = [K_inv @ P for P in all_proj_matrices]
     Rs = [Rt[:, 0:3] for Rt in Rts]
     ts = [Rt[:, 3] for Rt in Rts]
 
@@ -215,7 +215,7 @@ def bundleAdjustment(
     Rs_opt, ts_opt, Xs_opt = unpack(result.x, n_cameras, n_points)
     # make array of a list created with list comprehension
     final_poses = np.array(
-        [K @ np.hstack([R, t.reshape(3, 1)]) for R, t in zip(Rs_opt, ts_opt)]
+        [np.hstack([R, t.reshape(3, 1)]) for R, t in zip(Rs_opt, ts_opt)]
     )
     final_points = np.array(Xs_opt)
 

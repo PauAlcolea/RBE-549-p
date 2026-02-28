@@ -17,6 +17,7 @@ def pnpRANSAC(
     :param K: the camera internal matrix
     :param n_iterations: number of RANSAC iterations
     :param inlier_thresh: threshold for inlier detection, in pixels^2
+    :return: the best camera pose [R|t] and the inlier 2D-3D correspondences for that pose
     """
     n = 0  # maximum inlier count so far, used to select the best set
     N = 6  # How many inliers are going to be passed to the Linear PnP

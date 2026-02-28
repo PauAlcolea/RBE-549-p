@@ -4,22 +4,22 @@ from Visualization import plot_triangulation
 
 
 def disambiguatePose(
-    camera_poses: np.ndarray, K, correspondences, plot: bool = False
+    camera_poses: np.ndarray, K, correspondences_2d, plot: bool = False
 ) -> np.ndarray:
     """
-    Checking cheirality condition to remove ambiguity
+    Checking chirality condition to remove ambiguity
     This function must go through of the poses, and get the triangulated points for each one
 
     :param camera_poses: this is a numpy array with 4 camera poses with a shape of (4, 3, 4)
     :param K: camera intrinsic matrix
-    :param correspondences: this is a numpy array of shape (N, 2, 2) where each row is [[u1, v1], [u2, v2]]
+    :param correspondences_2d: this is a numpy array of shape (N, 2, 2) where each row is [[u1, v1], [u2, v2]]
     :param plot: whether to visualize the triangulated points for each candidate pose
-    :return: the correct camera pose (3,4) and the triangulated points for that pose
+    :return: the correct camera pose [R|t] and the triangulated points for that pose
     """
 
     identity_pose = np.hstack((np.identity(3), np.zeros((3, 1))))
 
-    # the following list will contain the number of points that satisfy the cheirality condition
+    # the following list will contain the number of points that satisfy the chirality condition
     valid_points_per_pose: list[int] = []
     # store triangulated points for each pose
     X_per_pose: list[list[np.ndarray]] = []
@@ -29,7 +29,7 @@ def disambiguatePose(
         # for each pose, go through all of the correspondences, between poses
         X_list: list[np.ndarray] = []
 
-        for x1, x2 in correspondences:
+        for x1, x2 in correspondences_2d:
             X_list.append(linearTriangulation(K, identity_pose, pose, x1, x2))
 
         valid_counter = 0
