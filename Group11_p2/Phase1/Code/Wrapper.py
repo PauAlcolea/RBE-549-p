@@ -635,14 +635,9 @@ def sfm_pipeline(
     base_P2 = K @ pose2
     base_pair_proj_matrices = [base_P1, base_P2]
 
-    # remove extreme outliers from triangulated points before nonlinear refinement
-    base_pair_inliers_filt, base_pair_XYZ_est = filter_triangulation_outliers(
-        base_pair_inlier_matches, base_pair_XYZ_est, base_P1, base_P2, inlier_thresh=8.0
-    )
-
     # nonlinear triangulation to refine 3D points
     base_pair_XYZ_ref = nonlinearTriangulation(
-        base_pair_inliers_filt, base_P1, base_P2, base_pair_XYZ_est
+        base_pair_inlier_matches, base_P1, base_P2, base_pair_XYZ_est
     )
 
     # for visualization: camera centers in world coordinates C1 = (0,0,0), C2 = -R^T t
@@ -655,12 +650,12 @@ def sfm_pipeline(
     # compute reprojection error for linear and nonlinear triangulation
     base_pair_err_linear = compute_reproj_err(
         base_pair_XYZ_est,
-        [base_pair_inliers_filt[:, 0, :], base_pair_inliers_filt[:, 1, :]],
+        [base_pair_inlier_matches[:, 0, :], base_pair_inlier_matches[:, 1, :]],
         base_pair_proj_matrices,
     )
     base_pair_err_ref = compute_reproj_err(
         base_pair_XYZ_ref,
-        [base_pair_inliers_filt[:, 0, :], base_pair_inliers_filt[:, 1, :]],
+        [base_pair_inlier_matches[:, 0, :], base_pair_inlier_matches[:, 1, :]],
         base_pair_proj_matrices,
     )
     if verbose:
@@ -690,7 +685,7 @@ def sfm_pipeline(
         }
         for new_image_id in extra_image_ids:
             uv_new_view, XYZ_new_view, matches_w_base = build_pnp_correspondences(
-                base_inliers=base_pair_inliers_filt,
+                base_inliers=base_pair_inlier_matches,
                 world_points=base_pair_XYZ_ref,
                 base_image_id=current_image_id,
                 new_image_id=new_image_id,
@@ -777,8 +772,8 @@ def sfm_pipeline(
     # Organize 2D observations for bundle adjustment
     # Each views's 2D points must correspond to 3D points where V[i, :] == 1
     all_image_points = []
-    all_image_points.append(base_pair_inliers_filt[:, 0, :])  # view 1
-    all_image_points.append(base_pair_inliers_filt[:, 1, :])  # view 2
+    all_image_points.append(base_pair_inlier_matches[:, 0, :])  # view 1
+    all_image_points.append(base_pair_inlier_matches[:, 1, :])  # view 2
     # for additional views, use the inliers from PnP triangulation which correspond to the points they observe
     all_image_points.extend(i[:, 1, :] for i in pnp_points_uv)
     all_image_points = [np.asarray(pts, dtype=float) for pts in all_image_points]
@@ -805,7 +800,7 @@ def sfm_pipeline(
     # for visualization: organize outputs into named tuples for cleaner print function
     base_pair_outputs = BasePairOutputs(
         proj_matrices=base_pair_proj_matrices,
-        inliers=base_pair_inliers_filt,
+        inliers=base_pair_inlier_matches,
         world_linear=base_pair_XYZ_est,
         world_refined=base_pair_XYZ_ref,
         camera_centers=initial_camera_centers,
