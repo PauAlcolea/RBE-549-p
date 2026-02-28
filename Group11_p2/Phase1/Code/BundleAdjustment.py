@@ -27,7 +27,8 @@ def pack(Rs, ts, Xs) -> np.ndarray:
     the packing goes [R1, t1, R2, t2, ... Rm, tm, X1, X2, X3 ... Xn]
     """
     params = []
-    for R, t in zip(Rs, ts):
+    # keep first camera fixed
+    for R, t in zip(Rs[1:], ts[1:]):
         rvec = Rot.from_matrix(R).as_rotvec()
         params.append(
             np.concatenate(
@@ -46,7 +47,7 @@ def pack(Rs, ts, Xs) -> np.ndarray:
     return np.concatenate(params)
 
 
-def unpack(params, num_cams, num_points):
+def unpack(params, num_cams, num_points, fixed_R0, fixed_t0):
     """
     Unpack the 1D parameter vector into camera rotations, translations, and 3D points.
 
@@ -59,8 +60,11 @@ def unpack(params, num_cams, num_points):
     ts = []
     Xs = []
 
+    Rs.append(np.asarray(fixed_R0, dtype=float))
+    ts.append(np.asarray(fixed_t0, dtype=float))
+
     idx = 0
-    for _ in range(num_cams):
+    for _ in range(1, num_cams):
         rvec = params[idx : idx + 3]
         R = Rot.from_rotvec(rvec).as_matrix()
         idx += 3
@@ -77,7 +81,9 @@ def unpack(params, num_cams, num_points):
     return Rs, ts, Xs
 
 
-def residual(params, points_2d, n_cameras, n_points, V, K, point2d_idx_map):
+def residual(
+    params, points_2d, n_cameras, n_points, V, K, point2d_idx_map, fixed_R0, fixed_t0
+):
     """
     this function will return the residual and will be used for the actual least squares optimization
     points_world are all of the 3d points on the map, The optimizer is going to need to know what the 2d point projection of each X
@@ -92,8 +98,10 @@ def residual(params, points_2d, n_cameras, n_points, V, K, point2d_idx_map):
     :param K: intrinsic camera matrix
     :param V: visibility matrix
     :param point2d_idx_map: connects every 2d point with the 3d point that it is a projection of
+    :param fixed_R0, fixed_t0: the first camera pose is fixed to these values to fix the gauge freedom
+    :return: the residuals for all of the points in all of the cameras, this is what the optimizer is going to minimize
     """
-    Rs, ts, Xs = unpack(params, n_cameras, n_points)
+    Rs, ts, Xs = unpack(params, n_cameras, n_points, fixed_R0, fixed_t0)
 
     res = []
 
@@ -124,7 +132,7 @@ def build_sparsity(num_cams, num_points, V):
     This function is used to make a sparsity matrix that can be passed to the optimizer so that it runs much faster
     it knows which derivatives are zero so that the optimizer doesn't have to calculate them
     """
-    n_params = num_cams * 6 + num_points * 3
+    n_params = (num_cams - 1) * 6 + num_points * 3
     # each pair of camera and points will give you 2 residuals, error for u and error for v
     n_residuals = int(np.sum(V)) * 2
 
@@ -141,14 +149,18 @@ def build_sparsity(num_cams, num_points, V):
 
                     # each camera has 6 parameters, 3 for rotation and 3 for translation
                     # 2 residuals depend on these 6 params
-                    camera_cols = list(range(i * 6, i * 6 + 6))
-                    rows.extend([row] * 6)
-                    cols.extend(camera_cols)
+                    if i > 0:
+                        cam_offset = (i - 1) * 6
+                        camera_cols = list(range(cam_offset, cam_offset + 6))
+                        rows.extend([row] * 6)
+                        cols.extend(camera_cols)
 
                     # each point has 3 parameters, X, Y and Z
                     # 2 residuals depend on these 3 params
                     point_cols = list(
-                        range(num_cams * 6 + j * 3, num_cams * 6 + j * 3 + 3)
+                        range(
+                            (num_cams - 1) * 6 + j * 3, (num_cams - 1) * 6 + j * 3 + 3
+                        )
                     )
                     rows.extend([row] * 3)
                     cols.extend(point_cols)
@@ -187,6 +199,8 @@ def bundleAdjustment(
     Rts = [K_inv @ P for P in all_proj_matrices]
     Rs = [Rt[:, 0:3] for Rt in Rts]
     ts = [Rt[:, 3] for Rt in Rts]
+    fixed_R0 = Rs[0].copy()
+    fixed_t0 = ts[0].copy()
 
     n_cameras = V.shape[0]
     n_points = V.shape[1]
@@ -208,11 +222,20 @@ def bundleAdjustment(
     result = least_squares(
         residual,
         initial_params,
-        args=(points_2d, n_cameras, n_points, V, K, cam_point_ind_map),
+        args=(
+            points_2d,
+            n_cameras,
+            n_points,
+            V,
+            K,
+            cam_point_ind_map,
+            fixed_R0,
+            fixed_t0,
+        ),
         jac_sparsity=sparsity,
     )
 
-    Rs_opt, ts_opt, Xs_opt = unpack(result.x, n_cameras, n_points)
+    Rs_opt, ts_opt, Xs_opt = unpack(result.x, n_cameras, n_points, fixed_R0, fixed_t0)
     # make array of a list created with list comprehension
     final_poses = np.array(
         [np.hstack([R, t.reshape(3, 1)]) for R, t in zip(Rs_opt, ts_opt)]
