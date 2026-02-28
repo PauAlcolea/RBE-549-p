@@ -61,8 +61,9 @@ def pnpRANSAC(
 
     # ensure we have enough inliers; if not, return original input for stability
     if len(most_inliers_xs) < 6:
-        most_inliers_xs = xs.tolist()
-        most_inliers_Xs = Xs.tolist()
+        # try again with more leniency if not enough inliers found
+        print("Not enough inliers found, trying again with a higher threshold...")
+        return pnpRANSAC(xs, Xs, K, n_iterations, inlier_thresh + 5)
 
     # now pass that set of most inliers back to the linear pnp to get the real pose
     final_R, final_T = linearPnP(
