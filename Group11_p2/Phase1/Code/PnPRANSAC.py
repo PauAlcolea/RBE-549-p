@@ -46,9 +46,8 @@ def pnpRANSAC(
             X_tilde = np.append(X, 1)
 
             # measure the reprojection error
-            e = (u - (P_1 @ X_tilde) / (P_3 @ X_tilde)) ** 2 + (
-                v - (P_2 @ X_tilde) / (P_3 @ X_tilde)
-            ) ** 2
+            denom = max(P_3 @ X_tilde, 1e-6)  # avoid division by zero
+            e = (u - (P_1 @ X_tilde) / denom) ** 2 + (v - (P_2 @ X_tilde) / denom) ** 2
 
             # if error is below threshold, it counts as inlier
             if e < inlier_thresh:

@@ -548,7 +548,7 @@ def sfm_pipeline(
 
     # remove extreme outliers from triangulated points before nonlinear refinement
     base_pair_inliers_filt, base_pair_XYZ_est = filter_triangulation_outliers(
-        base_pair_inlier_matches, base_pair_XYZ_est, base_P1, base_P2, inlier_thresh=5.0
+        base_pair_inlier_matches, base_pair_XYZ_est, base_P1, base_P2, inlier_thresh=8.0
     )
 
     # nonlinear triangulation to refine 3D points
