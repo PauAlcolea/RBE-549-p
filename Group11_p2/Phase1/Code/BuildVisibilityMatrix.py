@@ -28,10 +28,10 @@ def visibilityMatrix(final_3D_world, points_for_poses) -> np.ndarray:
     This function builds the Visibility Matrix, a binary matrix that represents if a point is seen by a camera
 
 
-    :param final_3D_world: is the set of all 3D points available, no matter what camera sees them
-    :param points_for_poses: I envision this being a list with the same number of elements as poses / cameras / viewpoints
-        each element should be a list or array of some sort containing all of the 3D or 2D points for that viewpoint
-    :return: the visubility matrix ixj
+    :param final_3D_world: (M, 3) the set of all 3D points available, no matter what camera sees them
+    :param points_for_poses: a list of length N (number of cameras) where each element is an array of
+    shape (num_points_seen_by_that_camera, 3) representing the 3D points observed by that camera
+    :return: (N, M) visibility matrix where V[i, j] = 1 if camera i sees point j
     """
     V = np.zeros(shape=(len(points_for_poses), len(final_3D_world)))
 
