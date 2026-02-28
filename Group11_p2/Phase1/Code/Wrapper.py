@@ -331,7 +331,10 @@ def print_outputs(
     image_points_pnp: List[np.ndarray] = None,
     bundle_adjustment_poses: List[np.ndarray] = None,
     bundle_adjustment_points: np.ndarray = None,
+    observed_points_bundle: List[np.ndarray] | None = None,
+    visibility_matrix: np.ndarray | None = None,
     camera_centers: np.ndarray | None = None,
+    final_camera_centers: np.ndarray | None = None,
     plot_flags: set[str] | None = None,
 ) -> None:
     """
@@ -386,8 +389,15 @@ def print_outputs(
             )
             plot_triangulation(
                 bundle_adjustment_points,
-                camera_centers=camera_centers,
+                camera_centers=final_camera_centers,
                 title=f"Bundle Adjustment points for all views",
+            )
+            plot_triangulation(
+                np.concatenate([world_points_refined] + world_points_pnp, axis=0),
+                bundle_adjustment_points,
+                camera_centers=final_camera_centers,
+                title=f"PnP and Bundle Adjustment points for all views",
+                set_labels=["pre-Bundle Adjustment", "post-Bundle Adjustment"],
             )
 
         # visualize reprojection
@@ -423,16 +433,21 @@ def print_outputs(
                     world_points=world_points_pnp[k],
                     title=f"Nonlinear PnP Reprojection of 3D points for image {img_id}",
                 )
-            for m, (pose, img_id) in enumerate(
-                zip(bundle_adjustment_poses, extra_image_ids)
-            ):
-                plot_reprojection(
-                    img_id,
-                    image_points_pnp[m][:, 1, :],
-                    pose,
-                    world_points=bundle_adjustment_points,
-                    title=f"Bundle Adjustment Reprojection of 3D points for image {img_id}",
-                )
+                for cam_idx, (pose, img_id) in enumerate(
+                    zip(
+                        bundle_adjustment_poses,
+                        [current_image_id, other_image_id] + extra_image_ids,
+                    )
+                ):
+                    plot_reprojection(
+                        img_id,
+                        observed_points_bundle[cam_idx],
+                        pose,
+                        world_points=bundle_adjustment_points[
+                            np.where(visibility_matrix[cam_idx] == 1)[0]
+                        ],
+                        title=f"Bundle Adjustment Reprojection of 3D points for image {img_id}",
+                    )
 
         # visualize epipolar lines
         if "e" in plot_flags:
@@ -596,6 +611,8 @@ def sfm_pipeline(
         xs_new_camera = new_inliers[:, 1, :]
         observed_points_2d.append(xs_new_camera)
 
+    observed_points_2d = [np.asarray(pts, dtype=float) for pts in observed_points_2d]
+
     # bundle adjustment to refine all camera poses and 3D points
     final_poses, final_points = bundleAdjustment(
         K, V, all_poses, all_world_points, observed_points_2d
@@ -628,6 +645,9 @@ def sfm_pipeline(
         image_points_pnp,
         final_poses,
         final_points,
+        observed_points_2d,
+        V,
+        camera_centers,
         refined_camera_centers,
         plot_flags,
     )
