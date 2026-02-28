@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.sparse import lil_matrix
 from scipy.optimize import least_squares
-import cv2
+from scipy.spatial.transform import Rotation as Rot
 
 
 def project_points(Xs, R, t, K):
@@ -28,7 +28,7 @@ def pack(Rs, ts, Xs) -> np.ndarray:
     """
     params = []
     for R, t in zip(Rs, ts):
-        rvec, _ = cv2.Rodrigues(R)
+        rvec = Rot.from_matrix(R).as_rotvec()
         params.append(
             np.concatenate(
                 (
@@ -62,7 +62,7 @@ def unpack(params, num_cams, num_points):
     idx = 0
     for _ in range(num_cams):
         rvec = params[idx : idx + 3]
-        R, _ = cv2.Rodrigues(rvec)
+        R = Rot.from_rotvec(rvec).as_matrix()
         idx += 3
         t = params[idx : idx + 3]
         idx += 3
