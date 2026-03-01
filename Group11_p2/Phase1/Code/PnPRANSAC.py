@@ -17,6 +17,7 @@ def pnpRANSAC(
     :param K: the camera internal matrix
     :param n_iterations: number of RANSAC iterations
     :param inlier_thresh: threshold for inlier detection, in pixels^2
+    :return: the best camera pose [R|t] and the inlier 2D-3D correspondences for that pose
     """
     n = 0  # maximum inlier count so far, used to select the best set
     N = 6  # How many inliers are going to be passed to the Linear PnP
@@ -45,9 +46,8 @@ def pnpRANSAC(
             X_tilde = np.append(X, 1)
 
             # measure the reprojection error
-            e = (u - (P_1 @ X_tilde) / (P_3 @ X_tilde)) ** 2 + (
-                v - (P_2 @ X_tilde) / (P_3 @ X_tilde)
-            ) ** 2
+            denom = max(P_3 @ X_tilde, 1e-6)  # avoid division by zero
+            e = (u - (P_1 @ X_tilde) / denom) ** 2 + (v - (P_2 @ X_tilde) / denom) ** 2
 
             # if error is below threshold, it counts as inlier
             if e < inlier_thresh:
@@ -61,8 +61,8 @@ def pnpRANSAC(
 
     # ensure we have enough inliers; if not, return original input for stability
     if len(most_inliers_xs) < 6:
-        most_inliers_xs = xs.tolist()
-        most_inliers_Xs = Xs.tolist()
+        # try again with more leniency if not enough inliers found
+        return pnpRANSAC(xs, Xs, K, n_iterations, inlier_thresh + 5)
 
     # now pass that set of most inliers back to the linear pnp to get the real pose
     final_R, final_T = linearPnP(

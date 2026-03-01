@@ -1,8 +1,211 @@
 import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
+from typing import List
+from NonlinearTriangulation import project_point
 
 
+######## filtering helper functions to avoid having to zoom in the plots ########
+def filter_triangulation_outliers(
+    inliers: np.ndarray,
+    world_points_est: np.ndarray,
+    P1: np.ndarray,
+    P2: np.ndarray,
+    inlier_thresh: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    filter out triangulated points with high reprojection error or negative depth
+    """
+    rms_thresh = 2.0 * inlier_thresh
+    mask_list: list[bool] = []
+
+    for corr, X in zip(inliers, world_points_est):
+        x1_uv, x2_uv = corr
+        uv1_hat = project_point(P1, X)
+        uv2_hat = project_point(P2, X)
+
+        err1 = np.linalg.norm(x1_uv - uv1_hat)
+        err2 = np.linalg.norm(x2_uv - uv2_hat)
+        rms = np.sqrt(0.5 * (err1**2 + err2**2))
+
+        X_h = np.hstack([X, 1.0])
+        _, _, z1 = P1 @ X_h
+        _, _, z2 = P2 @ X_h
+
+        mask_list.append((z1 > 0.0) and (z2 > 0.0) and (rms <= rms_thresh))
+
+    mask = np.array(mask_list, dtype=bool)
+    if not np.any(mask):
+        return inliers, world_points_est
+    return inliers[mask], world_points_est[mask]
+
+
+def triangulation_outlier_mask(
+    inliers: np.ndarray,
+    world_points: np.ndarray,
+    P1: np.ndarray,
+    P2: np.ndarray,
+    inlier_thresh: float = 4.0,
+) -> np.ndarray:
+    filtered_inliers, _ = filter_triangulation_outliers(
+        inliers, world_points, P1, P2, inlier_thresh=inlier_thresh
+    )
+    if len(filtered_inliers) == len(inliers):
+        return np.ones(len(inliers), dtype=bool)
+    return np.isin(inliers, filtered_inliers).all(axis=(1, 2))
+
+
+def point_cloud_mask(points: np.ndarray, filter_thresh: float = 3.0) -> np.ndarray:
+    """
+    build a plot/error-only mask that removes gross spatial outliers.
+    """
+    points = np.asarray(points, dtype=float)
+    if len(points) == 0:
+        return np.zeros(0, dtype=bool)
+
+    finite_mask = np.all(np.isfinite(points), axis=1)
+    radii = np.linalg.norm(points, axis=1)
+    positive_radii = radii[(radii > 0) & finite_mask]
+    if len(positive_radii) == 0:
+        return finite_mask
+
+    r_med = np.median(positive_radii)
+    radius_mask = (radii > 0) & (radii < filter_thresh * r_med)
+    mask = finite_mask & radius_mask
+    if not np.any(mask):
+        return finite_mask
+    return mask
+
+
+def filter_correspondence_set_for_plot(
+    correspondences: np.ndarray,
+    world_points: np.ndarray,
+    filter_thresh: float = 3.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    filter a triangulated point set and its paired image correspondences for reporting only.
+    """
+    mask = point_cloud_mask(world_points, filter_thresh=filter_thresh)
+    if len(mask) == 0:
+        return correspondences, world_points
+    return correspondences[mask], world_points[mask]
+
+
+def filter_ba_for_reporting(
+    world_points: np.ndarray,
+    observed_points: List[np.ndarray],
+    visibility: np.ndarray,
+    filter_thresh: float = 3.0,
+) -> tuple[np.ndarray, List[np.ndarray], np.ndarray]:
+    """
+    filter points for plotting while preserving observation alignment.
+    """
+    mask = point_cloud_mask(world_points, filter_thresh=filter_thresh)
+    if len(mask) == 0 or np.all(mask):
+        return world_points, observed_points, visibility
+
+    filtered_points = world_points[mask]
+    filtered_visibility = visibility[:, mask]
+    filtered_observations: list[np.ndarray] = []
+
+    for cam_idx, pts in enumerate(observed_points):
+        visible_indices = np.where(visibility[cam_idx] == 1)[0]
+        keep = mask[visible_indices]
+        filtered_observations.append(np.asarray(pts, dtype=float)[keep])
+
+    return filtered_points, filtered_observations, filtered_visibility
+
+
+######## reprojection error ########
+def _compute_reproj_err(
+    world_points: np.ndarray,
+    image_points: np.ndarray | List[np.ndarray],
+    proj_matrices: np.ndarray | List[np.ndarray],
+    visibility: np.ndarray | None = None,
+) -> float:
+    """
+    compute reprojection error for one or more views
+    """
+
+    def _as_list_of_arrays(x):
+        return (
+            [np.asarray(v, dtype=float) for v in x]
+            if isinstance(x, list)
+            else [np.asarray(x, dtype=float)]
+        )
+
+    world_points = np.asarray(world_points, dtype=float)
+    image_points_list = _as_list_of_arrays(image_points)
+    proj_matrix_list = _as_list_of_arrays(proj_matrices)
+
+    all_errors = []
+    for i, (x_obs, P) in enumerate(zip(image_points_list, proj_matrix_list)):
+        visible_world_points = (
+            world_points
+            if visibility is None
+            else world_points[np.where(visibility[i] == 1)[0]]
+        )
+        if len(x_obs) == 0:
+            continue
+        view_errors = [
+            np.linalg.norm(x - project_point(P, X))
+            for X, x in zip(visible_world_points, x_obs)
+        ]
+        all_errors.extend(view_errors)
+
+    return float(np.mean(all_errors))
+
+
+def base_pair_reproj_errors(base_pair_outputs) -> tuple[float, float]:
+    observations = [
+        base_pair_outputs.inliers[:, 0, :],
+        base_pair_outputs.inliers[:, 1, :],
+    ]
+    return (
+        _compute_reproj_err(
+            base_pair_outputs.world_linear,
+            observations,
+            base_pair_outputs.proj_matrices,
+        ),
+        _compute_reproj_err(
+            base_pair_outputs.world_refined,
+            observations,
+            base_pair_outputs.proj_matrices,
+        ),
+    )
+
+
+def pnp_reproj_errors(pnp_outputs) -> tuple[List[float], List[float]]:
+    linear_errors: List[float] = []
+    refined_errors: List[float] = []
+
+    for pose_lin, pose_ref, matches_uv, points_xyz in zip(
+        pnp_outputs.proj_matrices_linear,
+        pnp_outputs.proj_matrices_refined,
+        pnp_outputs.image_points,
+        pnp_outputs.world_points,
+    ):
+        observations = (
+            np.asarray(matches_uv, dtype=float)
+            if len(matches_uv)
+            else np.empty((0, 2), dtype=float)
+        )
+        linear_errors.append(_compute_reproj_err(points_xyz, observations, pose_lin))
+        refined_errors.append(_compute_reproj_err(points_xyz, observations, pose_ref))
+
+    return linear_errors, refined_errors
+
+
+def ba_reproj_error(ba_outputs) -> float:
+    return _compute_reproj_err(
+        ba_outputs.points,
+        ba_outputs.observed_points,
+        ba_outputs.proj_matrices,
+        visibility=ba_outputs.visibility,
+    )
+
+
+######## visualization functions ########
 def plot_triangulation(
     *point_sets: np.ndarray,
     camera_centers: np.ndarray | None = None,
@@ -208,106 +411,6 @@ def _draw_line(
         ys = np.array([0.0, float(h - 1)])
 
     ax.plot(xs + x_offset, ys, **kwargs)
-
-
-def plot_epipolar_lines(
-    current_image_id: int,
-    other_image_id: int,
-    F: np.ndarray,
-    correspondences: np.ndarray,
-    max_lines: int = 50,
-    title: str | None = None,
-) -> None:
-    """Overlay epipolar lines induced by matched points on both images.
-
-    For each correspondence (u1, v1) <-> (u2, v2):
-    - draw the epipolar line of (u1, v1) in image 2 (using F x1)
-    - draw the epipolar line of (u2, v2) in image 1 (using F^T x2)
-    """
-
-    F = np.asarray(F, dtype=float)
-    corr = np.asarray(correspondences, dtype=float)
-
-    if corr.ndim != 3 or corr.shape[1:] != (2, 2):
-        raise ValueError("correspondences must have shape (N, 2, 2)")
-
-    img_left = _load_image(current_image_id)
-    img_right = _load_image(other_image_id)
-
-    h1, w1 = img_left.shape[:2]
-    h2, w2 = img_right.shape[:2]
-    h = max(h1, h2)
-
-    canvas = np.ones((h, w1 + w2, 3), dtype=float)
-
-    def _to_float(img: np.ndarray) -> np.ndarray:
-        if img.dtype == np.uint8:
-            return img.astype(float) / 255.0
-        return img.astype(float)
-
-    img_left_f = _to_float(img_left)
-    img_right_f = _to_float(img_right)
-
-    canvas[:h1, :w1, : img_left_f.shape[2]] = img_left_f
-    canvas[:h2, w1 : w1 + w2, : img_right_f.shape[2]] = img_right_f
-
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.imshow(canvas)
-
-    N = corr.shape[0]
-    if N == 0:
-        raise ValueError("No correspondences provided for epipolar visualization")
-
-    # Subsample if too many lines
-    step = max(1, N // max_lines) if N > max_lines else 1
-    indices = np.arange(0, N, step)
-
-    for i in indices:
-        (u1, v1), (u2, v2) = corr[i]
-
-        # Line in image 2 from point in image 1
-        a2, b2, c2 = _epipolar_line(F, u1, v1)
-        _draw_line(
-            ax,
-            a2,
-            b2,
-            c2,
-            x_offset=w1,
-            w=w2,
-            h=h,
-            color="orange",
-            linewidth=0.75,
-            alpha=0.8,
-        )
-
-        # Line in image 1 from point in image 2
-        a1, b1, c1 = _epipolar_line(F.T, u2, v2)
-        _draw_line(
-            ax,
-            a1,
-            b1,
-            c1,
-            x_offset=0.0,
-            w=w1,
-            h=h,
-            color="cyan",
-            linewidth=0.75,
-            alpha=0.8,
-        )
-
-    # Also plot the original points for reference
-    pts1 = corr[:, 0, :]
-    pts2 = corr[:, 1, :]
-    ax.scatter(pts1[:, 0], pts1[:, 1], c="red", s=3, label="pts img1")
-    ax.scatter(pts2[:, 0] + w1, pts2[:, 1], c="lime", s=3, label="pts img2")
-
-    if title is None:
-        title = "Epipolar lines in both images"
-    ax.set_title(title)
-    ax.set_axis_off()
-    ax.legend(loc="best")
-    plt.tight_layout()
-    plt.show()
 
 
 def plot_reprojection(

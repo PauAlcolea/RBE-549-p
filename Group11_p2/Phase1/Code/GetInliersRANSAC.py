@@ -3,26 +3,28 @@ from EstimateFundamentalMatrix import estimateFundamentalMat
 
 
 def getInliersRANSAC(
-    correspondences: np.ndarray, n_iterations: int = 1000, inlier_thresh: float = 50.0
+    correspondences_2d: np.ndarray,
+    n_iterations: int = 1000,
+    inlier_thresh: float = 50.0,
 ) -> np.ndarray:
     """
     get inliers from RANSAC
     error metric is Sampson distance, as used in MATLAB estimateFundamentalMatrix()
 
-    :param correspondences: (N, 2, 2) array, each [[u1, v1], [u2, v2]]
+    :param correspondences_2d: (N, 2, 2) array, each [[u1, v1], [u2, v2]]
     :param n_iterations: number of RANSAC iterations
     :param inlier_thresh: threshold for inlier detection, in pixels^2
-    :return: (M, 2, 2) array of inliers
+    :return: tuple of (F, inliers) where F is the estimated fundamental matrix and inliers is an (M, 2, 2) array of inlier correspondences
     """
     best_inlier_indices = None
     best_count = 0
 
-    num_corr = len(correspondences)
+    num_corr = len(correspondences_2d)
 
     for _ in range(n_iterations):
         # randomly select 8 correspondences
         indices = np.random.choice(num_corr, size=8, replace=False)
-        subset = correspondences[indices]
+        subset = correspondences_2d[indices]
 
         # estimate F for this subset
         F_subset = estimateFundamentalMat(subset)
@@ -30,14 +32,14 @@ def getInliersRANSAC(
         # form homogenous coordinates for all correspondences
         pts1 = np.hstack(
             (
-                correspondences[:, 0, :],
-                np.ones((num_corr, 1), dtype=correspondences.dtype),
+                correspondences_2d[:, 0, :],
+                np.ones((num_corr, 1), dtype=correspondences_2d.dtype),
             )
         )
         pts2 = np.hstack(
             (
-                correspondences[:, 1, :],
-                np.ones((num_corr, 1), dtype=correspondences.dtype),
+                correspondences_2d[:, 1, :],
+                np.ones((num_corr, 1), dtype=correspondences_2d.dtype),
             )
         )
 
@@ -67,5 +69,13 @@ def getInliersRANSAC(
     if best_inlier_indices is None or best_count == 0:
         return np.empty((0, 2, 2), dtype=float)
 
-    best_inliers = correspondences[best_inlier_indices].astype(float)
-    return best_inliers
+    best_inliers = correspondences_2d[best_inlier_indices].astype(float)
+    if best_inliers.size >= 8:
+        F = estimateFundamentalMat(best_inliers)
+    else:
+        raise ValueError(
+            f"Not enough inliers between base pair "
+            f"found {best_inliers.size}, need at least 8"
+        )
+
+    return F, best_inliers
