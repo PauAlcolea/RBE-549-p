@@ -108,7 +108,7 @@ def residual(
     # go through every camera
     for i in range(n_cameras):
         # get all points visible to this camera
-        visible_point_indices = sorted(point2d_idx_map[i].keys())
+        visible_point_indices = [j for j in range(n_points) if V[i, j] == 1]
         if not visible_point_indices:
             continue
 
@@ -209,9 +209,12 @@ def bundleAdjustment(
     # making a dictionary to 3d points corresponding to which rows in points_2d[i]
     cam_point_ind_map = []
     for i in range(n_cameras):
-        visible_indices = [j for j in range(n_points) if V[i, j] == 1]
-        n_use = min(len(visible_indices), len(points_2d[i]))
-        idx_map = {visible_indices[k]: k for k in range(n_use)}
+        idx_map = {}
+        point_counter = 0
+        for j in range(n_points):
+            if V[i, j] == 1:
+                idx_map[j] = point_counter
+                point_counter += 1
         cam_point_ind_map.append(idx_map)
 
     initial_params = pack(Rs, ts, points_world)
