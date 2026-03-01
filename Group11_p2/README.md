@@ -12,8 +12,7 @@ options:
                           i=inliers, 
                           t=triangulation, 
                           r=reprojection, 
-                          p=possible poses, 
-                          e=epipolar lines. 
+                          p=possible poses.
                           If -p is given with no flags,
                         all are shown.
   -v, --verbose         Print additional information while running
