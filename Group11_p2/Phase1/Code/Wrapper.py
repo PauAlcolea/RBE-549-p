@@ -818,13 +818,20 @@ def main() -> None:
     else:
         plot_flags = set(args.plot)
 
-    sfm_pipeline(
-        current_image_id=1,
-        other_image_id=2,
-        extra_image_ids=[3, 4, 5],
-        plot_flags=plot_flags,
-        verbose=args.verbose,
-    )
+    while True:
+        try:
+            sfm_pipeline(
+                current_image_id=1,
+                other_image_id=2,
+                extra_image_ids=[3, 4, 5],
+                plot_flags=plot_flags,
+                verbose=args.verbose,
+            )
+        except IndexError:
+            if args.verbose:
+                print("Error encountered in bundle adjustment; retrying...")
+            continue
+        break
 
     return
 
