@@ -17,6 +17,7 @@ from BundleAdjustment import bundleAdjustment
 from Visualization import (
     ba_reproj_error,
     base_pair_reproj_errors,
+    _compute_reproj_err,
     filter_ba_for_reporting,
     filter_correspondence_set_for_plot,
     filter_triangulation_outliers,
@@ -44,6 +45,8 @@ class PnPOutputs(NamedTuple):
     proj_matrices_refined: List[np.ndarray]
     world_points: List[np.ndarray]
     image_points: List[np.ndarray]
+    world_points_new: List[np.ndarray]
+    image_points_new: List[np.ndarray]
     camera_centers: List[np.ndarray]
 
 
@@ -302,7 +305,7 @@ def triangulate_additional_points(
     return np.concatenate(all_new_inliers, axis=0), np.concatenate(all_new_Xs, axis=0)
 
 
-def build_base_pair_outputs(
+def _build_base_pair_outputs(
     inliers: np.ndarray,
     world_linear: np.ndarray,
     world_refined: np.ndarray,
@@ -335,18 +338,20 @@ def build_base_pair_outputs(
     )
 
 
-def build_pnp_outputs(
+def _build_pnp_outputs(
     image_ids: List[int],
     proj_matrices_linear: List[np.ndarray],
     proj_matrices_refined: List[np.ndarray],
     world_points: List[np.ndarray],
     image_points: List[np.ndarray],
+    world_points_new: List[np.ndarray],
+    image_points_new: List[np.ndarray],
     camera_centers: List[np.ndarray],
 ) -> PnPOutputs:
     world_points_report: List[np.ndarray] = []
     image_points_report: List[np.ndarray] = []
 
-    for matches_uv, points_xyz in zip(image_points, world_points):
+    for matches_uv, points_xyz in zip(image_points_new, world_points_new):
         matches_uv_filt, points_xyz_filt = filter_correspondence_set_for_plot(
             matches_uv, points_xyz
         )
@@ -357,13 +362,15 @@ def build_pnp_outputs(
         image_ids=image_ids,
         proj_matrices_linear=proj_matrices_linear,
         proj_matrices_refined=proj_matrices_refined,
-        world_points=world_points_report,
-        image_points=image_points_report,
+        world_points=world_points,
+        image_points=image_points,
+        world_points_new=world_points_report,
+        image_points_new=image_points_report,
         camera_centers=camera_centers,
     )
 
 
-def build_ba_outputs(
+def _build_ba_outputs(
     proj_matrices: List[np.ndarray],
     points: np.ndarray,
     observed_points: List[np.ndarray],
@@ -506,9 +513,9 @@ def print_outputs(
             ):
                 plot_reprojection(
                     img_id,
-                    pnp_outputs.image_points[j][:, 1, :],
+                    pnp_outputs.image_points_new[j][:, 1, :],
                     pose,
-                    world_points=pnp_outputs.world_points[j],
+                    world_points=pnp_outputs.world_points_new[j],
                     title=f"Linear PnP Reprojection of 3D points for image {img_id}",
                 )
 
@@ -517,9 +524,9 @@ def print_outputs(
             ):
                 plot_reprojection(
                     img_id,
-                    pnp_outputs.image_points[k][:, 1, :],
+                    pnp_outputs.image_points_new[k][:, 1, :],
                     pose,
-                    world_points=pnp_outputs.world_points[k],
+                    world_points=pnp_outputs.world_points_new[k],
                     title=f"Nonlinear PnP Reprojection of 3D points for image {img_id}",
                 )
 
@@ -621,6 +628,8 @@ def sfm_pipeline(
     # projection matrices, point correspondences, and camera centers used for PnP
     proj_matrices_pnp: List[np.ndarray] = []
     proj_matrices_pnp_ref: List[np.ndarray] = []
+    inliers_pnp_uv: List[np.ndarray] = []
+    inliers_pnp_XYZ: List[np.ndarray] = []
     pnp_points_uv: List[np.ndarray] = []
     pnp_points_XYZ: List[np.ndarray] = []
     camera_centers_pnp = initial_camera_centers.copy()
@@ -652,16 +661,20 @@ def sfm_pipeline(
                 continue
 
             # PnP-RANSAC to estimate pose for new view
-            R_pnp_est, t_pnp_est, inliers_pnp_uv, inliers_pnp_XYZ = pnpRANSAC(
-                uv_new_view, XYZ_new_view, K, inlier_thresh=60
-            )
-            proj_pnp_est = _proj_from_Rt(R_pnp_est, t_pnp_est, K)
+            linear_pnp_err = np.inf
+            while linear_pnp_err > 1000:
+                R_pnp_est, t_pnp_est, inliers_pnp_uv_tmp, inliers_pnp_XYZ_tmp = (
+                    pnpRANSAC(uv_new_view, XYZ_new_view, K, inlier_thresh=40)
+                )
+                proj_pnp_est = _proj_from_Rt(R_pnp_est, t_pnp_est, K)
+                linear_pnp_err = _compute_reproj_err(
+                    inliers_pnp_XYZ_tmp, inliers_pnp_uv_tmp, proj_pnp_est
+                )
 
             # non linear pnp to refine pose for new view
             R_pnp_refined, t_pnp_refined = nonlinearPnP(
-                inliers_pnp_uv, inliers_pnp_XYZ, K, R_pnp_est, t_pnp_est
+                inliers_pnp_uv_tmp, inliers_pnp_XYZ_tmp, K, R_pnp_est, t_pnp_est
             )
-            proj_pnp_ref = _proj_from_Rt(R_pnp_refined, t_pnp_refined, K)
 
             # triangulate additional points for new refined view
             all_poses_Rt[new_image_id] = np.hstack(
@@ -673,11 +686,13 @@ def sfm_pipeline(
 
             # for visualization: store PnP projection matrices and camera centers
             proj_matrices_pnp.append(proj_pnp_est)
-            proj_matrices_pnp_ref.append(proj_pnp_ref)
+            proj_matrices_pnp_ref.append(_proj_from_Rt(R_pnp_refined, t_pnp_refined, K))
             camera_centers_pnp.append(-R_pnp_refined.T @ t_pnp_refined)
             pnp_image_ids.append(new_image_id)
 
             # for visualization: store inliers and corresponding 3D points
+            inliers_pnp_uv.append(inliers_pnp_uv_tmp)
+            inliers_pnp_XYZ.append(inliers_pnp_XYZ_tmp)
             pnp_points_uv.append(new_matches_uv)
             pnp_points_XYZ.append(new_triangulated_XYZ)
 
@@ -728,7 +743,7 @@ def sfm_pipeline(
     final_proj_matrices = [_proj_from_Rt(Rt[:, :3], Rt[:, 3], K) for Rt in final_poses]
 
     # for visualization: organize outputs into named tuples for cleaner print function
-    base_pair_outputs = build_base_pair_outputs(
+    base_pair_outputs = _build_base_pair_outputs(
         inliers=base_pair_inlier_matches,
         world_linear=base_pair_XYZ_est,
         world_refined=base_pair_XYZ_ref,
@@ -736,16 +751,18 @@ def sfm_pipeline(
         camera_centers=initial_camera_centers,
     )
 
-    pnp_outputs = build_pnp_outputs(
+    pnp_outputs = _build_pnp_outputs(
         image_ids=pnp_image_ids,
         proj_matrices_linear=proj_matrices_pnp,
         proj_matrices_refined=proj_matrices_pnp_ref,
-        world_points=pnp_points_XYZ,
-        image_points=pnp_points_uv,
+        world_points=inliers_pnp_XYZ,
+        image_points=inliers_pnp_uv,
+        world_points_new=pnp_points_XYZ,
+        image_points_new=pnp_points_uv,
         camera_centers=camera_centers_pnp,
     )
 
-    ba_outputs = build_ba_outputs(
+    ba_outputs = _build_ba_outputs(
         proj_matrices=final_proj_matrices,
         points=final_points,
         observed_points=all_image_points,

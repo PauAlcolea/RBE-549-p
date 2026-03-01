@@ -186,7 +186,9 @@ def pnp_reproj_errors(pnp_outputs) -> tuple[List[float], List[float]]:
         pnp_outputs.world_points,
     ):
         observations = (
-            matches_uv[:, 1, :] if len(matches_uv) else np.empty((0, 2), dtype=float)
+            np.asarray(matches_uv, dtype=float)
+            if len(matches_uv)
+            else np.empty((0, 2), dtype=float)
         )
         linear_errors.append(_compute_reproj_err(points_xyz, observations, pose_lin))
         refined_errors.append(_compute_reproj_err(points_xyz, observations, pose_ref))
