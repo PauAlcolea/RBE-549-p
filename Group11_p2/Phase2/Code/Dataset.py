@@ -16,8 +16,9 @@ class NeRFDataset:
     dataset class for NeRF training (bypassing PyTorch Dataset/DataLoader)
     """
 
-    def __init__(self, data_dir, device="cuda"):
+    def __init__(self, data_dir, batch_size, device="cuda"):
         self.data_dir = Path(data_dir)
+        self.batch_size = batch_size
         self.device = torch.device(device)
         self.json_data = self._load_json()
         self.images = self._load_images()
@@ -98,8 +99,8 @@ class NeRFDataset:
         idx = random.randint(0, len(self) - 1)
         return self.get_sample(idx)
 
-    def get_batch(self, batch_size):
-        idxs = random.sample(range(len(self)), batch_size)
+    def get_batch(self):
+        idxs = random.sample(range(len(self)), self.batch_size)
         origins, directions, rgbs = zip(*(self.get_sample(idx) for idx in idxs))
         return (
             torch.stack(origins),
@@ -107,8 +108,8 @@ class NeRFDataset:
             torch.stack(rgbs),
         )
 
-    def get_batch_from_index(self, start_idx, batch_size):
-        end_idx = min(start_idx + batch_size, len(self))
+    def get_batch_from_index(self, start_idx):
+        end_idx = min(start_idx + self.batch_size, len(self))
         batch = []
         for idx in range(start_idx, end_idx):
             batch.append(self.get_sample(idx))
