@@ -10,6 +10,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 from argparse import ArgumentParser
 
+from Dataset import NeRFDataset
 
 def train():
     pass
