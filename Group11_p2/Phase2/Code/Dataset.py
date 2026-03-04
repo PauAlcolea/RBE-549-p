@@ -7,13 +7,18 @@ import json
 from pathlib import Path
 
 
+def _as_tensor(self, data):
+    return torch.from_numpy(np.stack(data)).float().clone()
+
+
 class NeRFDataset:
     """
     dataset class for NeRF training (bypassing PyTorch Dataset/DataLoader)
     """
 
-    def __init__(self, data_dir):
+    def __init__(self, data_dir, device="cuda"):
         self.data_dir = Path(data_dir)
+        self.device = torch.device(device)
         self.json_data = self._load_json()
         self.images = self._load_images()
         self.h = self.images[0].shape[0]
@@ -29,10 +34,10 @@ class NeRFDataset:
 
     def _load_images(self):
         images = []
-        for name in os.listdir(self.data_dir):
+        for name in sorted(os.listdir(self.data_dir)):
             img = imageio.imread(os.path.join(self.data_dir, name)) / 255.0
             images.append(img)
-        return images
+        return _as_tensor(images)
 
     def _compute_intrinsics(self):
         FOV_x = self.json_data["camera_angle_x"]
@@ -40,27 +45,25 @@ class NeRFDataset:
         K = np.array(
             [[f, 0, self.w / 2], [0, f, self.h / 2], [0, 0, 1]], dtype=np.float32
         )
-        return K
+        return _as_tensor(K)
 
     def _get_poses(self):
         poses = []
         for frame in self.json_data["frames"]:
             poses.append(np.array(frame["transform_matrix"], dtype=np.float32))
-        return poses
+        return _as_tensor(poses)
 
     def _get_camera_ray_directions(self):
         """
         for each pixel compute ray direction from camera center through that pixel
         """
         # create grid of homogeneous pixel coordinates
-        i, j = np.meshgrid(np.arange(self.w), np.arange(self.h), indexing="xy")
-        pixel_coords = np.stack([i, j, np.ones_like(i)], axis=-1)
+        i, j = torch.meshgrid(torch.arange(self.w), torch.arange(self.h), indexing="ij")
+        pixel_coords = torch.stack([i, j, torch.ones_like(i)], dim=-1)
         # compute ray directions in camera space
-        ray_directions = pixel_coords @ np.linalg.inv(self.K).T
+        ray_directions = pixel_coords @ torch.linalg.inv(self.K).T
         ray_directions[..., 1:] *= -1  # match NeRF convention
-        ray_directions = ray_directions / np.linalg.norm(
-            ray_directions, axis=-1, keepdims=True
-        )
+        ray_directions = ray_directions / ray_directions.norm(dim=-1, keepdim=True)
         return ray_directions
 
     def _get_rays_for_image(self, idx):
@@ -70,7 +73,7 @@ class NeRFDataset:
         pose = self.poses[idx]
         R, t = pose[:3, :3], pose[:3, 3]
         ray_directions_world = self.ray_directions @ R.T
-        ray_origins_world = np.broadcast_to(t, ray_directions_world.shape)
+        ray_origins_world = t.view(1, 1, 3).expand_as(ray_directions_world)
         return ray_origins_world.reshape(-1, 3), ray_directions_world.reshape(-1, 3)
 
     def __len__(self):
@@ -92,15 +95,20 @@ class NeRFDataset:
         return ray_origins[pixel_idx], ray_directions[pixel_idx], rgb[pixel_idx]
 
     def get_random_sample(self):
-        idx = random.randint(0, len(self.images) - 1)
+        idx = random.randint(0, len(self) - 1)
         return self.get_sample(idx)
 
     def get_batch(self, batch_size):
-        for _ in range(batch_size):
-            yield self.get_random_sample()
+        idxs = random.sample(range(len(self)), batch_size)
+        origins, directions, rgbs = zip(*(self.get_sample(idx) for idx in idxs))
+        return (
+            torch.stack(origins),
+            torch.stack(directions),
+            torch.stack(rgbs),
+        )
 
     def get_batch_from_index(self, start_idx, batch_size):
-        end_idx = min(start_idx + batch_size, len(self.images) * self.h * self.w)
+        end_idx = min(start_idx + batch_size, len(self))
         batch = []
         for idx in range(start_idx, end_idx):
             batch.append(self.get_sample(idx))
