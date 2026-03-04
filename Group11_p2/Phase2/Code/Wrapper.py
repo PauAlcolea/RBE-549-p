@@ -23,6 +23,7 @@ def loadDataset(data_path, mode):
         images: images
         pose: corresponding camera pose in world frame
     """
+    pass
 
 def PixelToRay(camera_info, pose, pixelPosition, args):
     """
@@ -34,6 +35,7 @@ def PixelToRay(camera_info, pose, pixelPosition, args):
     Outputs:
         ray origin and direction
     """
+    pass
 
 def generateBatch(images, poses, camera_info, args):
     """
@@ -45,6 +47,7 @@ def generateBatch(images, poses, camera_info, args):
     Outputs:
         A set of rays
     """
+    pass
 
 def render(model, rays_origin, rays_direction, args):
     """
@@ -55,14 +58,18 @@ def render(model, rays_origin, rays_direction, args):
     Outputs:
         rgb values of input rays
     """
+    pass
 
 def loss(groundtruth, prediction):
+    pass
 
 
 def train(images, poses, camera_info, args):
+    pass
     
 
 def test(images, poses, camera_info, args):
+    pass
 
 
 def main(args):
@@ -77,6 +84,7 @@ def main(args):
         print("Start testing")
         args.load_checkpoint = True
         test(images, poses, camera_info, args)
+    return
 
 def configParser():
     parser = argparse.ArgumentParser()
