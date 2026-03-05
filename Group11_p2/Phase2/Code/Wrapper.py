@@ -7,6 +7,7 @@ import imageio
 import torch
 import matplotlib.pyplot as plt
 import os
+import numpy as np
 
 from NeRFModel import *
 
