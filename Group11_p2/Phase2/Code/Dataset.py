@@ -87,6 +87,14 @@ class NeRFDataset:
         rgb = self.images[idx]
         return rgb.reshape(-1, 3)
 
+    def get_image_rays(self, idx):
+        """
+        get all rays and RGB values for a given image
+        """
+        ray_origins, ray_directions = self._get_rays_for_image(idx)
+        rgb = self._get_image(idx)
+        return ray_origins, ray_directions, rgb, self.h, self.w
+
     def get_sample(self, idx):
         """
         get a single ray sample (origin, direction) and its corresponding RGB color

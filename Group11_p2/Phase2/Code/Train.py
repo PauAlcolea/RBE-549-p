@@ -15,6 +15,46 @@ from Dataset import NeRFDataset
 from NeRFModel import NeRFmodel
 
 
+def _render_view(model, dataset, img_idx=0, device="cuda", chunk_size=8192):
+    """
+    render a single view for validation
+    """
+    was_training = model.training
+    model.eval()
+
+    with torch.no_grad():
+        # get all rays and ground truth RGB values for the given image
+        ray_origins, ray_directions, rgb_gt, h, w = dataset.get_image_rays(img_idx)
+        ray_origins = ray_origins.to(device)
+        ray_directions = ray_directions.to(device)
+
+        num_rays = ray_origins.shape[0]
+        # pass rays through the model in smaller chunks to avoid memory errors
+        pred_chunks = []
+        for start in range(0, num_rays, chunk_size):
+            end = min(start + chunk_size, num_rays)
+            ro_chunk = ray_origins[start:end]
+            rd_chunk = ray_directions[start:end]
+
+            # FIXME: using fine model for rendering???
+            _, pred_rgb_fine = model(ro_chunk, rd_chunk)
+            pred_chunks.append(pred_rgb_fine.detach().cpu())
+
+        pred_rgb_flat = torch.cat(pred_chunks, dim=0)
+
+        # reshape to image and clamp to [0, 1]
+        pred_img = pred_rgb_flat.view(h, w, 3).permute(2, 0, 1)
+        pred_img = torch.clamp(pred_img, 0.0, 1.0)
+
+        gt_img = rgb_gt.view(h, w, 3).permute(2, 0, 1).cpu()
+        gt_img = torch.clamp(gt_img, 0.0, 1.0)
+
+    if was_training:
+        model.train()
+
+    return pred_img, gt_img
+
+
 def train(
     train_data_dir,
     val_data_dir,
@@ -24,6 +64,8 @@ def train(
     log_dir="logs",
     device="cuda",
     checkpoint_dir="checkpoints",
+    val_every=1000,
+    render_every=5000,
 ):
 
     # make a folder for checkpoints in case it doesn't exist
@@ -76,7 +118,7 @@ def train(
         global_step += ray_origin_batch.shape[0]
 
         #### validation ####
-        if (iter + 1) % 1000 == 0 or (iter + 1) == num_iters:
+        if (iter + 1) % val_every == 0 or (iter + 1) == num_iters:
             model.eval()
             val_loss = 0.0
 
@@ -101,6 +143,19 @@ def train(
                 torch.save(
                     model.state_dict(), os.path.join(checkpoint_dir, "best_model.pth")
                 )
+
+            # render sample view for tensorboard
+            if (iter + 1) % render_every == 0 or (iter + 1) == num_iters:
+                with torch.no_grad():
+                    pred_img, gt_img = _render_view(
+                        model,
+                        val_dataset,
+                        device=device,
+                        chunk_size=batch_size,
+                    )
+                writer.add_image("val/render_pred", pred_img, global_step)
+                writer.add_image("val/render_gt", gt_img, global_step)
+
             #### logging ####
             writer.add_scalars(
                 "loss/iter",
