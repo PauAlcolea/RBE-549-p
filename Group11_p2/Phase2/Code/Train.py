@@ -97,6 +97,7 @@ def train(
                 val_loss += loss.item() * ray_batch.shape[0]
 
         val_loss /= num_val_iters
+        best_val_loss = min(best_val_loss, val_loss)
 
         #### logging ####
         writer.add_scalars(
