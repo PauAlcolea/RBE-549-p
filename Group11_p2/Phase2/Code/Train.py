@@ -65,7 +65,9 @@ def train(
             ray_origin_batch, ray_direction_batch, rgb_batch = train_dataset.get_batch()
 
             # forward pass through the model to get predicted RGB values
-            pred_rgb_coarse, pred_rgb_fine = model(ray_origin_batch, ray_direction_batch)
+            pred_rgb_coarse, pred_rgb_fine = model(
+                ray_origin_batch, ray_direction_batch
+            )
 
             # loss calculation
             loss = model.compute_loss(pred_rgb_coarse, pred_rgb_fine, rgb_batch)
@@ -91,13 +93,21 @@ def train(
             num_val_iters = max(1, math.ceil(num_val_samples / batch_size))
 
             for _ in tqdm(range(num_val_iters), desc=f"Val {epoch}"):
-                ray_origin_batch, ray_direction_batch, rgb_batch = val_dataset.get_batch()
-                pred_rgb_coarse, pred_rgb_fine = model(ray_origin_batch, ray_direction_batch)
+                ray_origin_batch, ray_direction_batch, rgb_batch = (
+                    val_dataset.get_batch()
+                )
+                pred_rgb_coarse, pred_rgb_fine = model(
+                    ray_origin_batch, ray_direction_batch
+                )
                 loss = model.compute_loss(pred_rgb_coarse, pred_rgb_fine, rgb_batch)
                 val_loss += loss.item() * ray_origin_batch.shape[0]
 
         val_loss /= num_val_iters
-        best_val_loss = min(best_val_loss, val_loss)
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            torch.save(
+                model.state_dict(), os.path.join(checkpoint_dir, "best_model.pth")
+            )
 
         #### logging ####
         writer.add_scalars(
@@ -111,8 +121,6 @@ def train(
             f"train: {train_loss:.4f} | "
             f"val: {val_loss:.4f} | "
         )
-
-        # TODO: save model checkpoint
 
     writer.close()
 
