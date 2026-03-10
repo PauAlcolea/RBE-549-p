@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 
-def _as_tensor(self, data):
+def _as_tensor(data):
     return torch.from_numpy(np.stack(data)).float().clone()
 
 
