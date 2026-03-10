@@ -62,10 +62,10 @@ def train(
         # Progress Bar per epoch
         for _ in tqdm(range(num_train_iters), desc=f"Train {epoch}"):
             # sample a batch of rays and corresponding RGB values from the training dataset
-            ray_batch, rgb_batch = train_dataset.get_batch()
+            ray_origin_batch, ray_direction_batch, rgb_batch = train_dataset.get_batch()
 
             # forward pass through the model to get predicted RGB values
-            pred_rgb_coarse, pred_rgb_fine = model(ray_batch)
+            pred_rgb_coarse, pred_rgb_fine = model(ray_origin_batch, ray_direction_batch)
 
             # loss calculation
             loss = model.compute_loss(pred_rgb_coarse, pred_rgb_fine, rgb_batch)
@@ -75,9 +75,9 @@ def train(
             loss.backward()
             optimizer.step()
 
-            train_loss += loss.item() * ray_batch.shape[0]
+            train_loss += loss.item() * ray_origin_batch.shape[0]
             writer.add_scalar("train/loss_iter", loss.item(), global_step)
-            global_step += ray_batch.shape[0]
+            global_step += ray_origin_batch.shape[0]
 
         train_loss /= num_train_iters
 
@@ -91,10 +91,10 @@ def train(
             num_val_iters = max(1, math.ceil(num_val_samples / batch_size))
 
             for _ in tqdm(range(num_val_iters), desc=f"Val {epoch}"):
-                ray_batch, rgb_batch = val_dataset.get_batch()
-                pred_rgb_coarse, pred_rgb_fine = model(ray_batch)
+                ray_origin_batch, ray_direction_batch, rgb_batch = val_dataset.get_batch()
+                pred_rgb_coarse, pred_rgb_fine = model(ray_origin_batch, ray_direction_batch)
                 loss = model.compute_loss(pred_rgb_coarse, pred_rgb_fine, rgb_batch)
-                val_loss += loss.item() * ray_batch.shape[0]
+                val_loss += loss.item() * ray_origin_batch.shape[0]
 
         val_loss /= num_val_iters
         best_val_loss = min(best_val_loss, val_loss)
