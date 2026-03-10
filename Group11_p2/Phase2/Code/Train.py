@@ -8,8 +8,6 @@ import os
 import torch
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
-from argparse import ArgumentParser
-from pathlib import Path
 
 from Dataset import NeRFDataset
 from NeRFModel import NeRFmodel
@@ -166,35 +164,3 @@ def train(
             print(f"Iter {iter+1:07d} | " f"val: {val_loss:.4f} | ")
 
     writer.close()
-
-
-def main():
-    device = (
-        "cuda"
-        if torch.cuda.is_available()
-        else "mps" if torch.backends.mps.is_available() else "cpu"
-    )
-
-    parser = ArgumentParser()
-    parser.add_argument(
-        "-d",
-        "--dataset",
-        type=str,
-        default="lego",
-        choices=["lego", "ship"],
-        help="dataset to train on: lego or ship",
-    )
-    args = parser.parse_args()
-
-    top_data_dir = Path(__file__).parent.parent / "Data" / "nerf_synthetic"
-    dataset_dir = top_data_dir / args.dataset
-
-    train(
-        train_data_dir=dataset_dir / "train",
-        val_data_dir=dataset_dir / "val",
-        device=device,
-    )
-
-
-if __name__ == "__main__":
-    main()

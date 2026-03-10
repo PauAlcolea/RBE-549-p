@@ -17,10 +17,11 @@ options:
   ```
   ## Phase 2
   ```
-usage: Train.py [-h] [-d {lego,ship}]
+usage: Wrapper.py [-h] [-d {lego,ship}] [--test]
 
 options:
   -h, --help            show this help message and exit
   -d, --dataset {lego,ship}
                         dataset to train on: lego or ship
+  --test                whether to run test (default is Train)
   ```
