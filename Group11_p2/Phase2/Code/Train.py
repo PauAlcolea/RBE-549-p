@@ -8,22 +8,62 @@ import os
 import torch
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
-from argparse import ArgumentParser
-from pathlib import Path
 
 from Dataset import NeRFDataset
 from NeRFModel import NeRFmodel
 
 
+def _render_view(model, dataset, img_idx=0, device="cuda", chunk_size=8192):
+    """
+    render a single view for validation
+    """
+    was_training = model.training
+    model.eval()
+
+    with torch.no_grad():
+        # get all rays and ground truth RGB values for the given image
+        ray_origins, ray_directions, rgb_gt, h, w = dataset.get_image_rays(img_idx)
+        ray_origins = ray_origins.to(device)
+        ray_directions = ray_directions.to(device)
+
+        num_rays = ray_origins.shape[0]
+        # pass rays through the model in smaller chunks to avoid memory errors
+        pred_chunks = []
+        for start in range(0, num_rays, chunk_size):
+            end = min(start + chunk_size, num_rays)
+            ro_chunk = ray_origins[start:end]
+            rd_chunk = ray_directions[start:end]
+
+            # FIXME: using fine model for rendering???
+            _, pred_rgb_fine = model(ro_chunk, rd_chunk)
+            pred_chunks.append(pred_rgb_fine.detach().cpu())
+
+        pred_rgb_flat = torch.cat(pred_chunks, dim=0)
+
+        # reshape to image and clamp to [0, 1]
+        pred_img = pred_rgb_flat.view(h, w, 3).permute(2, 0, 1)
+        pred_img = torch.clamp(pred_img, 0.0, 1.0)
+
+        gt_img = rgb_gt.view(h, w, 3).permute(2, 0, 1).cpu()
+        gt_img = torch.clamp(gt_img, 0.0, 1.0)
+
+    if was_training:
+        model.train()
+
+    return pred_img, gt_img
+
+
 def train(
     train_data_dir,
     val_data_dir,
-    num_epochs=50,
+    num_iters=100000,
     batch_size=4096,
     lr=5e-4,
     log_dir="logs",
     device="cuda",
     checkpoint_dir="checkpoints",
+    val_every=1000,
+    render_every=5000,
 ):
 
     # make a folder for checkpoints in case it doesn't exist
@@ -45,104 +85,82 @@ def train(
     # model
     model = NeRFmodel(embed_pos_L=10, embed_direction_L=4).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
+    lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(
+        optimizer, gamma=0.1 ** (1 / num_iters)
+    )
 
     global_step = 0
     best_val_loss = float("inf")
-    for epoch in range(num_epochs):
+    for iter in tqdm(range(num_iters), desc=f"Train"):
         #### train ####
         model.train()
 
-        # Tally of total loss zeroed
-        # Reporting information
-        train_loss = 0.0
-        num_train_samples = len(train_dataset)
-        num_train_iters = max(1, math.ceil(num_train_samples / batch_size))
+        # sample a batch of rays and corresponding RGB values from the training dataset
+        ray_origin_batch, ray_direction_batch, rgb_batch = train_dataset.get_batch()
 
-        # Progress Bar per epoch
-        for _ in tqdm(range(num_train_iters), desc=f"Train {epoch}"):
-            # sample a batch of rays and corresponding RGB values from the training dataset
-            ray_batch, rgb_batch = train_dataset.get_batch()
+        # forward pass through the model to get predicted RGB values
+        pred_rgb_coarse, pred_rgb_fine = model(ray_origin_batch, ray_direction_batch)
 
-            # forward pass through the model to get predicted RGB values
-            pred_rgb_coarse, pred_rgb_fine = model(ray_batch)
+        # loss calculation
+        loss = model.compute_loss(pred_rgb_coarse, pred_rgb_fine, rgb_batch)
 
-            # loss calculation
-            loss = model.compute_loss(pred_rgb_coarse, pred_rgb_fine, rgb_batch)
+        # Back propagation and gradient
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
 
-            # Back propagation and gradient
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+        # update learning rate scheduler
+        lr_scheduler.step()
 
-            train_loss += loss.item() * ray_batch.shape[0]
-            writer.add_scalar("train/loss_iter", loss.item(), global_step)
-            global_step += ray_batch.shape[0]
-
-        train_loss /= num_train_iters
+        writer.add_scalar("train/loss_iter", loss.item(), global_step)
+        global_step += ray_origin_batch.shape[0]
 
         #### validation ####
-        model.eval()
-        val_loss = 0.0
+        if (iter + 1) % val_every == 0 or (iter + 1) == num_iters:
+            model.eval()
+            val_loss = 0.0
 
-        # do not compute the gradients for validation, this is only to see how the model is doing at this point
-        with torch.no_grad():
-            num_val_samples = len(val_dataset)
-            num_val_iters = max(1, math.ceil(num_val_samples / batch_size))
+            # do not compute the gradients for validation, this is only to see how the model is doing at this point
+            with torch.no_grad():
+                num_val_samples = len(val_dataset)
+                num_val_iters = max(1, math.ceil(num_val_samples / batch_size))
 
-            for _ in tqdm(range(num_val_iters), desc=f"Val {epoch}"):
-                ray_batch, rgb_batch = val_dataset.get_batch()
-                pred_rgb_coarse, pred_rgb_fine = model(ray_batch)
-                loss = model.compute_loss(pred_rgb_coarse, pred_rgb_fine, rgb_batch)
-                val_loss += loss.item() * ray_batch.shape[0]
+                for _ in tqdm(range(num_val_iters), desc=f"Val {iter+1}"):
+                    ray_origin_batch, ray_direction_batch, rgb_batch = (
+                        val_dataset.get_batch()
+                    )
+                    pred_rgb_coarse, pred_rgb_fine = model(
+                        ray_origin_batch, ray_direction_batch
+                    )
+                    loss = model.compute_loss(pred_rgb_coarse, pred_rgb_fine, rgb_batch)
+                    val_loss += loss.item() * ray_origin_batch.shape[0]
 
-        val_loss /= num_val_iters
+            val_loss /= num_val_iters
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                torch.save(
+                    model.state_dict(), os.path.join(checkpoint_dir, "best_model.pth")
+                )
 
-        #### logging ####
-        writer.add_scalars(
-            "loss/epoch",
-            {"train": train_loss, "val": val_loss},
-            epoch,
-        )
+            # render sample view for tensorboard
+            if (iter + 1) % render_every == 0 or (iter + 1) == num_iters:
+                with torch.no_grad():
+                    pred_img, gt_img = _render_view(
+                        model,
+                        val_dataset,
+                        device=device,
+                        chunk_size=batch_size,
+                    )
+                writer.add_image("val/render_pred", pred_img, global_step)
+                writer.add_image("val/render_gt", gt_img, global_step)
 
-        print(
-            f"Epoch {epoch:03d} | "
-            f"train: {train_loss:.4f} | "
-            f"val: {val_loss:.4f} | "
-        )
+            #### logging ####
+            writer.add_scalars(
+                "loss/iter",
+                {"val": val_loss},
+                iter + 1,
+            )
 
-        # TODO: save model checkpoint
+            print(f"Iter {iter+1:07d} | " f"val: {val_loss:.4f} | ")
 
     writer.close()
-
-
-def main():
-    device = (
-        "cuda"
-        if torch.cuda.is_available()
-        else "mps" if torch.backends.mps.is_available() else "cpu"
-    )
-
-    parser = ArgumentParser()
-    parser.add_argument(
-        "-d",
-        "--dataset",
-        type=str,
-        default="lego",
-        choices=["lego", "ship"],
-        help="dataset to train on: lego or ship",
-    )
-    args = parser.parse_args()
-
-    top_data_dir = Path(__file__).parent.parent / "Data" / "nerf_synthetic"
-    dataset_dir = top_data_dir / args.dataset
-
-    train(
-        train_data_dir=dataset_dir / "train",
-        val_data_dir=dataset_dir / "val",
-        device=device,
-    )
-
-
-if __name__ == "__main__":
-    main()

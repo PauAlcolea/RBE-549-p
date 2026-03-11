@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 
-def _as_tensor(self, data):
+def _as_tensor(data):
     return torch.from_numpy(np.stack(data)).float().clone()
 
 
@@ -37,6 +37,8 @@ class NeRFDataset:
         images = []
         for name in sorted(os.listdir(self.data_dir)):
             img = imageio.imread(os.path.join(self.data_dir, name)) / 255.0
+            if img.shape[-1] == 4:
+                img = img[..., :3]
             images.append(img)
         return _as_tensor(images)
 
@@ -60,7 +62,7 @@ class NeRFDataset:
         """
         # create grid of homogeneous pixel coordinates
         i, j = torch.meshgrid(torch.arange(self.w), torch.arange(self.h), indexing="ij")
-        pixel_coords = torch.stack([i, j, torch.ones_like(i)], dim=-1)
+        pixel_coords = torch.stack([i, j, torch.ones_like(i)], dim=-1).float()
         # compute ray directions in camera space
         ray_directions = pixel_coords @ torch.linalg.inv(self.K).T
         ray_directions[..., 1:] *= -1  # match NeRF convention
@@ -85,6 +87,14 @@ class NeRFDataset:
         rgb = self.images[idx]
         return rgb.reshape(-1, 3)
 
+    def get_image_rays(self, idx):
+        """
+        get all rays and RGB values for a given image
+        """
+        ray_origins, ray_directions = self._get_rays_for_image(idx)
+        rgb = self._get_image(idx)
+        return ray_origins, ray_directions, rgb, self.h, self.w
+
     def get_sample(self, idx):
         """
         get a single ray sample (origin, direction) and its corresponding RGB color
@@ -103,9 +113,9 @@ class NeRFDataset:
         idxs = random.sample(range(len(self)), self.batch_size)
         origins, directions, rgbs = zip(*(self.get_sample(idx) for idx in idxs))
         return (
-            torch.stack(origins),
-            torch.stack(directions),
-            torch.stack(rgbs),
+            torch.stack(origins).to(self.device),
+            torch.stack(directions).to(self.device),
+            torch.stack(rgbs).to(self.device),
         )
 
     def get_batch_from_index(self, start_idx):
