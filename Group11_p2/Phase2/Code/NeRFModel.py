@@ -59,7 +59,9 @@ class NeRFmodel(nn.Module):
             then take those distances and get the 3d positions based on the origin of the ray and the ray-direction
         """
         # we want Nc number of 3d points along each ray (ray denoted by a position and a direction)
+        B = pos.shape[0]
         z_vals = torch.linspace(t_near, t_far, Nc, device=pos.device)
+        z_vals = z_vals.expand(B, Nc)
 
         # Stratified sampling, make bins and sample the middle of them. Then the ranges for each bin
         mids = 0.5 * (z_vals[..., :-1] + z_vals[..., 1:])
@@ -121,6 +123,9 @@ class NeRFmodel(nn.Module):
         :param w        the weights from volume rendering, the probability that ray hits something at sample i
         :param Nf       the number of locations for the fine network to evaluate, 128 as per the paper returns.
         """
+        w = w[..., 1:-1]
+        z_vals_mid = 0.5 * (z_vals_c[...,1:] + z_vals_c[...,:-1])
+
         # B numbers of rays in the batch
         # Nc number of coarse samples per ray
         B, Nc = w.shape
@@ -147,8 +152,8 @@ class NeRFmodel(nn.Module):
         # that it can then be be considered for the sampling of positions
         cdf_below = torch.gather(cdf, 1, inds_below)
         cdf_above = torch.gather(cdf, 1, inds_above)
-        z_below = torch.gather(z_vals_c, 1, inds_below)
-        z_above = torch.gather(z_vals_c, 1, inds_above)
+        z_below = torch.gather(z_vals_mid, 1, inds_below)
+        z_above = torch.gather(z_vals_mid, 1, inds_above)
         t = (u - cdf_below) / (cdf_above - cdf_below + 1e-5)
         z_vals_f = z_below + t * (z_above - z_below)
 
