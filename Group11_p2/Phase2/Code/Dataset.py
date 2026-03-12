@@ -5,6 +5,7 @@ import torch
 import imageio
 import json
 from pathlib import Path
+import cv2
 
 
 def _as_tensor(data):
@@ -16,14 +17,18 @@ class NeRFDataset:
     dataset class for NeRF training (bypassing PyTorch Dataset/DataLoader)
     """
 
-    def __init__(self, data_dir, batch_size, device="cuda"):
+    def __init__(self, data_dir, batch_size, device="cuda", downscale=1):
         self.data_dir = Path(data_dir)
         self.batch_size = batch_size
         self.device = torch.device(device)
+        self.downscale = downscale
+
         self.json_data = self._load_json()
         self.images = self._load_images()
+
         self.h = self.images[0].shape[0]
         self.w = self.images[0].shape[1]
+
         self.K = self._compute_intrinsics()
         self.poses = self._get_poses()
         self.ray_directions = self._get_camera_ray_directions()
@@ -39,6 +44,15 @@ class NeRFDataset:
             img = imageio.imread(os.path.join(self.data_dir, name)) / 255.0
             if img.shape[-1] == 4:
                 img = img[..., :3]
+
+            if self.downscale != 1:
+                h, w = img.shape[:2]
+                img = cv2.resize(
+                    img,
+                    (w // self.downscale, h // self.downscale),
+                    interpolation=cv2.INTER_AREA
+                )
+
             images.append(img)
         return _as_tensor(images)
 

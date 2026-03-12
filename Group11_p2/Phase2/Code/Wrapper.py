@@ -36,6 +36,12 @@ def parseArgs():
         action="store_true",
         help="whether to run test (default is Train)",
     )
+    parser.add_argument(
+        "--down",
+        type=int,
+        default=1,
+        help="how much you want to downscale the images so training takes less time",
+    )
 
     args = parser.parse_args()
     return args
@@ -58,6 +64,7 @@ def main(args):
             train_data_dir=dataset_dir / "train",
             val_data_dir=dataset_dir / "val",
             device=device,
+            downscale=args.down
         )
 
 
