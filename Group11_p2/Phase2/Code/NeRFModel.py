@@ -7,11 +7,11 @@ import math
 class NeRFmodel(nn.Module):
     def __init__(self, embed_pos_L, embed_direction_L):
         super(NeRFmodel, self).__init__()
-        
+
         # separate the two network instances so that they can be refined and they can learn separately
         self.coarse_net = NeRFNetwork(embed_pos_L, embed_direction_L)
         self.fine_net = NeRFNetwork(embed_pos_L, embed_direction_L)
-    
+
         # points sampled for the coarse and the fine network
         self.Nc = 64
         self.Nf = 128
@@ -26,21 +26,27 @@ class NeRFmodel(nn.Module):
         direction: ray directions
         """
         # go accross a ray and sample some points for the coarse pass
-        pos_samples_c, z_vals_c = self.sample_coarse(pos, direction, self.t_near, self.t_far, self.Nc)
+        pos_samples_c, z_vals_c = self.sample_coarse(
+            pos, direction, self.t_near, self.t_far, self.Nc
+        )
 
         # coarse network forward, encoding occurs within the network
         color_c, density_c = self.coarse_net(pos_samples_c, direction)
-        
+
         # volume rendering from output of the coarse network and sample weights
         C_c, weights = self.volume_rendering(color_c, density_c, z_vals_c, direction)
 
         # from the weights sample points to "investigate" further in the fine network
-        pos_samples_f, z_vals_f = self.importance(z_vals_c, weights, pos, direction, self.Nf)
+        pos_samples_f, z_vals_f = self.importance(
+            z_vals_c, weights, pos, direction, self.Nf
+        )
 
         # fine network forward encoding also occurs inside of the network
         # fine network should look at the combination of the coarse and the fine points
         z_vals_combined, _ = torch.sort(torch.cat([z_vals_c, z_vals_f], dim=-1), dim=-1)
-        pos_samples_combined = pos[..., None, :] + direction[..., None, :] * z_vals_combined[..., :, None]
+        pos_samples_combined = (
+            pos[..., None, :] + direction[..., None, :] * z_vals_combined[..., :, None]
+        )
         color_f, density_f = self.fine_net(pos_samples_combined, direction)
 
         # volume rendering for fine network as final
@@ -48,8 +54,8 @@ class NeRFmodel(nn.Module):
 
         # return the outputs from the coarse and the fine alpha-composited colors
         # these are for computing the loss against ground truth
-        return C_c, C_f 
-    
+        return C_c, C_f
+
     def sample_coarse(self, pos, dir, t_near, t_far, Nc):
         """
         based on some set values, sample each ray uniformly for the coarse forward pass
@@ -75,7 +81,7 @@ class NeRFmodel(nn.Module):
         # finally get the points
         pos_samples_c = pos[..., None, :] + dir[..., None, :] * z_vals[..., :, None]
         return pos_samples_c, z_vals
-    
+
     def volume_rendering(self, color, density, z_vals, direction):
         """
         relate the densty and the color to a rendered image that can then be checked with the ground truth to calculate the real loss
@@ -84,14 +90,14 @@ class NeRFmodel(nn.Module):
         This is where the coarse and fine outputs are converted into colors that can be compared to ground truths
         """
         # distance between adjacent samples
-        deltas = z_vals[...,1:] - z_vals[...,:-1]
+        deltas = z_vals[..., 1:] - z_vals[..., :-1]
 
         # last delta is infinity
-        delta_inf = torch.full_like(deltas[...,:1], 1e10)
+        delta_inf = torch.full_like(deltas[..., :1], 1e10)
         deltas = torch.cat([deltas, delta_inf], dim=-1)
 
         # account for ray length
-        deltas = deltas * torch.norm(direction[...,None,:], dim=-1)
+        deltas = deltas * torch.norm(direction[..., None, :], dim=-1)
 
         sigma = density.squeeze(-1)
 
@@ -99,32 +105,29 @@ class NeRFmodel(nn.Module):
 
         # transmittance
         T = torch.cumprod(
-            torch.cat([
-                torch.ones_like(alpha[...,:1]),
-                1.0 - alpha + 1e-10
-            ], dim=-1),
-            dim=-1
-        )[...,:-1]
+            torch.cat([torch.ones_like(alpha[..., :1]), 1.0 - alpha + 1e-10], dim=-1),
+            dim=-1,
+        )[..., :-1]
 
         weights = T * alpha
 
-        rgb = torch.sum(weights[...,None] * color, dim=-2)
+        rgb = torch.sum(weights[..., None] * color, dim=-2)
 
         return rgb, weights
-    
+
     def importance(self, z_vals_c, w, pos, direction, Nf=128):
         """
         Section 5.2 of the paper
         this function will take the origina and the directions and the weights and return points for fine sampling
         because the weigths can show what is more likely to be hit, but normalizing and uniformly sampling from that
-            the bigger bins will have more "hits", which when changed to depths will mean more points         
+            the bigger bins will have more "hits", which when changed to depths will mean more points
 
         :param z_vals_c depths of the coarse sampels along each ray ---> Shape = [B, Nf]
         :param w        the weights from volume rendering, the probability that ray hits something at sample i
         :param Nf       the number of locations for the fine network to evaluate, 128 as per the paper returns.
         """
         w = w[..., 1:-1]
-        z_vals_mid = 0.5 * (z_vals_c[...,1:] + z_vals_c[...,:-1])
+        z_vals_mid = 0.5 * (z_vals_c[..., 1:] + z_vals_c[..., :-1])
 
         # B numbers of rays in the batch
         # Nc number of coarse samples per ray
@@ -157,18 +160,24 @@ class NeRFmodel(nn.Module):
         t = (u - cdf_below) / (cdf_above - cdf_below + 1e-5)
         z_vals_f = z_below + t * (z_above - z_below)
 
-        pos_samples_f = pos[..., None, :] + direction[..., None, :] * z_vals_f[..., :, None]
+        pos_samples_f = (
+            pos[..., None, :] + direction[..., None, :] * z_vals_f[..., :, None]
+        )
 
         return pos_samples_f, z_vals_f
-    
-    def compute_loss(self, pred_rgb_coarse: torch.Tensor, pred_rgb_fine: torch.Tensor, gt_rgb: torch.Tensor) -> torch.Tensor:
+
+    def compute_loss(
+        self,
+        pred_rgb_coarse: torch.Tensor,
+        pred_rgb_fine: torch.Tensor,
+        gt_rgb: torch.Tensor,
+    ) -> torch.Tensor:
         """
         total squared error between the rendered and true pixel images for both the coarse and fine renderings
         """
         loss_coarse = self.mse_loss(pred_rgb_coarse, gt_rgb)
         loss_fine = self.mse_loss(pred_rgb_fine, gt_rgb)
         return loss_coarse + loss_fine
-    
 
 
 class NeRFNetwork(nn.Module):
@@ -186,31 +195,40 @@ class NeRFNetwork(nn.Module):
         # 2 is based on the equation
         self.pos_length = 3 + 3 * 2 * embed_pos_L
         self.dir_length = 3 + 3 * 2 * embed_direction_L
-        
+
         # first stage should be 8 fully connected layers, ReLu Activated and 256 channels
         # they only take the position and output the density and a 256 dimensional feature vector
 
         # divide stage 1 into two for skip connection as per paper (fig 7)
         self.stage1_first = nn.Sequential(
-            nn.Linear(self.pos_length, 256), nn.ReLU(),
-            nn.Linear(256, 256), nn.ReLU(),
-            nn.Linear(256, 256), nn.ReLU(),
-            nn.Linear(256, 256), nn.ReLU(),
-            nn.Linear(256, 256), nn.ReLU()
+            nn.Linear(self.pos_length, 256),
+            nn.ReLU(),
+            nn.Linear(256, 256),
+            nn.ReLU(),
+            nn.Linear(256, 256),
+            nn.ReLU(),
+            nn.Linear(256, 256),
+            nn.ReLU(),
+            nn.Linear(256, 256),
+            nn.ReLU(),
         )
         # skip concatenation
         # in the end, outputs the density and  256 feature vector, like the paper
         self.stage1_second = nn.Sequential(
-            nn.Linear(256 + self.pos_length, 256), nn.ReLU(),
-            nn.Linear(256, 256), nn.ReLU(),
-            nn.Linear(256, 256), nn.ReLU(),
-            nn.Linear(256, 256 + self.density_length),   
+            nn.Linear(256 + self.pos_length, 256),
+            nn.ReLU(),
+            nn.Linear(256, 256),
+            nn.ReLU(),
+            nn.Linear(256, 256),
+            nn.ReLU(),
+            nn.Linear(256, 256 + self.density_length),
         )
 
         # stage 2 is 1 fully connected layer (Relu and 128 channels)
         # it takes the dimensional feature vector and the embedded direction and outputs the color
         self.stage2 = nn.Sequential(
-            nn.Linear(self.dir_length + 256, 128), nn.ReLU(),
+            nn.Linear(self.dir_length + 256, 128),
+            nn.ReLU(),
             nn.Linear(128, 3),  # reduce into 3 for the RGB
         )
 
@@ -218,15 +236,15 @@ class NeRFNetwork(nn.Module):
         # reshape for linear layer inputting
         # expand direction to match pos_flat
         B, N, _ = pos.shape
-        pos_flat = pos.reshape(B*N, 3)
-        dir_expanded = direction.unsqueeze(1).expand(B, N, 3).reshape(B*N, 3)
+        pos_flat = pos.reshape(B * N, 3)
+        dir_expanded = direction.unsqueeze(1).expand(B, N, 3).reshape(B * N, 3)
 
-        #encode the position and the direction to help with high frequency variation
+        # encode the position and the direction to help with high frequency variation
         pos_encoded = self.position_encoding(pos_flat, self.embed_pos_L)
         dir_encoded = self.position_encoding(dir_expanded, self.embed_direction_L)
 
-        #the output of the first stage is combined
-        #only apply the relu to the density, as it is the only one that needs that restriction on values
+        # the output of the first stage is combined
+        # only apply the relu to the density, as it is the only one that needs that restriction on values
         h = self.stage1_first(pos_encoded)
         density_feature_raw = self.stage1_second(torch.cat([h, pos_encoded], dim=-1))
         density = F.relu(density_feature_raw[..., :1])
@@ -243,7 +261,7 @@ class NeRFNetwork(nn.Module):
 
         # output should be [B, N, (R, G, B, density)]
         return (color, density)
-    
+
     def position_encoding(self, x, L):
         """
         positional encoding allows the MLP to represent higher frequency functions
@@ -252,11 +270,11 @@ class NeRFNetwork(nn.Module):
         y = [x]
         for i in range(L):
             for fn in [torch.sin, torch.cos]:
-                y.append(fn((2.0 ** i) * math.pi * x))
+                y.append(fn((2.0**i) * math.pi * x))
         return torch.cat(y, dim=-1)
 
 
-# need to figure out what that feature vector is 
+# need to figure out what that feature vector is
 # need to figure out when the volume rendering comes into play
 
 # is the positional encoding not done before this file?

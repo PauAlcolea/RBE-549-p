@@ -80,8 +80,12 @@ def train(
     writer = SummaryWriter(log_dir)
 
     # datasets
-    train_dataset = NeRFDataset(train_data_dir, batch_size, device=device, downscale=downscale)
-    val_dataset = NeRFDataset(val_data_dir, batch_size, device=device, downscale=downscale)
+    train_dataset = NeRFDataset(
+        train_data_dir, batch_size, device=device, downscale=downscale
+    )
+    val_dataset = NeRFDataset(
+        val_data_dir, batch_size, device=device, downscale=downscale
+    )
 
     # model
     model = NeRFmodel(embed_pos_L=10, embed_direction_L=4).to(device)

@@ -50,7 +50,7 @@ class NeRFDataset:
                 img = cv2.resize(
                     img,
                     (w // self.downscale, h // self.downscale),
-                    interpolation=cv2.INTER_AREA
+                    interpolation=cv2.INTER_AREA,
                 )
 
             images.append(img)

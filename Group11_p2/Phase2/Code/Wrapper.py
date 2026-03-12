@@ -64,7 +64,7 @@ def main(args):
             train_data_dir=dataset_dir / "train",
             val_data_dir=dataset_dir / "val",
             device=device,
-            downscale=args.down
+            downscale=args.down,
         )
 
 
