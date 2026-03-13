@@ -140,7 +140,8 @@ def train(
             # do not compute the gradients for validation, this is only to see how the model is doing at this point
             with torch.no_grad():
                 num_val_samples = len(val_dataset)
-                num_val_iters = max(1, math.ceil(num_val_samples / batch_size))
+                max_val_iters = 50
+                num_val_iters = min(max_val_iters, math.ceil(num_val_samples / batch_size))
 
                 for _ in tqdm(range(num_val_iters), desc=f"Val {iter+1}"):
                     ray_origin_batch, ray_direction_batch, rgb_batch = (
