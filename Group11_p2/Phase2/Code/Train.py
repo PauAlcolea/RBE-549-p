@@ -7,6 +7,7 @@ import math
 import os
 import torch
 from torch.utils.tensorboard import SummaryWriter
+from torch.amp import autocast, GradScaler
 from tqdm import tqdm
 
 from Dataset import NeRFDataset
@@ -94,6 +95,9 @@ def train(
         optimizer, gamma=0.1 ** (1 / num_iters)
     )
 
+    # mixed precision scaler
+    scaler = GradScaler(enabled=(torch.cuda.is_available() and "cuda" in str(device)))
+
     global_step = 0
     best_val_loss = float("inf")
     for iter in tqdm(range(num_iters), desc=f"Train"):
@@ -103,16 +107,18 @@ def train(
         # sample a batch of rays and corresponding RGB values from the training dataset
         ray_origin_batch, ray_direction_batch, rgb_batch = train_dataset.get_batch()
 
-        # forward pass through the model to get predicted RGB values
-        pred_rgb_coarse, pred_rgb_fine = model(ray_origin_batch, ray_direction_batch)
-
-        # loss calculation
-        loss = model.compute_loss(pred_rgb_coarse, pred_rgb_fine, rgb_batch)
-
-        # Back propagation and gradient
         optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        # forward + loss under autocast for mixed precision
+        with autocast('cuda', enabled=scaler.is_enabled()):
+            pred_rgb_coarse, pred_rgb_fine = model(
+                ray_origin_batch, ray_direction_batch
+            )
+            loss = model.compute_loss(pred_rgb_coarse, pred_rgb_fine, rgb_batch)
+
+        # Back propagation and optimizer step with GradScaler
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
 
         # update learning rate scheduler
         lr_scheduler.step()
