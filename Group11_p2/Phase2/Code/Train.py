@@ -67,6 +67,7 @@ def train(
     render_every=5000,
     downscale=1,
     dataset_name=None,
+    max_val_iters=50,
 ):
 
     # specify log and checkpoint directories by dataset name to avoid clashes
@@ -140,7 +141,6 @@ def train(
             # do not compute the gradients for validation, this is only to see how the model is doing at this point
             with torch.no_grad():
                 num_val_samples = len(val_dataset)
-                max_val_iters = 50
                 num_val_iters = min(max_val_iters, math.ceil(num_val_samples / batch_size))
 
                 for _ in tqdm(range(num_val_iters), desc=f"Val {iter+1}"):
