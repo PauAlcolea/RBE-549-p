@@ -65,6 +65,7 @@ def main(args):
             val_data_dir=dataset_dir / "val",
             device=device,
             downscale=args.down,
+            dataset_name=args.dataset,
         )
 
 

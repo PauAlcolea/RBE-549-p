@@ -66,12 +66,18 @@ def train(
     val_every=1000,
     render_every=5000,
     downscale=1,
+    dataset_name=None,
 ):
+
+    # specify log and checkpoint directories by dataset name to avoid clashes
+    if dataset_name is not None:
+        log_dir = os.path.join(log_dir, str(dataset_name))
+        checkpoint_dir = os.path.join(checkpoint_dir, str(dataset_name))
 
     # make a folder for checkpoints in case it doesn't exist
     os.makedirs(checkpoint_dir, exist_ok=True)
-    # clear contents of log_dir to begin with a clean slate
-    if os.path.exists(log_dir):
+    # clear contents of current dataset's log_dir
+    if dataset_name is not None and os.path.exists(log_dir):
         for root, dirs, files in os.walk(log_dir, topdown=False):
             for name in files:
                 os.remove(os.path.join(root, name))
