@@ -7,6 +7,7 @@ import math
 import os
 import torch
 from torch.utils.tensorboard import SummaryWriter
+from torch.amp import autocast, GradScaler
 from tqdm import tqdm
 
 from Dataset import NeRFDataset
@@ -62,14 +63,22 @@ def train(
     log_dir="logs",
     device="cuda",
     checkpoint_dir="checkpoints",
-    val_every=1000,
-    render_every=5000,
+    val_every=500,
+    render_every=2000,
+    downscale=1,
+    dataset_name=None,
+    max_val_iters=50,
 ):
+
+    # specify log and checkpoint directories by dataset name to avoid clashes
+    if dataset_name is not None:
+        log_dir = os.path.join(log_dir, str(dataset_name))
+        checkpoint_dir = os.path.join(checkpoint_dir, str(dataset_name))
 
     # make a folder for checkpoints in case it doesn't exist
     os.makedirs(checkpoint_dir, exist_ok=True)
-    # clear contents of log_dir to begin with a clean slate
-    if os.path.exists(log_dir):
+    # clear contents of current dataset's log_dir
+    if dataset_name is not None and os.path.exists(log_dir):
         for root, dirs, files in os.walk(log_dir, topdown=False):
             for name in files:
                 os.remove(os.path.join(root, name))
@@ -79,15 +88,22 @@ def train(
     writer = SummaryWriter(log_dir)
 
     # datasets
-    train_dataset = NeRFDataset(train_data_dir, batch_size, device=device)
-    val_dataset = NeRFDataset(val_data_dir, batch_size, device=device)
+    train_dataset = NeRFDataset(
+        train_data_dir, batch_size, device=device, downscale=downscale
+    )
+    val_dataset = NeRFDataset(
+        val_data_dir, batch_size, device=device, downscale=downscale
+    )
 
     # model
-    model = NeRFmodel(embed_pos_L=10, embed_direction_L=4).to(device)
+    model = NeRFmodel().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(
         optimizer, gamma=0.1 ** (1 / num_iters)
     )
+
+    # mixed precision scaler
+    scaler = GradScaler(enabled=(torch.cuda.is_available() and "cuda" in str(device)))
 
     global_step = 0
     best_val_loss = float("inf")
@@ -98,16 +114,18 @@ def train(
         # sample a batch of rays and corresponding RGB values from the training dataset
         ray_origin_batch, ray_direction_batch, rgb_batch = train_dataset.get_batch()
 
-        # forward pass through the model to get predicted RGB values
-        pred_rgb_coarse, pred_rgb_fine = model(ray_origin_batch, ray_direction_batch)
-
-        # loss calculation
-        loss = model.compute_loss(pred_rgb_coarse, pred_rgb_fine, rgb_batch)
-
-        # Back propagation and gradient
         optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        # forward + loss under autocast for mixed precision
+        with autocast("cuda", enabled=scaler.is_enabled()):
+            pred_rgb_coarse, pred_rgb_fine = model(
+                ray_origin_batch, ray_direction_batch
+            )
+            loss = model.compute_loss(pred_rgb_coarse, pred_rgb_fine, rgb_batch)
+
+        # Back propagation and optimizer step with GradScaler
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
 
         # update learning rate scheduler
         lr_scheduler.step()
@@ -119,11 +137,14 @@ def train(
         if (iter + 1) % val_every == 0 or (iter + 1) == num_iters:
             model.eval()
             val_loss = 0.0
+            val_count = 0
 
             # do not compute the gradients for validation, this is only to see how the model is doing at this point
             with torch.no_grad():
                 num_val_samples = len(val_dataset)
-                num_val_iters = max(1, math.ceil(num_val_samples / batch_size))
+                num_val_iters = min(
+                    max_val_iters, math.ceil(num_val_samples / batch_size)
+                )
 
                 for _ in tqdm(range(num_val_iters), desc=f"Val {iter+1}"):
                     ray_origin_batch, ray_direction_batch, rgb_batch = (
@@ -133,9 +154,12 @@ def train(
                         ray_origin_batch, ray_direction_batch
                     )
                     loss = model.compute_loss(pred_rgb_coarse, pred_rgb_fine, rgb_batch)
-                    val_loss += loss.item() * ray_origin_batch.shape[0]
+                    batch_count = ray_origin_batch.shape[0]
+                    val_loss += loss.item() * batch_count
+                    val_count += batch_count
 
-            val_loss /= num_val_iters
+            # average validation loss over all evaluated rays
+            val_loss /= max(val_count, 1)
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 torch.save(
@@ -156,7 +180,7 @@ def train(
 
             #### logging ####
             writer.add_scalars(
-                "loss/iter",
+                "val/loss_iter",
                 {"val": val_loss},
                 iter + 1,
             )
