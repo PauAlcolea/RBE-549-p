@@ -37,7 +37,7 @@ class NeRFmodel(nn.Module):
         C_c, weights = self.volume_rendering(color_c, density_c, z_vals_c, direction)
 
         # from the weights sample points to "investigate" further in the fine network
-        pos_samples_f, z_vals_f = self.importance(
+        _, z_vals_f = self.importance(
             z_vals_c, weights, pos, direction, self.Nf
         )
 
@@ -75,7 +75,11 @@ class NeRFmodel(nn.Module):
         upper = torch.cat([mids, z_vals[..., -1:]], dim=-1)
 
         # randonmness to each bin to get varied, random numbers from [0,1]
-        t_rand = torch.rand(z_vals.shape, device=pos.device)
+        if self.training:
+            t_rand = torch.rand(z_vals.shape, device=pos.device)
+        else:
+            # deterministic sampling for testing
+            t_rand = torch.full(z_vals.shape, 0.5, device=pos.device)
         z_vals = lower + (upper - lower) * t_rand
 
         # finally get the points
@@ -102,19 +106,26 @@ class NeRFmodel(nn.Module):
         sigma = density.squeeze(-1)
 
         alpha = 1.0 - torch.exp(-sigma * deltas)
+        # clamp alpha for numerical stability
+        alpha = torch.clamp(alpha, 0.0, 1.0)
 
         # transmittance
         T = torch.cumprod(
-            torch.cat([torch.ones_like(alpha[..., :1]), 1.0 - alpha + 1e-10], dim=-1),
+            torch.cat(
+                [torch.ones_like(alpha[..., :1]), torch.clamp(1.0 - alpha, min=1e-10)],
+                dim=-1,
+            ),
             dim=-1,
         )[..., :-1]
 
         weights = T * alpha
 
-        rgb = torch.sum(weights[..., None] * color, dim=-2)
+        acc = torch.sum(weights, dim=-1)
+        rgb = torch.sum(weights[..., None] * color, dim=-2) + (1.0 - acc[..., None])  # add white background
 
         return rgb, weights
 
+    @torch.no_grad()
     def importance(self, z_vals_c, w, pos, direction, Nf=128):
         """
         Section 5.2 of the paper
@@ -131,7 +142,7 @@ class NeRFmodel(nn.Module):
 
         # B numbers of rays in the batch
         # Nc number of coarse samples per ray
-        B, Nc = w.shape
+        B, _ = w.shape
 
         # normalizing the weights produces a piecewise-constant PDF along the ray
         # 1e-5 to avoid the division by zero so that bins correspond to cdf intervals
@@ -144,21 +155,28 @@ class NeRFmodel(nn.Module):
         cdf = torch.cat([torch.zeros(B, 1, device=w.device), cdf], dim=-1)
 
         # random number between 0 and 1 to add some variation and improve robustness
-        u = torch.rand(B, Nf, device=w.device)
-
+        if self.training:
+            u = torch.rand(B, Nf, device=w.device)
+        else:
+            # deterministic sampling for testing, sample the middle of the bins
+            u = torch.linspace(0.0, 1.0, Nf, device=w.device).expand(B, Nf)
         # find out which bin each sample belongs to based on the value of u, (the cdf is normalized between 0 and 1)
         inds = torch.searchsorted(cdf, u, right=True)
-        inds_below = torch.clamp(inds - 1, 0, Nc - 1)
-        inds_above = torch.clamp(inds, 0, Nc - 1)
+        inds_below = torch.clamp(inds - 1, min=0)
+        inds_above = torch.clamp(inds, max=cdf.shape[-1] - 1)
+        inds_g = torch.stack([inds_below, inds_above], dim=-1)
 
         # once you know what bin, then get the corresponding depth of the value in terms of z-value with linear interpolation
         # that it can then be be considered for the sampling of positions
-        cdf_below = torch.gather(cdf, 1, inds_below)
-        cdf_above = torch.gather(cdf, 1, inds_above)
-        z_below = torch.gather(z_vals_mid, 1, inds_below)
-        z_above = torch.gather(z_vals_mid, 1, inds_above)
-        t = (u - cdf_below) / (cdf_above - cdf_below + 1e-5)
-        z_vals_f = z_below + t * (z_above - z_below)
+        cdf_expand = cdf.unsqueeze(1).expand(-1, Nf, -1)
+        bins_expand = z_vals_mid.unsqueeze(1).expand(-1, Nf, -1)
+        cdf_g = torch.gather(cdf_expand, 2, inds_g)
+        bins_g = torch.gather(bins_expand, 2, inds_g)
+
+        denom = cdf_g[..., 1] - cdf_g[..., 0]
+        denom = torch.where(denom < 1e-5, torch.ones_like(denom), denom)
+        t = (u - cdf_g[..., 0]) / denom
+        z_vals_f = bins_g[..., 0] + t * (bins_g[..., 1] - bins_g[..., 0])
 
         pos_samples_f = (
             pos[..., None, :] + direction[..., None, :] * z_vals_f[..., :, None]
