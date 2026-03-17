@@ -63,8 +63,8 @@ def train(
     log_dir="logs",
     device="cuda",
     checkpoint_dir="checkpoints",
-    val_every=1000,
-    render_every=5000,
+    val_every=500,
+    render_every=2000,
     downscale=1,
     dataset_name=None,
     max_val_iters=50,
@@ -137,6 +137,7 @@ def train(
         if (iter + 1) % val_every == 0 or (iter + 1) == num_iters:
             model.eval()
             val_loss = 0.0
+            val_count = 0
 
             # do not compute the gradients for validation, this is only to see how the model is doing at this point
             with torch.no_grad():
