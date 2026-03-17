@@ -50,7 +50,9 @@ class NeRFDataset:
             img_path = self.data_dir.parent / file_path
             img = imageio.imread(img_path.with_suffix('.png')) / 255.0
             if img.shape[-1] == 4:
-                img = img[..., :3]
+                rgb = img[..., :3]
+                alpha = img[..., 3:]
+                img = rgb * alpha + (1 - alpha)
 
             if self.downscale != 1:
                 h, w = img.shape[:2]
