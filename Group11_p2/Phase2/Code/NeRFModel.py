@@ -37,9 +37,7 @@ class NeRFmodel(nn.Module):
         C_c, weights = self.volume_rendering(color_c, density_c, z_vals_c, direction)
 
         # from the weights sample points to "investigate" further in the fine network
-        _, z_vals_f = self.importance(
-            z_vals_c, weights, pos, direction, self.Nf
-        )
+        _, z_vals_f = self.importance(z_vals_c, weights, pos, direction, self.Nf)
 
         # fine network forward encoding also occurs inside of the network
         # fine network should look at the combination of the coarse and the fine points
@@ -121,7 +119,9 @@ class NeRFmodel(nn.Module):
         weights = T * alpha
 
         acc = torch.sum(weights, dim=-1)
-        rgb = torch.sum(weights[..., None] * color, dim=-2) + (1.0 - acc[..., None])  # add white background
+        rgb = torch.sum(weights[..., None] * color, dim=-2) + (
+            1.0 - acc[..., None]
+        )  # add white background
 
         return rgb, weights
 

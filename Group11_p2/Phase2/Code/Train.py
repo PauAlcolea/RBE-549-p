@@ -116,7 +116,7 @@ def train(
 
         optimizer.zero_grad()
         # forward + loss under autocast for mixed precision
-        with autocast('cuda', enabled=scaler.is_enabled()):
+        with autocast("cuda", enabled=scaler.is_enabled()):
             pred_rgb_coarse, pred_rgb_fine = model(
                 ray_origin_batch, ray_direction_batch
             )
@@ -142,7 +142,9 @@ def train(
             # do not compute the gradients for validation, this is only to see how the model is doing at this point
             with torch.no_grad():
                 num_val_samples = len(val_dataset)
-                num_val_iters = min(max_val_iters, math.ceil(num_val_samples / batch_size))
+                num_val_iters = min(
+                    max_val_iters, math.ceil(num_val_samples / batch_size)
+                )
 
                 for _ in tqdm(range(num_val_iters), desc=f"Val {iter+1}"):
                     ray_origin_batch, ray_direction_batch, rgb_batch = (

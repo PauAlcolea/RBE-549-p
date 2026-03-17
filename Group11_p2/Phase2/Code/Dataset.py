@@ -35,7 +35,9 @@ class NeRFDataset:
         # precompute and cache all world-space rays and RGB values up front
         # avoids recomputing R @ ray_directions on every get_sample() / get_batch() call
         self.all_ray_origins, self.all_ray_directions = self._precompute_all_rays()
-        self.all_rgb = self.images.reshape(-1, 3)  # flatten the images into [num_images * H * W, 3]
+        self.all_rgb = self.images.reshape(
+            -1, 3
+        )  # flatten the images into [num_images * H * W, 3]
 
     def _load_json(self):
         json_path = self.data_dir.parent / f"transforms_{self.data_dir.stem}.json"
@@ -48,7 +50,7 @@ class NeRFDataset:
         for frame in self.json_data["frames"]:
             file_path = frame["file_path"]
             img_path = self.data_dir.parent / file_path
-            img = imageio.imread(img_path.with_suffix('.png')) / 255.0
+            img = imageio.imread(img_path.with_suffix(".png")) / 255.0
             if img.shape[-1] == 4:
                 rgb = img[..., :3]
                 alpha = img[..., 3:]
@@ -80,9 +82,7 @@ class NeRFDataset:
         for each pixel compute ray direction from camera center through that pixel
         """
         # create grid of homogeneous pixel coordinates
-        i, j = torch.meshgrid(
-            torch.arange(self.h), torch.arange(self.w), indexing="ij"
-        )
+        i, j = torch.meshgrid(torch.arange(self.h), torch.arange(self.w), indexing="ij")
         pixel_coords = torch.stack([j, i, torch.ones_like(i)], dim=-1).float()
         # compute ray directions in camera space
         ray_directions = pixel_coords @ torch.linalg.inv(self.K).T
