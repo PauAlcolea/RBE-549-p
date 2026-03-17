@@ -47,8 +47,8 @@ class NeRFDataset:
         poses = []
         for frame in self.json_data["frames"]:
             file_path = frame["file_path"]
-            img_path = self.data_dir / file_path
-            img = imageio.imread(img_path) / 255.0
+            img_path = self.data_dir.parent / file_path
+            img = imageio.imread(img_path.with_suffix('.png')) / 255.0
             if img.shape[-1] == 4:
                 img = img[..., :3]
 
