@@ -24,13 +24,12 @@ class NeRFDataset:
         self.downscale = downscale
 
         self.json_data = self._load_json()
-        self.images = self._load_images()
+        self.images, self.poses = self._load_images_and_poses()
 
         self.h = self.images[0].shape[0]
         self.w = self.images[0].shape[1]
 
         self.K = self._compute_intrinsics()
-        self.poses = self._get_poses()
         self.ray_directions = self._get_camera_ray_directions()
 
         # precompute and cache all world-space rays and RGB values up front
@@ -43,10 +42,13 @@ class NeRFDataset:
         with open(json_path, "r") as f:
             return json.load(f)
 
-    def _load_images(self):
+    def _load_images_and_poses(self):
         images = []
-        for name in sorted(os.listdir(self.data_dir)):
-            img = imageio.imread(os.path.join(self.data_dir, name)) / 255.0
+        poses = []
+        for frame in self.json_data["frames"]:
+            file_path = frame["file_path"]
+            img_path = self.data_dir / file_path
+            img = imageio.imread(img_path) / 255.0
             if img.shape[-1] == 4:
                 img = img[..., :3]
 
@@ -59,7 +61,9 @@ class NeRFDataset:
                 )
 
             images.append(img)
-        return _as_tensor(images)
+            poses.append(np.array(frame["transform_matrix"], dtype=np.float32))
+
+        return _as_tensor(images), _as_tensor(poses)
 
     def _compute_intrinsics(self):
         FOV_x = self.json_data["camera_angle_x"]
@@ -69,19 +73,15 @@ class NeRFDataset:
         )
         return _as_tensor(K)
 
-    def _get_poses(self):
-        poses = []
-        for frame in self.json_data["frames"]:
-            poses.append(np.array(frame["transform_matrix"], dtype=np.float32))
-        return _as_tensor(poses)
-
     def _get_camera_ray_directions(self):
         """
         for each pixel compute ray direction from camera center through that pixel
         """
         # create grid of homogeneous pixel coordinates
-        i, j = torch.meshgrid(torch.arange(self.w), torch.arange(self.h), indexing="ij")
-        pixel_coords = torch.stack([i, j, torch.ones_like(i)], dim=-1).float()
+        i, j = torch.meshgrid(
+            torch.arange(self.h), torch.arange(self.w), indexing="ij"
+        )
+        pixel_coords = torch.stack([j, i, torch.ones_like(i)], dim=-1).float()
         # compute ray directions in camera space
         ray_directions = pixel_coords @ torch.linalg.inv(self.K).T
         ray_directions[..., 1:] *= -1  # match NeRF convention
