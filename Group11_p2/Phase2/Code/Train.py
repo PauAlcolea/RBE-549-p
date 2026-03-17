@@ -151,9 +151,12 @@ def train(
                         ray_origin_batch, ray_direction_batch
                     )
                     loss = model.compute_loss(pred_rgb_coarse, pred_rgb_fine, rgb_batch)
-                    val_loss += loss.item() * ray_origin_batch.shape[0]
+                    batch_count = ray_origin_batch.shape[0]
+                    val_loss += loss.item() * batch_count
+                    val_count += batch_count
 
-            val_loss /= num_val_iters
+            # average validation loss over all evaluated rays
+            val_loss /= max(val_count, 1)
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 torch.save(
@@ -174,7 +177,7 @@ def train(
 
             #### logging ####
             writer.add_scalars(
-                "loss/iter",
+                "val/loss_iter",
                 {"val": val_loss},
                 iter + 1,
             )
