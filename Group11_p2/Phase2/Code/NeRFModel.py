@@ -5,7 +5,7 @@ import math
 
 
 class NeRFmodel(nn.Module):
-    def __init__(self, embed_pos_L, embed_direction_L):
+    def __init__(self, embed_pos_L=10, embed_direction_L=4):
         super(NeRFmodel, self).__init__()
 
         # separate the two network instances so that they can be refined and they can learn separately

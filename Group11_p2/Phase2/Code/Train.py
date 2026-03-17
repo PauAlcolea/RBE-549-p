@@ -96,7 +96,7 @@ def train(
     )
 
     # model
-    model = NeRFmodel(embed_pos_L=10, embed_direction_L=4).to(device)
+    model = NeRFmodel().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(
         optimizer, gamma=0.1 ** (1 / num_iters)
