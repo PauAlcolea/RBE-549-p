@@ -9,6 +9,44 @@ from Dataset import NeRFDataset
 from NeRFModel import NeRFmodel
 
 
+def parseArgs():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "-d",
+        "--dataset",
+        type=str,
+        default="lego",
+        choices=["lego", "ship"],
+        help="dataset to train on: lego or ship",
+    )
+    parser.add_argument(
+        "--test",
+        default=False,
+        action="store_true",
+        help="whether to run test (default is Train)",
+    )
+    parser.add_argument(
+        "--down",
+        type=int,
+        default=1,
+        help="how much you want to downscale the images so training takes less time",
+    )
+    parser.add_argument(
+        "--frames",
+        type=int,
+        default=20,
+        help="number of frames to render for the gif",
+    )
+    parser.add_argument(
+        "--fps",
+        type=int,
+        default=5,
+        help="frames per second for the output gif",
+    )
+
+    return parser.parse_args()
+
+
 def render(model, rays_origin, rays_direction, device, chunk_size=4096):
     """
     Input:
@@ -123,43 +161,64 @@ def generate_orbit_poses(poses, num_frames):
     return torch.stack(frames, dim=0)
 
 
-def parseArgs():
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "-d",
-        "--dataset",
-        type=str,
-        default="lego",
-        choices=["lego", "ship"],
-        help="dataset to train on: lego or ship",
-    )
-    parser.add_argument(
-        "--test",
-        default=False,
-        action="store_true",
-        help="whether to run test (default is Train)",
-    )
-    parser.add_argument(
-        "--down",
-        type=int,
-        default=1,
-        help="how much you want to downscale the images so training takes less time",
-    )
-    parser.add_argument(
-        "--frames",
-        type=int,
-        default=20,
-        help="number of frames to render for the gif",
-    )
-    parser.add_argument(
-        "--fps",
-        type=int,
-        default=5,
-        help="frames per second for the output gif",
+def _run_train(args, device, dataset_dir):
+    """Run NeRF training for the given dataset."""
+    train(
+        train_data_dir=dataset_dir / "train",
+        val_data_dir=dataset_dir / "val",
+        device=device,
+        downscale=args.down,
+        dataset_name=args.dataset,
     )
 
-    args = parser.parse_args()
-    return args
+
+def _run_test(args, device, dataset_dir, code_dir):
+    """Load the best checkpoint and render an orbit GIF for the test set."""
+    model = NeRFmodel().to(device)
+
+    checkpoint_path = code_dir / "checkpoints" / args.dataset / "best_model.pth"
+    state_dict = torch.load(checkpoint_path, map_location=device)
+    model.load_state_dict(state_dict)
+    model.eval()
+
+    test_dataset = NeRFDataset(
+        dataset_dir / "test",
+        batch_size=4096,
+        device=device,
+        downscale=4,
+    )
+
+    orbit_poses = generate_orbit_poses(
+        test_dataset.poses,
+        args.frames,
+    )
+
+    gif_dir = code_dir / "gifs"
+    gif_dir.mkdir(parents=True, exist_ok=True)
+    gif_path = gif_dir / f"{args.dataset}.gif"
+
+    frames = []
+    for pose in orbit_poses:
+        pose = pose.to(test_dataset.ray_directions.device)
+        R, t = pose[:3, :3], pose[:3, 3]
+
+        ray_directions_world = test_dataset.ray_directions @ R.T
+        ray_origins_world = t.view(1, 1, 3).expand_as(ray_directions_world)
+
+        rgb_flat = render(
+            model,
+            ray_origins_world.reshape(-1, 3),
+            ray_directions_world.reshape(-1, 3),
+            device,
+        )
+
+        frame = rgb_flat.view(test_dataset.h, test_dataset.w, 3).numpy()
+        frame = np.clip(frame, 0.0, 1.0)
+        frame = (frame * 255.0).astype(np.uint8)
+        frames.append(frame)
+
+    imageio.mimsave(gif_path, frames, fps=args.fps)
+    print(f"Saved gif to: {gif_path}")
 
 
 def main(args):
@@ -174,59 +233,9 @@ def main(args):
     code_dir = Path(__file__).parent
 
     if args.test:
-        model = NeRFmodel().to(device)
-
-        checkpoint_path = code_dir / "checkpoints" / args.dataset / "best_model.pth"
-        state_dict = torch.load(checkpoint_path, map_location=device)
-        model.load_state_dict(state_dict)
-        model.eval()
-
-        test_dataset = NeRFDataset(
-            dataset_dir / "test",
-            batch_size=4096,
-            device=device,
-            downscale=4,
-        )
-
-        orbit_poses = generate_orbit_poses(
-            test_dataset.poses,
-            args.frames,
-        )
-
-        gif_dir = code_dir / "gifs"
-        gif_dir.mkdir(parents=True, exist_ok=True)
-        gif_path = gif_dir / f"{args.dataset}.gif"
-
-        frames = []
-        for pose in orbit_poses:
-            pose = pose.to(test_dataset.ray_directions.device)
-            R, t = pose[:3, :3], pose[:3, 3]
-
-            ray_directions_world = test_dataset.ray_directions @ R.T
-            ray_origins_world = t.view(1, 1, 3).expand_as(ray_directions_world)
-
-            rgb_flat = render(
-                model,
-                ray_origins_world.reshape(-1, 3),
-                ray_directions_world.reshape(-1, 3),
-                device,
-            )
-
-            frame = rgb_flat.view(test_dataset.h, test_dataset.w, 3).numpy()
-            frame = np.clip(frame, 0.0, 1.0)
-            frame = (frame * 255.0).astype(np.uint8)
-            frames.append(frame)
-
-        imageio.mimsave(gif_path, frames, fps=args.fps)
-        print(f"Saved gif to: {gif_path}")
+        _run_test(args, device, dataset_dir, code_dir)
     else:
-        train(
-            train_data_dir=dataset_dir / "train",
-            val_data_dir=dataset_dir / "val",
-            device=device,
-            downscale=args.down,
-            dataset_name=args.dataset,
-        )
+        _run_train(args, device, dataset_dir)
 
 
 if __name__ == "__main__":
