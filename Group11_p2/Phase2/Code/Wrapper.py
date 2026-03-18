@@ -75,8 +75,12 @@ def _estimate_focus_point(camera_positions, forward_dirs):
     return center.astype(np.float32)
 
 
-def _safe_normalize(vec):
-    return vec / (np.linalg.norm(vec) + 1e-8)
+def _resolve_orbit_axis(cam_positions):
+    stds = cam_positions.std(axis=0)
+    idx = int(np.argmin(stds))
+    axis = np.zeros(3, dtype=np.float32)
+    axis[idx] = 1.0
+    return axis, idx
 
 
 def generate_orbit_poses(poses, num_frames):
@@ -87,41 +91,34 @@ def generate_orbit_poses(poses, num_frames):
     forward_dirs = -poses_np[:, :3, 2]
     center = _estimate_focus_point(cam_positions, forward_dirs)
 
-    # Use average camera up as orbit axis; falls back safely if degenerate.
-    orbit_axis = _safe_normalize(poses_np[:, :3, 1].mean(axis=0))
-    if np.linalg.norm(orbit_axis) < 1e-6:
-        orbit_axis = np.array([0.0, 1.0, 0.0], dtype=np.float32)
-
+    # Force a rigid circular trajectory around exactly one axis.
+    orbit_axis, axis_idx = _resolve_orbit_axis(cam_positions)
     offsets = cam_positions - center[None, :]
-    axis_offsets = offsets @ orbit_axis
-    plane_offsets = offsets - axis_offsets[:, None] * orbit_axis[None, :]
 
-    radius = np.median(np.linalg.norm(plane_offsets, axis=1))
+    # Radius is measured in the two coordinates orthogonal to the orbit axis.
+    plane_idx = [i for i in range(3) if i != axis_idx]
+    radius = np.median(np.linalg.norm(offsets[:, plane_idx], axis=1))
     if radius < 1e-6:
         radius = 4.0
 
-    # build an orthonormal basis (u, v) for the orbit plane.
-    u = plane_offsets[0]
-    if np.linalg.norm(u) < 1e-6:
-        ref = np.array([1.0, 0.0, 0.0], dtype=np.float32)
-        if abs(np.dot(ref, orbit_axis)) > 0.9:
-            ref = np.array([0.0, 0.0, 1.0], dtype=np.float32)
-        u = ref - np.dot(ref, orbit_axis) * orbit_axis
-    u = _safe_normalize(u)
-    v = _safe_normalize(np.cross(orbit_axis, u))
+    # Keep the axis coordinate fixed for all frames to avoid tilt/axis drift.
+    axis_level = np.median(cam_positions[:, axis_idx])
 
-    # Keep the camera ring on the same signed offset along orbit axis.
-    axis_level = np.median(axis_offsets)
+    # Preserve the starting viewpoint direction by initializing the orbit
+    # from the first camera's projection in the orbit plane.
+    start_vec = cam_positions[0] - center
+    start_angle = np.arctan2(start_vec[plane_idx[1]], start_vec[plane_idx[0]])
 
     frames = []
-    angles = np.linspace(0.0, 2.0 * np.pi, num_frames, endpoint=False)
+    angles = np.linspace(0.0, 2.0 * np.pi, num_frames, endpoint=False) + start_angle
     for theta in angles:
-        cam_pos = (
-            center
-            + axis_level * orbit_axis
-            + radius * (np.cos(theta) * u + np.sin(theta) * v)
-        ).astype(np.float32)
-        frames.append(_look_at_pose(cam_pos, center.astype(np.float32)))
+        cam_pos = center.copy().astype(np.float32)
+        cam_pos[axis_idx] = axis_level
+        cam_pos[plane_idx[0]] = center[plane_idx[0]] + radius * np.cos(theta)
+        cam_pos[plane_idx[1]] = center[plane_idx[1]] + radius * np.sin(theta)
+        frames.append(
+            _look_at_pose(cam_pos, center.astype(np.float32), world_up=orbit_axis)
+        )
 
     return torch.stack(frames, dim=0)
 
@@ -191,7 +188,10 @@ def main(args):
             downscale=4,
         )
 
-        orbit_poses = generate_orbit_poses(test_dataset.poses, args.frames)
+        orbit_poses = generate_orbit_poses(
+            test_dataset.poses,
+            args.frames,
+        )
 
         gif_dir = code_dir / "gifs"
         gif_dir.mkdir(parents=True, exist_ok=True)
