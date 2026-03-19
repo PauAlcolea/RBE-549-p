@@ -17,7 +17,7 @@ options:
   ```
   ## Phase 2
   ```
-usage: Wrapper.py [-h] [-d {lego,ship}] [--test] [--down DOWN] [--gif] [--frames FRAMES] [--fps FPS]
+usage: Wrapper.py [-h] [-d {lego,ship}] [--test] [--gif] [--down DOWN] [--frames FRAMES] [--fps FPS] [--render_idx RENDER_IDX]
 
 options:
   -h, --help            show this help message and exit
@@ -28,4 +28,6 @@ options:
   --gif                 whether to render a gif
   --frames FRAMES       number of frames to render for the gif
   --fps FPS             frames per second for the output gif
+  --render_idx RENDER_IDX
+                        render and save one test image by index for comparison
   ```
