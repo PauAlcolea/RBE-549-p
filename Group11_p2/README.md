@@ -23,11 +23,11 @@ options:
   -h, --help            show this help message and exit
   -d, --dataset {lego,ship}
                         dataset to train on: lego or ship
-  --test                whether to run test (default is Train)
+  --test                whether to run test mode (default is Train)
   --down DOWN           how much you want to downscale the images so training takes less time
-  --gif                 whether to render a gif
+  --gif                 whether to run gif rendering mode (overrides --test)
   --frames FRAMES       number of frames to render for the gif
   --fps FPS             frames per second for the output gif
   --render_idx RENDER_IDX
-                        render and save one test image by index for comparison
+                        whether to render a single test image by index (overrides --test and --gif)
   ```

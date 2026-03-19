@@ -25,13 +25,13 @@ def parseArgs():
         "--test",
         default=False,
         action="store_true",
-        help="whether to run test (default is Train)",
+        help="whether to run test mode (default is Train)",
     )
     parser.add_argument(
         "--gif",
         default=False,
         action="store_true",
-        help="whether to render a gif",
+        help="whether to run gif rendering mode (overrides --test)",
     )
     parser.add_argument(
         "--down",
@@ -55,7 +55,7 @@ def parseArgs():
         "--render_idx",
         type=int,
         default=None,
-        help="render and save one test image by index for comparison",
+        help="whether to render a single test image by index (overrides --test and --gif)",
     )
 
     return parser.parse_args()
