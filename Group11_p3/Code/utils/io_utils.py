@@ -1,136 +1,167 @@
-# """
-# utils/io_utils.py
-# =================
-# File I/O helpers shared by both the perception pipeline and the Blender module.
+"""
+utils/io_utils.py
+=================
+File I/O helpers shared by both the perception pipeline and the Blender module.
 
-# Covers:
-#   - Config loading (YAML)
-#   - Video frame extraction
-#   - Detection JSON read/write
-#   - Frame listing utilities
-# """
+Covers:
+  - Config loading (YAML)
+  - Video frame extraction
+  - Detection JSON read/write
+  - Frame listing utilities
 
-# from pathlib import Path
-# from typing import Iterator, List, Tuple
+Data layout (under Data/Sequences/):
+  scene1/
+    Raw/
+      2023-02-14_11-04-07-front.mp4
+      2023-02-14_11-04-07-back.mp4
+      2023-02-14_11-04-07-left_repeater.mp4
+      2023-02-14_11-04-07-right_repeater.mp4
+    Undist/
+      2023-02-14_11-04-07-front_undistort.mp4
+      2023-02-14_11-04-07-back_undistort.mp4
+      2023-02-14_11-04-07-left_repeater_undistort.mp4
+      2023-02-14_11-04-07-right_repeater_undistort.mp4
+  scene2/ ...
+"""
+
+from pathlib import Path
+from typing import Iterator, List, Tuple
 # import json
 # import os
 
 
 # # ── Config ────────────────────────────────────────────────────────────────────
 
-# def load_config(config_path: str | Path = None) -> dict:
-#     """
-#     Load config.yaml. Searches for it relative to the Code/ directory
-#     if no explicit path is given.
+def load_config(config_path: str) -> dict:
+    """
+    Load config.yaml. Searches for it relative to the Code/ directory
+    if no explicit path is given.
 
-#     Returns
-#     -------
-#     dict : parsed config
-#     """
-#     import yaml
+    Returns
+    -------
+    dict : parsed config
+    """
+    import yaml
 
-#     if config_path is None:
-#         # Walk up from this file until we find config.yaml
-#         here = Path(__file__).resolve().parent
-#         for candidate in [here, here.parent, here.parent.parent]:
-#             p = candidate / "config.yaml"
-#             if p.exists():
-#                 config_path = p
-#                 break
-#         else:
-#             raise FileNotFoundError("config.yaml not found. Pass an explicit path.")
+    # if config_path is None:
+    #     # Walk up from this file until we find config.yaml
+    #     here = Path(__file__).resolve().parent
+    #     for candidate in [here, here.parent, here.parent.parent]:
+    #         p = candidate / "config.yaml"
+    #         if p.exists():
+    #             config_path = p
+    #             break
+    #     else:
+    #         raise FileNotFoundError("config.yaml not found. Pass an explicit path.")
 
-#     with open(config_path, "r") as f:
-#         return yaml.safe_load(f)
+    with open(config_path, "r") as f:
+        return yaml.safe_load(f)
 
 
 # # ── Video frame extraction ────────────────────────────────────────────────────
 
-# def get_video_frames(
-#     seq_dir: Path,
-#     frame_skip: int = 1,
-# ) -> List[Tuple[int, "np.ndarray"]]:
-#     """
-#     Extract frames from the undistorted video in a sequence directory.
+def get_video_frames(
+    scene_dir: Path,
+    camera: str = "front",
+    frame_skip: int = 1,
+) -> List[Tuple[int, "np.ndarray"]]:
+    """
+    Extract all frames from the undistorted video of one camera in a scene.
+    
+    :param      scene_dir  : path to e.g. Data/Sequences/scene1/
+    :param      camera     : which camera view to load ("front" | "back" | "left_repeater" | "right_repeater")
+    :param      frame_skip : keep every Nth frame (1 = every frame)
 
-#     Looks for a file named 'video.mp4' or any .mp4 inside seq_dir.
-#     Returns a list of (frame_index, bgr_array) tuples.
+    :retur list of (frame_idx, bgr_array) tuples
+    """
+    # import cv2
 
-#     Parameters
-#     ----------
-#     seq_dir    : path to e.g. Data/Sequences/Seq1/
-#     frame_skip : keep every Nth frame (1 = all frames)
+    # video_path = _find_video(scene_dir, camera)
+    # print(f"[io_utils] Loading {video_path.name}")
 
-#     Returns
-#     -------
-#     list of (frame_idx, np.ndarray) — BGR images
-#     """
-#     import cv2
+    # cap = cv2.VideoCapture(str(video_path))
+    # if not cap.isOpened():
+    #     raise RuntimeError(f"cv2 could not open {video_path}")
 
-#     # Find the video file — prefer undistorted if available
-#     video_path = None
-#     for candidate in ["undistorted.mp4", "video.mp4"]:
-#         p = Path(seq_dir) / candidate
-#         if p.exists():
-#             video_path = p
-#             break
-#     if video_path is None:
-#         mp4s = list(Path(seq_dir).glob("*.mp4"))
-#         if mp4s:
-#             video_path = mp4s[0]
-#         else:
-#             raise FileNotFoundError(f"No .mp4 found in {seq_dir}")
+    # frames = []
+    # frame_idx = 0
 
-#     cap = cv2.VideoCapture(str(video_path))
-#     frames = []
-#     frame_idx = 0
+    # while True:
+    #     ret, frame = cap.read()
+    #     if not ret:
+    #         break
+    #     if frame_idx % frame_skip == 0:
+    #         frames.append((frame_idx, frame))
+    #     frame_idx += 1
 
-#     while True:
-#         ret, frame = cap.read()
-#         if not ret:
-#             break
-#         if frame_idx % frame_skip == 0:
-#             frames.append((frame_idx, frame))
-#         frame_idx += 1
-
-#     cap.release()
-#     return frames
+    # cap.release()
+    # print(f"[io_utils] Loaded {len(frames)} frames (frame_skip={frame_skip})")
+    # return frames
+    return
 
 
-# def frame_generator(
-#     seq_dir: Path,
-#     frame_skip: int = 1,
-# ) -> Iterator[Tuple[int, "np.ndarray"]]:
-#     """
-#     Memory-efficient generator version of get_video_frames.
-#     Yields (frame_idx, bgr_array) one at a time — use for long sequences.
-#     """
-#     import cv2
+def frame_generator(
+    scene_dir: Path,
+    camera: str = "front",
+    frame_skip: int = 1,
+) -> Iterator[Tuple[int, "np.ndarray"]]:
+    """
+    Memory-efficient generator version of get_video_frames.
+    Yields (frame_idx, bgr_array) one at a time — prefer this for long sequences.
 
-#     video_path = _find_video(Path(seq_dir))
-#     cap = cv2.VideoCapture(str(video_path))
-#     frame_idx = 0
+    Parameters
+    ----------
+    scene_dir  : path to e.g. Data/Sequences/scene1/
+    camera     : which camera view to load
+    frame_skip : yield every Nth frame
+    """
+    import cv2
 
-#     while True:
-#         ret, frame = cap.read()
-#         if not ret:
-#             break
-#         if frame_idx % frame_skip == 0:
-#             yield frame_idx, frame
-#         frame_idx += 1
+    video_path = _find_video(scene_dir, camera)
+    print(f"[io_utils] Streaming {video_path.name}")
 
-#     cap.release()
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise RuntimeError(f"cv2 could not open {video_path}")
+
+    frame_idx = 0
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            if frame_idx % frame_skip == 0:
+                yield frame_idx, frame
+            frame_idx += 1
+    finally:
+        cap.release()
 
 
-# def _find_video(seq_dir: Path) -> Path:
-#     for name in ["undistorted.mp4", "video.mp4"]:
-#         p = seq_dir / name
-#         if p.exists():
-#             return p
-#     mp4s = list(seq_dir.glob("*.mp4"))
-#     if mp4s:
-#         return mp4s[0]
-#     raise FileNotFoundError(f"No .mp4 found in {seq_dir}")
+def _find_video(scene_dir: Path, camera: str = "front") -> Path:
+    """
+    Locate the undistorted video for a given camera inside a scene directory.
+    Looks inside scene_dir/Undist/ for a file matching *-{camera}_undistort.mp4.
+    The date-timestamp prefix varies per scene, so we glob for the pattern.
+
+    :param      scene_dir : path to e.g. Data/Sequences/scene1/
+    :param      camera    : one of "front" | "back" | "left_repeater" | "right_repeater"
+
+    :returns    Path to the matched .mp4 file
+    """
+    undist_dir = Path(scene_dir) / "Undist"
+    if not undist_dir.exists():
+        raise FileNotFoundError(f"Undist/ directory not found in {scene_dir}")
+
+    matches = list(undist_dir.glob(f"*-{camera}_undistort.mp4"))
+    if not matches:
+        raise FileNotFoundError(
+            f"No undistorted video for camera '{camera}' found in {undist_dir}\n"
+            f"  Expected a file matching: *-{camera}_undistort.mp4"
+        )
+    if len(matches) > 1:
+        print(f"[io_utils] Warning: multiple matches for '{camera}' in {undist_dir}, using first: {matches[0].name}")
+
+    return matches[0]
 
 
 # # ── Detection JSON ────────────────────────────────────────────────────────────
@@ -142,12 +173,13 @@
 #     Parameters
 #     ----------
 #     frame_dict : output of perception/export.py build_frame_dict()
-#     out_path   : destination file, e.g. Data/outputs/detections/Seq1/frame_000001.json
+#     out_path   : destination file, e.g. Outputs/Detections/scene1/frame_000001.json
 #     """
 #     out_path = Path(out_path)
 #     out_path.parent.mkdir(parents=True, exist_ok=True)
 #     with open(out_path, "w") as f:
 #         json.dump(frame_dict, f, indent=2)
+    
 
 
 # def load_detection_json(json_path: Path) -> dict:
@@ -168,7 +200,7 @@
 
 #     Parameters
 #     ----------
-#     detections_dir : e.g. Data/outputs/detections/Seq1/
+#     detections_dir : e.g. Outputs/Detections/scene1/
 
 #     Returns
 #     -------
