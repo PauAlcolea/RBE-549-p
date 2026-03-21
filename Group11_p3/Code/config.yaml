@@ -1,0 +1,103 @@
+# # =============================================================================
+# # EinsteinVision — Team 3 master config
+# # All hardcoded paths and hyperparameters live here.
+# # Import with: from utils.io_utils import load_config; cfg = load_config()
+# # =============================================================================
+
+# # ── Sequences ──────────────────────────────────────────────────────────────
+# sequences:
+#   - Seq1
+#   - Seq2
+#   - Seq3
+#   - Seq4
+#   - Seq5
+#   - Seq6
+#   - Seq7
+#   - Seq8
+#   - Seq9
+#   - Seq10
+#   - Seq11
+#   - Seq12
+#   - Seq13
+
+# # ── Paths (relative to Code/) ──────────────────────────────────────────────
+# paths:
+#   data_dir:         ../Data
+#   sequences_dir:    ../Data/Sequences
+#   calib_dir:        ../Data/Calib
+#   assets_dir:       ../Data/Assets
+#   detections_dir:   ../Data/outputs/detections   # JSON output from perception
+#   videos_dir:       ../Data/outputs/Videos       # Final rendered MP4s
+#   frames_dir:       ../Data/outputs/frames       # Intermediate PNG frames
+
+# # ── Model weights (download separately, place in Code/weights/) ─────────────
+# weights:
+#   yolo:       weights/yolov9c.pt
+#   depth:      weights/depth_anything_v2_vitl.pth
+#   lanes:      weights/clrnet_culane_r18.pth
+
+# # ── Perception settings ────────────────────────────────────────────────────
+# perception:
+#   device: cuda          # cuda | cpu
+#   batch_size: 1         # increase if GPU memory allows
+#   frame_skip: 1         # process every Nth frame (1 = every frame)
+
+#   yolo:
+#     confidence: 0.40
+#     iou_threshold: 0.45
+#     # COCO class IDs we care about for Phase 1
+#     # 0=person, 2=car, 3=motorcycle, 5=bus, 7=truck
+#     classes_phase1: [0, 2, 3, 5, 7]
+
+#   lanes:
+#     model: clrnet        # clrnet | laneatt
+#     max_lanes: 8
+
+#   depth:
+#     encoder: vitl        # vits | vitb | vitl
+#     # Scale normalization: use known real-world heights (meters)
+#     known_heights:
+#       car: 1.5
+#       person: 1.75
+#       stop_sign: 0.75
+
+#   traffic_light:
+#     # HSV ranges for color classification (H in [0,179] for OpenCV)
+#     hsv_red_low:    [0,   120, 70]
+#     hsv_red_high:   [10,  255, 255]
+#     hsv_red_low2:   [170, 120, 70]   # red wraps around hue=0
+#     hsv_red_high2:  [180, 255, 255]
+#     hsv_yellow_low: [15,  120, 70]
+#     hsv_yellow_high: [35,  255, 255]
+#     hsv_green_low:  [40,  120, 70]
+#     hsv_green_high: [90,  255, 255]
+
+# # ── Blender / render settings ──────────────────────────────────────────────
+# blender:
+#   executable: blender   # path to blender binary, or just 'blender' if on PATH
+#   fps: 30
+#   resolution: [1920, 1080]
+#   render_engine: CYCLES  # CYCLES | EEVEE
+#   samples: 32            # lower = faster; 32 is a reasonable Phase 1 default
+#   output_format: PNG
+
+#   camera:
+#     # Intrinsics from calibration — update after running calibration
+#     fx: 1000.0
+#     fy: 1000.0
+#     cx: 960.0
+#     cy: 540.0
+#     # Camera height above ground plane (meters, approximate)
+#     height_m: 1.2
+
+#   # Visual style for Tesla-like overlay
+#   style:
+#     lane_solid_white:  [1.0, 1.0, 1.0]   # RGB 0-1
+#     lane_dashed_white: [1.0, 1.0, 1.0]
+#     lane_solid_yellow: [1.0, 0.85, 0.0]
+#     lane_width: 0.15          # meters (rendered lane stripe width)
+#     car_color:   [0.2, 0.6, 1.0]
+#     ped_color:   [0.1, 0.9, 0.4]
+#     light_red:   [1.0, 0.15, 0.1]
+#     light_yellow: [1.0, 0.85, 0.0]
+#     light_green: [0.1, 0.9, 0.2]
