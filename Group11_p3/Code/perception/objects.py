@@ -87,7 +87,9 @@ class ObjectDetector:
             if cls_id == _PERSON_ID:
                 label = "person"
             elif cls_id in _VEHICLE_IDS:
-                label = "car"
+                label = _VEHICLE_IDS[cls_id]
+            elif cls_id in _TRAFFIC_IDS:
+                label = _TRAFFIC_IDS[cls_id]
             else:
                 continue
 

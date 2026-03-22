@@ -10,7 +10,6 @@
 
 # ── Core perception ────────────────────────────────────────────────────────
 ultralytics>=8.3.0          # YOLO models (downloads weights automatically on first run)
-opencv-python-headless>=4.9 # video reading via cv2 — headless = no GUI deps
 numpy>=1.24                 # arrays everywhere
 
 # ── Config & utilities ─────────────────────────────────────────────────────
