@@ -116,7 +116,7 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
         frame_generator(scene_dir, camera=camera, frame_skip=cfg["perception"]["frame_skip"])
     ):
         # --- Run detectors ---
-        # object_results = models["objects"].detect(frame_bgr)
+        object_results = models["objects"].detect(frame_bgr)
         # lane_results    = models["lanes"].detect(frame_bgr)
         # depth_map       = models["depth"].estimate(frame_bgr)
         # object_results  = models["depth"].lift_to_3d(object_results, depth_map, cfg)
