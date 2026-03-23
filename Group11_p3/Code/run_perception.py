@@ -29,14 +29,14 @@ import sys
 # Make sure we can import our modules regardless of where the script is run from
 # sys.path.insert(0, str(Path(__file__).parent))
 
-from utils.io_utils import load_config, frame_generator, get_video_frames#, save_detection_json
+from utils.io_utils import load_config, frame_generator, get_video_frames, save_detection_json
 from utils.viz import draw_detections, show_or_save
 # from perception.lanes import LaneDetector
 from perception.objects import ObjectDetector
 # from perception.depth import DepthEstimator
 # from perception.traffic import TrafficLightDetector
 # from perception.signs import SignDetector
-# from perception.export import build_frame_dict
+from perception.export import build_frame_dict
 
 
 def parse_args():

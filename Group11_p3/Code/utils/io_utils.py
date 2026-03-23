@@ -27,7 +27,7 @@ Data layout (under Data/Sequences/):
 from pathlib import Path
 from typing import Iterator, List, Tuple
 import numpy as np
-# import json
+import json
 # import os
 
 
@@ -165,21 +165,21 @@ def _find_video(scene_dir: Path, camera: str = "front") -> Path:
     return matches[0]
 
 
-# # ── Detection JSON ────────────────────────────────────────────────────────────
+# ── Detection JSON ────────────────────────────────────────────────────────────
 
-# def save_detection_json(frame_dict: dict, out_path: Path):
-#     """
-#     Write a per-frame detection dict to a JSON file.
+def save_detection_json(frame_dict: dict, out_path: Path):
+    """
+    Write a per-frame detection dict to a JSON file.
 
-#     Parameters
-#     ----------
-#     frame_dict : output of perception/export.py build_frame_dict()
-#     out_path   : destination file, e.g. Outputs/Detections/scene1/frame_000001.json
-#     """
-#     out_path = Path(out_path)
-#     out_path.parent.mkdir(parents=True, exist_ok=True)
-#     with open(out_path, "w") as f:
-#         json.dump(frame_dict, f, indent=2)
+    Parameters
+    ----------
+    frame_dict : output of perception/export.py build_frame_dict()
+    out_path   : destination file, e.g. Outputs/Detections/scene1/frame_000001.json
+    """
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w") as f:
+        json.dump(frame_dict, f, indent=2)
     
 
 
