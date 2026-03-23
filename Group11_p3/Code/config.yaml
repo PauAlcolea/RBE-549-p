@@ -80,6 +80,16 @@ perception:
     hsv_yellow_high: [35,  255, 255]
     hsv_green_low:  [40,  120, 70]
     hsv_green_high: [90,  255, 255]
+    min_color_pixels: 30            # min pixel count to declare a color (vs "unknown")
+
+  stop_sign:
+    min_contour_area: 500       # fallback: ignore red shapes smaller than this (px²)
+    dp_epsilon_factor: 0.04     # Douglas-Peucker coarseness (fraction of perimeter)
+    min_sides: 6                # fallback: min polygon vertices to count as octagon
+    max_sides: 10               # fallback: max polygon vertices
+    aspect_ratio_min: 0.5       # fallback: width/height ratio bounds
+    aspect_ratio_max: 2.0
+    fallback_confidence: 0.55   # confidence assigned to fallback detections
 
 # ── Blender / render settings ──────────────────────────────────────────────
 blender:

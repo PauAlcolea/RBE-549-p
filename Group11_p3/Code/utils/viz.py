@@ -115,15 +115,15 @@ def draw_traffic_lights(frame_bgr: np.ndarray, traffic_lights: list) -> np.ndarr
     return out
 
 
-# def draw_signs(frame_bgr: np.ndarray, signs: list) -> np.ndarray:
-#     """Draw sign bboxes."""
-#     out = frame_bgr.copy()
-#     for sign in signs:
-#         x1, y1, x2, y2 = [int(v) for v in sign.bbox]
-#         cv2.rectangle(out, (x1, y1), (x2, y2), _COLOR_SIGN, 2)
-#         cv2.putText(out, sign.label, (x1, y1 - 6),
-#                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, _COLOR_SIGN, 1)
-#     return out
+def draw_signs(frame_bgr: np.ndarray, signs: list) -> np.ndarray:
+    """Draw sign bboxes."""
+    out = frame_bgr.copy()
+    for sign in signs:
+        x1, y1, x2, y2 = [int(v) for v in sign.bbox]
+        cv2.rectangle(out, (x1, y1), (x2, y2), _COLOR_SIGN, 2)
+        cv2.putText(out, sign.label, (x1, y1 - 6),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, _COLOR_SIGN, 1)
+    return out
 
 
 # def draw_depth_map(depth_map: np.ndarray) -> np.ndarray:
