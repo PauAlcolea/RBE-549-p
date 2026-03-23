@@ -97,22 +97,22 @@ def draw_detections(frame_bgr: np.ndarray, detections: list) -> np.ndarray:
 #     return out
 
 
-# def draw_traffic_lights(frame_bgr: np.ndarray, traffic_lights: list) -> np.ndarray:
-#     """Draw traffic light bboxes with their classified color."""
-#     out = frame_bgr.copy()
-#     color_map = {
-#         "red":     _COLOR_TL_RED,
-#         "yellow":  _COLOR_TL_YELLOW,
-#         "green":   _COLOR_TL_GREEN,
-#         "unknown": (128, 128, 128),
-#     }
-#     for tl in traffic_lights:
-#         x1, y1, x2, y2 = [int(v) for v in tl.bbox]
-#         c = color_map.get(tl.color, (128, 128, 128))
-#         cv2.rectangle(out, (x1, y1), (x2, y2), c, 2)
-#         cv2.putText(out, tl.color, (x1, y1 - 6),
-#                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, c, 1)
-#     return out
+def draw_traffic_lights(frame_bgr: np.ndarray, traffic_lights: list) -> np.ndarray:
+    """Draw traffic light bboxes with their classified color."""
+    out = frame_bgr.copy()
+    color_map = {
+        "red":     _COLOR_TL_RED,
+        "yellow":  _COLOR_TL_YELLOW,
+        "green":   _COLOR_TL_GREEN,
+        "unknown": (128, 128, 128),
+    }
+    for tl in traffic_lights:
+        x1, y1, x2, y2 = [int(v) for v in tl.bbox]
+        c = color_map.get(tl.color, (128, 128, 128))
+        cv2.rectangle(out, (x1, y1), (x2, y2), c, 2)
+        cv2.putText(out, tl.color, (x1, y1 - 6),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, c, 1)
+    return out
 
 
 # def draw_signs(frame_bgr: np.ndarray, signs: list) -> np.ndarray:
