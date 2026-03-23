@@ -50,10 +50,9 @@ def build_frame_dict(
     -------
     dict matching the schema above.
     """
-    vehicles        = [d for d in objects if d.label == ("bicycle" | "car" | "motorcycle" | "bus" | "truck")]
+    vehicles        = [d for d in objects if d.label in {"bicycle", "car", "motorcycle", "bus", "truck"}]
     pedestrians     = [d for d in objects if d.label == "person"]
-    # traffic_lights  = [d for d in objects if d.label == "traffic_light"]
-    # stop_signs      = [d for d in objects if d.label == "stop_sign"]
+
 
     return {
         "frame":     frame_idx,
@@ -90,7 +89,7 @@ def build_frame_dict(
         "traffic_lights": [
             {
                 "bbox":    [round(v, 2) for v in tl.bbox],
-                # "color":   tl.color,
+                "color":   tl.color,
                 # "depth_m": round(tl.depth_m, 3),
             }
             for tl in traffic_lights
