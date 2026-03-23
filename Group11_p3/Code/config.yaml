@@ -39,11 +39,11 @@ paths:
   videos_dir:       ../Outputs/Videos       # Final rendered MP4s
   frames_dir:       ../Outputs/Frames       # Intermediate PNG frames
 
-# ── Model weights (download separately, place in Code/weights/) ─────────────
+# ── Model weights (download separately, place in Code/../Weights/) ─────────────
 weights:
-  yolo:       weights/yolov9c.pt
-  depth:      weights/depth_anything_v2_vitl.pth
-  lanes:      weights/clrnet_culane_r18.pth
+  yolo:       ../Weights/yolov9c.pt
+  depth:      ../Weights/depth_anything_v2_vitl.pth
+  lanes:      ../Weights/clrnet_culane_r18.pth
 
 # ── Perception settings ────────────────────────────────────────────────────
 perception:
