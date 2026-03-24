@@ -68,6 +68,8 @@ perception:
       features: 128
       out_channels: [96, 192, 384, 768]
       max_depth: 80        
+
+    download_url: "https://huggingface.co/depth-anything/Depth-Anything-V2-Metric-VKITTI-Base/resolve/main/depth_anything_v2_metric_vkitti_vitb.pth?download=true"
     # Scale normalization: use known real-world heights (meters)
     known_heights:
       car: 1.5

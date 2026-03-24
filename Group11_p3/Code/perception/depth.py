@@ -17,10 +17,11 @@
 # """
 
 # from typing import List
+from pathlib import Path
 import numpy as np
 from .Depth_Anything_v2.metric_depth.depth_anything_v2.dpt import DepthAnythingV2
 import torch
-import cv2
+from utils.io_utils import download_file_if_missing
 
 
 class DepthEstimator:
@@ -47,9 +48,15 @@ class DepthEstimator:
         self.model = self._load_model(cfg["weights"]["depth"])
 
     def _load_model(self, weights_path: str) -> DepthAnythingV2:
+        weights_path = Path(weights_path)
+        if not weights_path.exists():
+            depth_cfg = self.cfg.get("perception", {}).get("depth", {})
+            download_url = depth_cfg.get("download_url")
+            download_file_if_missing(weights_path, download_url)
+
         model = DepthAnythingV2(**{**self.cfg["perception"]["depth"]["model"]})
         model.load_state_dict(
-            torch.load(weights_path, map_location=self.device, weights_only=False)
+            torch.load(str(weights_path), map_location=self.device, weights_only=False)
         )
         model = model.to(self.device).eval()
         return model

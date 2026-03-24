@@ -26,8 +26,7 @@ Data layout (under Data/Sequences/):
 
 from pathlib import Path
 from typing import Iterator, List, Tuple
-# import json
-# import os
+import os
 
 
 # # ── Config ────────────────────────────────────────────────────────────────────
@@ -56,6 +55,40 @@ def load_config(config_path: str) -> dict:
 
     with open(config_path, "r") as f:
         return yaml.safe_load(f)
+
+
+def download_file_if_missing(path: os.PathLike | str, url: str, timeout: float = 60.0) -> Path:
+    """Download a file from ``url`` to ``path`` if it does not already exist.
+
+    Uses a temporary file and atomic rename to avoid leaving corrupted files
+    on failed downloads.
+    """
+    target = Path(path)
+    if target.exists():
+        return target
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    import urllib.request
+    import shutil
+
+    tmp_path = target.with_suffix(target.suffix + ".tmp")
+
+    print(f"[io_utils] Downloading {url} -> {target} ...")
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response, open(tmp_path, "wb") as out_file:
+            shutil.copyfileobj(response, out_file)
+        tmp_path.replace(target)
+        print(f"[io_utils] Download complete: {target}")
+    except Exception as e:  # pragma: no cover - network dependent
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
+        raise RuntimeError(f"Failed to download file from {url} to {target}: {e}") from e
+
+    return target
 
 
 # # ── Video frame extraction ────────────────────────────────────────────────────
