@@ -30,6 +30,7 @@ import sys
 # sys.path.insert(0, str(Path(__file__).parent))
 
 from utils.io_utils import load_config, frame_generator, get_video_frames#, save_detection_json
+from utils.viz import draw_detections, show_or_save
 # from perception.lanes import LaneDetector
 from perception.objects import ObjectDetector
 # from perception.depth import DepthEstimator
@@ -116,7 +117,15 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
         frame_generator(scene_dir, camera=camera, frame_skip=cfg["perception"]["frame_skip"])
     ):
         # --- Run detectors ---
-        # object_results = models["objects"].detect(frame_bgr)
+        object_results = models["objects"].detect(frame_bgr)
+
+        if debug:
+            annotated = draw_detections(frame_bgr, object_results)
+            show_or_save(
+                annotated,
+                save_path=str(out_dir / f"debug_frame_{frame_idx:06d}.png")
+            )
+
         # lane_results    = models["lanes"].detect(frame_bgr)
         # depth_map       = models["depth"].estimate(frame_bgr)
         # object_results  = models["depth"].lift_to_3d(object_results, depth_map, cfg)
