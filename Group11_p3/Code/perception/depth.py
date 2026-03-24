@@ -17,68 +17,57 @@
 # """
 
 # from typing import List
-# import numpy as np
+import numpy as np
+from .Depth_Anything_v2.metric_depth.depth_anything_v2.dpt import DepthAnythingV2
+import torch
+import cv2
 
 
-# class DepthEstimator:
-#     """
-#     Wraps Depth Anything V2 for per-frame dense depth estimation.
+class DepthEstimator:
+    """
+    Wraps Depth Anything V2 for per-frame dense depth estimation.
 
-#     Usage
-#     -----
-#     estimator = DepthEstimator(cfg, device="cuda")
-#     depth_map = estimator.estimate(frame_bgr)         # H x W float32 array
-#     objects   = estimator.lift_to_3d(objects, depth_map, cfg)
-#     """
+    Usage
+    -----
+    estimator = DepthEstimator(cfg, device="cuda")
+    depth_map = estimator.estimate(frame_bgr)         # H x W float32 array
+    objects   = estimator.lift_to_3d(objects, depth_map, cfg)
+    """
 
-#     def __init__(self, cfg: dict, device: str = "cuda"):
-#         self.cfg = cfg
-#         self.device = device
-#         self.encoder = cfg["perception"]["depth"]["encoder"]
-#         self.known_heights = cfg["perception"]["depth"]["known_heights"]
-#         # Camera intrinsics
-#         cam = cfg["blender"]["camera"]
-#         self.fx = cam["fx"]
-#         self.fy = cam["fy"]
-#         self.cx = cam["cx"]
-#         self.cy = cam["cy"]
-#         self.model = self._load_model(cfg["weights"]["depth"])
+    def __init__(self, cfg: dict, device: str = "cuda"):
+        self.cfg = cfg
+        self.device = device
+        self.known_heights = cfg["perception"]["depth"]["known_heights"]
+        # Camera intrinsics
+        cam = cfg["blender"]["camera"]
+        self.fx = cam["fx"]
+        self.fy = cam["fy"]
+        self.cx = cam["cx"]
+        self.cy = cam["cy"]
+        self.model = self._load_model(cfg["weights"]["depth"])
 
-#     def _load_model(self, weights_path: str):
-#         # TODO: uncomment once Depth Anything V2 repo is cloned and installed
-#         # Add the depth_anything_v2 repo to sys.path first:
-#         # sys.path.insert(0, "../depth-anything-v2")
-#         # from depth_anything_v2.dpt import DepthAnythingV2
-#         # model_configs = {
-#         #     'vits': {'encoder': 'vits', 'features': 64,  'out_channels': [48, 96, 192, 384]},
-#         #     'vitb': {'encoder': 'vitb', 'features': 128, 'out_channels': [96, 192, 384, 768]},
-#         #     'vitl': {'encoder': 'vitl', 'features': 256, 'out_channels': [256,512,1024,1024]},
-#         # }
-#         # model = DepthAnythingV2(**model_configs[self.encoder])
-#         # model.load_state_dict(torch.load(weights_path, map_location='cpu'))
-#         # model = model.to(self.device).eval()
-#         # return model
-#         print(f"[DepthEstimator] STUB: would load Depth Anything V2 ({self.encoder})")
-#         return None
+    def _load_model(self, weights_path: str) -> DepthAnythingV2:
+        model = DepthAnythingV2(**{**self.cfg["perception"]["depth"]["model"]})
+        model.load_state_dict(torch.load(weights_path, map_location=self.device, weights_only=False))
+        model = model.to(self.device).eval()
+        return model
 
-#     def estimate(self, frame_bgr: np.ndarray) -> np.ndarray:
-#         """
-#         Run depth estimation on one BGR frame.
+    def estimate(self, frame_bgr: np.ndarray) -> np.ndarray:
+        """
+        Run depth estimation on one BGR frame.
 
-#         Returns
-#         -------
-#         np.ndarray, shape (H, W), dtype float32
-#             Relative inverse depth map. Larger values = closer to camera.
-#             Call lift_to_3d to convert to metric scale.
-#         """
-#         if self.model is None:
-#             h, w = frame_bgr.shape[:2]
-#             return np.ones((h, w), dtype=np.float32)
-
-#         # TODO: implement
-#         # depth = self.model.infer_image(frame_bgr)   # returns H x W float32
-#         # return depth
-#         raise NotImplementedError("DepthEstimator.estimate not yet implemented")
+        Returns
+        -------
+        np.ndarray, shape (H, W), dtype float32
+            Relative inverse depth map. Larger values = closer to camera.
+            Call lift_to_3d to convert to metric scale.
+        """
+        depth = self.model.infer_image(frame_bgr)   # returns H x W float32
+        # TODO: convert relative depth to metric scale using self.known_heights and camera intrinsics.
+        DEPTH_SCALE_FACTOR = 1
+        metric_depth = depth * DEPTH_SCALE_FACTOR  # Placeholder scaling
+        depth_viz = (metric_depth / np.max(metric_depth) * 255).astype(np.uint8)
+        return depth
 
 #     def lift_to_3d(self, detections: list, depth_map: np.ndarray, cfg: dict) -> list:
 #         """
