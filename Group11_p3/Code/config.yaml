@@ -31,10 +31,10 @@ cameras:
 
 # ── Paths (relative to Code/) ──────────────────────────────────────────────
 paths:
-  data_dir:         ../Data/P3Data
+  data_dir:         ../Data
   sequences_dir:    ../Data/Sequences
-  calib_dir:        ../Data/P3Data/Calib
-  assets_dir:       ../Data/P3Data/Assets
+  calib_dir:        ../Data/Calib
+  assets_dir:       ../Data/Assets
   detections_dir:   ../Outputs/Detections   # JSON output from perception
   videos_dir:       ../Outputs/Videos       # Final rendered MP4s
   frames_dir:       ../Outputs/Frames       # Intermediate PNG frames
