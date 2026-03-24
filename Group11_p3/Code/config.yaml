@@ -42,6 +42,7 @@ paths:
 # ── Model weights (download separately, place in Code/../Weights/) ─────────────
 weights:
   yolo:       ../Weights/yolov9c.pt
+  rtdetr:     ../Weights/rtdetr-x.pt      # download: ultralytics rtdetr-x (COCO pretrained)
   depth:      ../Weights/depth_anything_v2_vitl.pth
   lanes:      ../Weights/clrnet_culane_r18.pth
 
@@ -52,11 +53,19 @@ perception:
   frame_skip: 30         # process every Nth frame (30 = every frame)
 
   yolo:
-    confidence: 0.40
+    confidence: 0.25    # low on purpose
     iou_threshold: 0.45
     # COCO class IDs we care about for Phase 1
     # 0=person, 1=bicycle, 2=car, 3=motorcycle, 5=bus, 7=truck, 9=traffic light, 11=stop sign
     classes_phase1: [0, 1, 2, 3, 5, 7, 9, 11]
+  
+  rtdetr:
+    confidence: 0.25          # also low — merged threshold does the real gating
+    iou_threshold: 0.45
+    match_iou: 0.50           # IoU needed between a YOLO and RT-DETR box to count as same object
+                              # lower = more lenient matching (good for large/truncated objects)
+                              # higher = stricter spatial agreement required
+    merged_confidence: 0.65   # final gate: average of both scores must exceed this (0.65 if too many false positives, 0.45 if missing too many real objects)
 
   lanes:
     model: clrnet        # clrnet | laneatt
@@ -83,13 +92,16 @@ perception:
     min_color_pixels: 30            # min pixel count to declare a color (vs "unknown")
 
   stop_sign:
-    min_contour_area: 500       # fallback: ignore red shapes smaller than this (px²)
+    min_contour_area: 800       # fallback: ignore red shapes smaller than this (px²)
+    max_contour_area: 40000     # fallback: ignore red shapes larger than this (px²)
     dp_epsilon_factor: 0.04     # Douglas-Peucker coarseness (fraction of perimeter)
-    min_sides: 6                # fallback: min polygon vertices to count as octagon
-    max_sides: 10               # fallback: max polygon vertices
-    aspect_ratio_min: 0.5       # fallback: width/height ratio bounds
-    aspect_ratio_max: 2.0
-    fallback_confidence: 0.55   # confidence assigned to fallback detections
+    min_sides: 7                # tightened — rectangles approx to 4-6 sides
+    max_sides: 9                # tightened — real octagons land in 7-9
+    aspect_ratio_min: 0.70      # stop signs are nearly square
+    aspect_ratio_max: 1.43      # inverse of 0.70 for symmetry
+    min_solidity: 0.82          # contour area / convex hull area; filled octagon ~0.95
+    fallback_confidence: 0.50
+    fallback_window_frames: 10  # how many frames after a YOLO sighting to keep fallback active
 
 # ── Blender / render settings ──────────────────────────────────────────────
 blender:

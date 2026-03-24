@@ -29,7 +29,7 @@ import sys
 # Make sure we can import our modules regardless of where the script is run from
 # sys.path.insert(0, str(Path(__file__).parent))
 
-from utils.io_utils import load_config, frame_generator, get_video_frames, save_detection_json
+from utils.io_utils import load_config, frame_generator, save_detection_json
 from utils.viz import draw_detections, show_or_save, draw_traffic_lights, draw_signs
 # from perception.lanes import LaneDetector
 from perception.objects import ObjectDetector
