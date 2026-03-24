@@ -48,7 +48,9 @@ class DepthEstimator:
 
     def _load_model(self, weights_path: str) -> DepthAnythingV2:
         model = DepthAnythingV2(**{**self.cfg["perception"]["depth"]["model"]})
-        model.load_state_dict(torch.load(weights_path, map_location=self.device, weights_only=False))
+        model.load_state_dict(
+            torch.load(weights_path, map_location=self.device, weights_only=False)
+        )
         model = model.to(self.device).eval()
         return model
 
@@ -62,12 +64,9 @@ class DepthEstimator:
             Relative inverse depth map. Larger values = closer to camera.
             Call lift_to_3d to convert to metric scale.
         """
-        depth = self.model.infer_image(frame_bgr)   # returns H x W float32
-        # TODO: convert relative depth to metric scale using self.known_heights and camera intrinsics.
-        DEPTH_SCALE_FACTOR = 1
-        metric_depth = depth * DEPTH_SCALE_FACTOR  # Placeholder scaling
-        depth_viz = (metric_depth / np.max(metric_depth) * 255).astype(np.uint8)
+        depth = self.model.infer_image(frame_bgr)  # returns H x W float32
         return depth
+
 
 #     def lift_to_3d(self, detections: list, depth_map: np.ndarray, cfg: dict) -> list:
 #         """
