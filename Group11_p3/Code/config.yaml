@@ -59,8 +59,10 @@ perception:
     classes_phase1: [0, 2, 3, 5, 7]
 
   lanes:
-    model: clrnet        # clrnet | laneatt
+    model: UFLD
     max_lanes: 8
+
+    resources_url: "https://s3.ap-northeast-2.wasabisys.com/pinto-model-zoo/324_Ultra-Fast-Lane-Detection-v2/resources.tar.gz"
 
   depth:
     model:

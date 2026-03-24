@@ -14,6 +14,10 @@
 # from dataclasses import dataclass, field
 # from typing import List, Tuple
 # import numpy as np
+from pathlib import Path
+from .Ultra_Fast_Lane_Detection_v2.deploy.trt_infer import UFLDv2
+import tarfile
+from Group11_p3.Code.utils.io_utils import download_file_if_missing
 
 
 # @dataclass
@@ -25,32 +29,44 @@
 #     confidence: float = 1.0
 
 
-# class LaneDetector:
-#     """
-#     Wraps CLRNet for lane detection.
+class LaneDetector:
+    """
+    Wraps UFLD V2 for lane detection.
 
-#     Usage
-#     -----
-#     detector = LaneDetector(cfg, device="cuda")
-#     lanes = detector.detect(frame_bgr)   # list[Lane]
-#     """
+    Usage
+    -----
+    detector = LaneDetector(cfg, device="cuda")
+    lanes = detector.detect(frame_bgr)   # list[Lane]
+    """
 
-#     def __init__(self, cfg: dict, device: str = "cuda"):
-#         self.cfg = cfg
-#         self.device = device
-#         self.model_name = cfg["perception"]["lanes"]["model"]
-#         self.max_lanes  = cfg["perception"]["lanes"]["max_lanes"]
-#         self.model = self._load_model()
+    def __init__(self, cfg: dict, device: str = "cuda"):
+        self.cfg = cfg
+        self.device = device
+        self.model_name = cfg["perception"]["lanes"]["model"]
+        self.max_lanes  = cfg["perception"]["lanes"]["max_lanes"]
+        self.model = self._load_model(cfg["weights"]["lanes"])
 
-#     def _load_model(self):
-#         # TODO: load CLRNet checkpoint
-#         # CLRNet requires mmcv + its own config system.
-#         # See: https://github.com/Turoad/CLRNet
-#         # from clrnet.utils.config import Config
-#         # from clrnet.models.registry import build_net
-#         # ...
-#         print(f"[LaneDetector] STUB: would load {self.model_name}")
-#         return None
+    def _load_model(self, weights_path: str = None):
+        weights_path = Path(weights_path)
+        if not weights_path.exists():
+            resources_url = self.cfg["perception"]["anes"].get("resources_url")
+            resources_dir = Path("weights") / "ufld_resources"
+            download_file_if_missing(Path("weights") / "ufld_resources.tar.gz", resources_url)
+            resources_dir.mkdir(parents=True, exist_ok=True)
+            tar_path = Path("weights") / "ufld_resources.tar.gz"
+            with tarfile.open(tar_path, "r:gz") as tar:
+                tar.extractall(resources_dir)
+
+            # 3. Optionally delete the archive
+            tar_path.unlink(missing_ok=True)
+
+        engine_path = weights_path / "culane_res34.engine"
+        config_path = Path(__file__).parent / "Ultra_Fast_Lane_Detection_v2" / "configs" / "culane_res34.py"
+        ori_size = (1280, 960)
+        model = UFLDv2(engine_path, config_path, ori_size)
+        if model is not None:
+            print(f"[LaneDetector] Loaded UFLD V2 model from {engine_path}")
+        return model
 
 #     def detect(self, frame_bgr: np.ndarray) -> List[Lane]:
 #         """
