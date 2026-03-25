@@ -1,20 +1,20 @@
-# """
-# perception/depth.py
-# ===================
-# Monocular depth estimation using Depth Anything V2.
+"""
+perception/depth.py
+===================
+Monocular depth estimation using Depth Anything V2.
 
-# Key responsibilities:
-#   1. Produce a dense depth map (relative scale) for each frame.
-#   2. Convert relative depth to metric scale using known object sizes.
-#   3. Lift 2D bounding box centers to approximate 3D positions using
-#      the camera intrinsics from config.yaml.
+Key responsibilities:
+  1. Produce a dense depth map (relative scale) for each frame.
+  2. Convert relative depth to metric scale using known object sizes.
+  3. Lift 2D bounding box centers to approximate 3D positions using
+     the camera intrinsics from config.yaml.
 
-# Scale recovery strategy (from project hints):
-#   - Find objects in the scene with known real-world heights
-#     (cars ~1.5 m, people ~1.75 m, stop signs ~0.75 m).
-#   - Compute scale factor: scale = known_height / (bbox_height_px * depth_relative)
-#   - Average across multiple known objects for robustness.
-# """
+Scale recovery strategy (from project hints):
+  - Find objects in the scene with known real-world heights
+    (cars ~1.5 m, people ~1.75 m, stop signs ~0.75 m).
+  - Compute scale factor: scale = known_height / (bbox_height_px * depth_relative)
+  - Average across multiple known objects for robustness.
+"""
 
 # from typing import List
 from pathlib import Path
@@ -26,7 +26,7 @@ from utils.io_utils import download_file_if_missing
 
 class DepthEstimator:
     """
-    Wraps Depth Anything V2 for per-frame dense depth estimation.
+    Wraps Depth Anything V2 for per-frame dense depth estimation
 
     Usage
     -----

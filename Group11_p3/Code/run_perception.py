@@ -34,7 +34,7 @@ from utils.io_utils import load_config, frame_generator, save_detection_json
 from utils.viz import draw_detections, show_or_save, draw_traffic_lights, draw_signs
 # from perception.lanes import LaneDetector
 from perception.objects import ObjectDetector
-# from perception.depth import DepthEstimator
+from perception.depth import DepthEstimator
 from perception.traffic import TrafficLightDetector
 from perception.signs import SignDetector
 from perception.export import build_frame_dict
@@ -93,7 +93,7 @@ def load_models(cfg, device):
     models = {
         # "lanes":   LaneDetector(cfg, device),
         "objects": ObjectDetector(cfg, device),
-        # "depth":   DepthEstimator(cfg, device),
+        "depth":   DepthEstimator(cfg, device),
         "traffic": TrafficLightDetector(cfg),
         "signs":   SignDetector(cfg),
     }
@@ -120,7 +120,7 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
         # --- Run detectors ---
         object_results = models["objects"].detect(frame_bgr)
         # lane_results    = models["lanes"].detect(frame_bgr)
-        # depth_map       = models["depth"].estimate(frame_bgr)
+        depth_map       = models["depth"].estimate(frame_bgr)
         # object_results  = models["depth"].lift_to_3d(object_results, depth_map, cfg)
         traffic_results = models["traffic"].detect(frame_bgr, object_results)
         sign_results    = models["signs"].detect(frame_bgr, object_results)
@@ -140,15 +140,15 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
 
 
         # --- Build and save JSON ---
-        # frame_dict = build_frame_dict(
-        #     frame_idx=frame_idx,
-        #     fps=cfg["blender"]["fps"],
-        #     lanes=lane_results,
-        #     objects=object_results,
-        #     traffic_lights=traffic_results,
-        #     stop_signs=sign_results,
-        # )
-        # save_detection_json(frame_dict, out_dir / f"frame_{frame_idx:06d}.json")
+        frame_dict = build_frame_dict(
+            frame_idx=frame_idx,
+            fps=cfg["blender"]["fps"],
+            # lanes=lane_results,
+            objects=object_results,
+            traffic_lights=traffic_results,
+            stop_signs=sign_results,
+        )
+        save_detection_json(frame_dict, out_dir / f"frame_{frame_idx:06d}.json")
 
         if (i + 1) % 50 == 0:
             print(f"  [{scene_name}/{camera}] {i+1} frames processed")

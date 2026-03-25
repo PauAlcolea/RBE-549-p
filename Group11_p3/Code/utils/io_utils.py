@@ -59,7 +59,7 @@ def load_config(config_path: str) -> dict:
         return yaml.safe_load(f)
 
 
-def download_file_if_missing(path: os.PathLike | str, url: str, timeout: float = 60.0) -> Path:
+def download_file_if_missing(path: os.PathLike, url: str, timeout: float = 60.0) -> Path:
     """Download a file from ``url`` to ``path`` if it does not already exist.
 
     Uses a temporary file and atomic rename to avoid leaving corrupted files
