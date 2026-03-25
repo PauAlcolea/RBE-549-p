@@ -71,8 +71,8 @@ def build_frame_dict(
             {
                 "bbox":        [round(v, 2) for v in det.bbox],
                 "class":       det.label,
-                # "depth_m":     round(det.depth_m, 3),
-                # "position_3d": [round(v, 3) for v in det.position_3d],
+                "depth_m":     round(det.depth_m, 3),
+                "position_3d": [round(v, 3) for v in det.position_3d],
             }
             for det in vehicles
         ],
@@ -80,8 +80,8 @@ def build_frame_dict(
         "pedestrians": [
             {
                 "bbox":        [round(v, 2) for v in det.bbox],
-                # "depth_m":     round(det.depth_m, 3),
-                # "position_3d": [round(v, 3) for v in det.position_3d],
+                "depth_m":     round(det.depth_m, 3),
+                "position_3d": [round(v, 3) for v in det.position_3d],
             }
             for det in pedestrians
         ],
@@ -90,7 +90,7 @@ def build_frame_dict(
             {
                 "bbox":    [round(v, 2) for v in tl.bbox],
                 "color":   tl.color,
-                # "depth_m": round(tl.depth_m, 3),
+                "depth_m": round(tl.depth_m, 3),
             }
             for tl in traffic_lights
         ],
@@ -98,8 +98,8 @@ def build_frame_dict(
         "stop_signs": [
             {
                 "bbox":        [round(v, 2) for v in sign.bbox],
-                # "depth_m":     round(sign.depth_m, 3),
-                # "position_3d": [round(v, 3) for v in sign.position_3d],
+                "depth_m":     round(sign.depth_m, 3),
+                "position_3d": [round(v, 3) for v in sign.position_3d],
             }
             for sign in stop_signs
         ],

@@ -68,59 +68,119 @@ class DepthEstimator:
         Returns
         -------
         np.ndarray, shape (H, W), dtype float32
-            Relative inverse depth map. Larger values = closer to camera.
-            Call lift_to_3d to convert to metric scale.
+            Metric depth map in meters (direct output from Depth Anything V2
+            metric model). Larger values = farther from camera.
         """
         depth = self.model.infer_image(frame_bgr)  # returns H x W float32
         return depth
 
 
-#     def lift_to_3d(self, detections: list, depth_map: np.ndarray, cfg: dict) -> list:
-#         """
-#         Enrich each Detection with a metric depth estimate and 3D position.
+    def lift_to_3d(self, detections: list, depth_map: np.ndarray) -> list:
+        """
+        Enrich each Detection with a metric depth estimate and 3D position.
 
-#         Strategy
-#         --------
-#         1. For each detection, read the median depth value inside the bbox.
-#         2. Compute metric scale using known real-world heights where possible.
-#         3. Compute 3D position using pinhole camera model:
-#                X = (cx_px - fx) / fx * Z
-#                Y = (cy_px - fy) / fy * Z
-#                Z = depth_metric
+        The depth model (Depth Anything V2 metric, VKITTI-trained) already outputs
+        metric depth in meters. We read the median depth from the inner 50% of the
+        bbox ROI as Z (shrinking the ROI avoids background bleed on object edges),
+        then apply a scale correction computed from known-height objects to
+        compensate for domain shift between VKITTI and our footage.
 
-#         Modifies detections in-place and returns them.
-#         """
-#         if not detections:
-#             return detections
+        Pinhole back-projection to camera-frame 3D coordinates:
+            X = (u - cx) / fx * Z      # positive X = right
+            Y = (v - cy) / fy * Z      # positive Y = down
+            Z = depth_m                # positive Z = forward into scene
 
-#         # TODO: implement
-#         # scale = self._estimate_scale(detections, depth_map)
-#         # for det in detections:
-#         #     x1, y1, x2, y2 = det.bbox
-#         #     cx_px = (x1 + x2) / 2
-#         #     cy_px = (y1 + y2) / 2
-#         #     roi = depth_map[int(y1):int(y2), int(x1):int(x2)]
-#         #     rel_depth = float(np.median(roi)) if roi.size > 0 else 1.0
-#         #     Z = scale / (rel_depth + 1e-6)
-#         #     X = (cx_px - self.cx) / self.fx * Z
-#         #     Y = (cy_px - self.cy) / self.fy * Z
-#         #     det.depth_m = Z
-#         #     det.position_3d = [X, Y, Z]
-#         return detections
+        Modifies detections in-place and returns them.
+        """
+        if not detections:
+            return detections
 
-#     def _estimate_scale(self, detections: list, depth_map: np.ndarray) -> float:
-#         """
-#         Compute a pixel-to-meter scale factor from detections of known-height objects.
-#         Returns a float scale such that: metric_depth = scale / relative_depth.
-#         """
-#         # TODO: implement
-#         # For each detection whose label is in self.known_heights:
-#         #   bbox_height_px = y2 - y1
-#         #   known_h = self.known_heights[det.label]
-#         #   focal = self.fy
-#         #   expected_depth = focal * known_h / bbox_height_px
-#         #   roi = depth_map[y1:y2, x1:x2]
-#         #   rel = np.median(roi)
-#         #   scale_estimate = expected_depth * rel
-#         # Average scale estimates. Fall back to 1.0 if none available.
-#         return 1.0
+        scale = self._estimate_scale(detections, depth_map)
+
+        H_map, W_map = depth_map.shape
+
+        for det in detections:
+            x1, y1, x2, y2 = det.bbox
+
+            # Pixel coordinates of the bbox center
+            u = (x1 + x2) / 2.0
+            v = (y1 + y2) / 2.0
+
+            # Sample the inner 50% of the bbox to reduce background bleed
+            # at object boundaries (common failure mode for monocular depth).
+            bh = y2 - y1
+            bw = x2 - x1
+            y1i = max(0,         min(int(y1 + 0.25 * bh), H_map - 1))
+            y2i = max(y1i + 1,   min(int(y2 - 0.25 * bh), H_map))
+            x1i = max(0,         min(int(x1 + 0.25 * bw), W_map - 1))
+            x2i = max(x1i + 1,   min(int(x2 - 0.25 * bw), W_map))
+
+            roi = depth_map[y1i:y2i, x1i:x2i]
+            Z_raw = float(np.median(roi)) if roi.size > 0 else float(np.median(depth_map))
+
+            # Apply domain-shift correction (1.0 if no known-height objects found)
+            Z = Z_raw * scale
+            Z = max(Z, 0.1)  # sanity floor: nothing closer than 10 cm
+
+            # Pinhole back-projection
+            X = (u - self.cx) / self.fx * Z
+            Y = (v - self.cy) / self.fy * Z
+
+            det.depth_m = round(Z, 3)
+            det.position_3d = [round(X, 3), round(Y, 3), round(Z, 3)]
+
+        return detections
+
+    def _estimate_scale(self, detections: list, depth_map: np.ndarray) -> float:
+        """
+        Compute a multiplicative scale correction for the metric depth map.
+
+        Even though the model outputs metric depth, there is often a scale bias
+        when the training domain (VKITTI) differs from the target footage.
+        We recover a correction factor using objects of known real-world height:
+
+            expected_Z  = fy * known_height_m / bbox_height_px   (pinhole model)
+            measured_Z  = median depth inside bbox               (model output)
+            correction  = expected_Z / measured_Z
+
+        Corrections are clamped per-detection to [0.5, 2.0] before averaging
+        to limit the impact of a single bad detection. Falls back to 1.0 if no
+        known-height objects are present.
+        """
+        H_map, W_map = depth_map.shape
+        corrections = []
+
+        for det in detections:
+            known_h = self.known_heights.get(det.label)
+            if known_h is None:
+                continue
+
+            x1, y1, x2, y2 = det.bbox
+            bbox_height_px = y2 - y1
+            if bbox_height_px < 10:
+                # Too small — pinhole estimate noisy and ROI unreliable
+                continue
+
+            # Expected metric depth from pinhole geometry
+            expected_Z = self.fy * known_h / bbox_height_px
+
+            # Measured depth: median over the full bbox ROI
+            y1i = max(0,       min(int(y1), H_map - 1))
+            y2i = max(y1i + 1, min(int(y2), H_map))
+            x1i = max(0,       min(int(x1), W_map - 1))
+            x2i = max(x1i + 1, min(int(x2), W_map))
+            roi = depth_map[y1i:y2i, x1i:x2i]
+            if roi.size == 0:
+                continue
+            measured_Z = float(np.median(roi))
+            if measured_Z < 0.01:
+                continue  # degenerate model output, skip
+
+            corrections.append(expected_Z / measured_Z)
+
+        if not corrections:
+            return 1.0
+
+        # Clamp each correction before averaging to reduce outlier impact
+        corrections = [max(0.5, min(c, 2.0)) for c in corrections]
+        return float(np.mean(corrections))
