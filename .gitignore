@@ -27,3 +27,6 @@ Group11_p2/Phase2/Code/checkpoints
 
 # pycache
 __pycache__/
+
+# Model weights
+Group11_p3/Code/weights/*

@@ -31,10 +31,10 @@ cameras:
 
 # ── Paths (relative to Code/) ──────────────────────────────────────────────
 paths:
-  data_dir:         ../Data/P3Data
-  sequences_dir:    ../Data/P3Data/Sequences
-  calib_dir:        ../Data/P3Data/Calib
-  assets_dir:       ../Data/P3Data/Assets
+  data_dir:         ../Data
+  sequences_dir:    ../Data/Sequences
+  calib_dir:        ../Data/Calib
+  assets_dir:       ../Data/Assets
   detections_dir:   ../Outputs/Detections   # JSON output from perception
   videos_dir:       ../Outputs/Videos       # Final rendered MP4s
   frames_dir:       ../Outputs/Frames       # Intermediate PNG frames
@@ -42,7 +42,7 @@ paths:
 # ── Model weights (download separately, place in Code/weights/) ─────────────
 weights:
   yolo:       weights/yolov9c.pt
-  depth:      weights/depth_anything_v2_vitl.pth
+  depth:      weights/depth_anything_v2_metric_vkitti_vitb.pth
   lanes:      weights/clrnet_culane_r18.pth
 
 # ── Perception settings ────────────────────────────────────────────────────
@@ -63,7 +63,13 @@ perception:
     max_lanes: 8
 
   depth:
-    encoder: vitl        # vits | vitb | vitl
+    model:
+      encoder: vitb        # vits | vitb | vitl
+      features: 128
+      out_channels: [96, 192, 384, 768]
+      max_depth: 80        
+
+    download_url: "https://huggingface.co/depth-anything/Depth-Anything-V2-Metric-VKITTI-Base/resolve/main/depth_anything_v2_metric_vkitti_vitb.pth?download=true"
     # Scale normalization: use known real-world heights (meters)
     known_heights:
       car: 1.5

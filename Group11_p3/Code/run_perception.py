@@ -25,6 +25,7 @@ import torch
 from pathlib import Path
 import os
 import sys
+sys.dont_write_bytecode = True
 
 # Make sure we can import our modules regardless of where the script is run from
 # sys.path.insert(0, str(Path(__file__).parent))
