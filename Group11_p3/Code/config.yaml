@@ -43,7 +43,7 @@ paths:
 weights:
   yolo:       weights/yolov9c.pt
   depth:      weights/depth_anything_v2_metric_vkitti_vitb.pth
-  lanes:      weights/clrnet_culane_r18.pth
+  lanes:      TBD
 
 # ── Perception settings ────────────────────────────────────────────────────
 perception:

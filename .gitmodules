@@ -1,6 +1,3 @@
 [submodule "Group11_p3/Code/perception/Depth_Anything_v2"]
 	path = Group11_p3/Code/perception/Depth_Anything_v2
 	url = https://github.com/DepthAnything/Depth-Anything-V2
-[submodule "Group11_p3/Code/perception/Ultra_Fast_Lane_Detection_v2"]
-	path = Group11_p3/Code/perception/Ultra_Fast_Lane_Detection_v2
-	url = https://github.com/cfzd/Ultra-Fast-Lane-Detection-V2
