@@ -1,0 +1,21 @@
+# EinsteinVision — Group 11
+# Install with: pip install -r requirements.txt
+#
+# NOTE: Do NOT install torch/torchvision via this file on the SSH cluster.
+# PyTorch with CUDA must be pre-installed. Verify with:
+#   python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+# If you need to install it fresh locally (CPU only, e.g. for testing):
+#   pip install torch torchvision
+# For CUDA on a fresh machine follow: https://pytorch.org/get-started/locally/
+
+# ── Core perception ────────────────────────────────────────────────────────
+ultralytics>=8.3.0          # YOLO models (downloads weights automatically on first run)
+numpy>=1.24                 # arrays everywhere
+
+# ── Config & utilities ─────────────────────────────────────────────────────
+pyyaml>=6.0                 # config.yaml loading
+tqdm>=4.66                  # progress bars
+
+# ── Coming soon (uncomment as you implement each module) ───────────────────
+# timm>=0.9                 # DepthAnything backbone
+# scipy>=1.11               # geometry utils (sampson distance, Phase 3)

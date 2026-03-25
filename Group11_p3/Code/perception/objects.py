@@ -12,7 +12,7 @@ Phase 2 will add sub-classification (sedan/SUV/truck/etc.) in this same file.
 
 from dataclasses import dataclass, field
 from typing import List                     # this is just to have the ability to say types
-# import numpy as np
+import numpy as np
 
 
 # COCO class IDs we care about
@@ -26,18 +26,18 @@ _TRAFFIC_IDS = {9: "traffic_light", 11: "stop_sign", }
 @dataclass
 class Detection:
     """Single detected object, in image coordinates."""
-    label: str                     # "car" | "person"
-    bbox: List[float]              # [x1, y1, x2, y2] pixels
-    confidence: float
-    depth_m: float = 0.0           # filled in by DepthEstimator.lift_to_3d
+    label: str                      # "car" | "person"
+    bbox: List[float]               # [x1, y1, x2, y2] pixels top left and bottom right corners
+    confidence: float               # YOLO confidence score from 0 to 1
+    depth_m: float = 0.0            # filled in by DepthEstimator.lift_to_3d
 
-    # this is not a shared list accross all instances due to the use of field
+    # field makes it so that each detection gets its own list
     position_3d: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
 
 
 class ObjectDetector:
     """
-    Wraps an Ultralytics YOLO model for vehicle + pedestrian detection.
+    Wraps an Ultralytics YOLO model for vehicle + pedestrian + sign detection.
 
     Usage
     -----
@@ -54,42 +54,49 @@ class ObjectDetector:
 
     def _load_model(self, weights_path: str):
         # TODO: uncomment once ultralytics is installed on cluster
-        # from ultralytics import YOLO
-        # model = YOLO(weights_path)
-        # model.to(self.device)
-        # return model
-        print(f"[ObjectDetector] STUB: would load YOLO from {weights_path}")
-        return None
+        from ultralytics import YOLO
+        model = YOLO(weights_path)
+        model.to(self.device)
+        return model
 
-    # def detect(self, frame_bgr: np.ndarray) -> List[Detection]:
-    #     """
-    #     Run inference on one BGR frame.
+    def detect(self, frame_bgr: np.ndarray) -> List[Detection]:
+        """
+        Run inference on one BGR frame.
 
-    #     Returns
-    #     -------
-    #     list[Detection]
-    #         One entry per detected vehicle or pedestrian, image coords.
-    #     """
-    #     if self.model is None:
-    #         # Stub return for development/testing
-    #         return []
+        Returns
+        -------
+        list[Detection]
+            One entry per detected vehicle or pedestrian, image coords.
+        """
+        # results is a list of one Result object per image, we pass one image we get a list of one Result object
+        results = self.model.predict(
+            frame_bgr,
+            conf=self.conf_thresh,
+            iou=self.iou_thresh,
+            classes=self.cfg["perception"]["yolo"]["classes_phase1"],
+            verbose=False,
+        )
 
-    #     # TODO: implement
-    #     # results = self.model.predict(
-    #     #     frame_bgr,
-    #     #     conf=self.conf_thresh,
-    #     #     iou=self.iou_thresh,
-    #     #     classes=self.cfg["perception"]["yolo"]["classes_phase1"],
-    #     #     verbose=False,
-    #     # )
-    #     # detections = []
-    #     # for box in results[0].boxes:
-    #     #     cls_id = int(box.cls)
-    #     #     label = "person" if cls_id == _PERSON_ID else "car"
-    #     #     detections.append(Detection(
-    #     #         label=label,
-    #     #         bbox=box.xyxy[0].tolist(),
-    #     #         confidence=float(box.conf),
-    #     #     ))
-    #     # return detections
-    #     raise NotImplementedError("ObjectDetector.detect not yet implemented")
+        detections = []
+
+        # each box is what the network detected as something
+        for box in results[0].boxes:
+            cls_id = int(box.cls)
+            
+            # TODO: this is a simplified classification, will want to expand to be more specific
+            if cls_id == _PERSON_ID:
+                label = "person"
+            elif cls_id in _VEHICLE_IDS:
+                label = _VEHICLE_IDS[cls_id]
+            elif cls_id in _TRAFFIC_IDS:
+                label = _TRAFFIC_IDS[cls_id]
+            else:
+                continue
+
+            # we make a detection object for each thing with the proper classicifaction above
+            detections.append(Detection(
+                label=label,
+                bbox=box.xyxy[0].tolist(),
+                confidence=float(box.conf),
+            ))
+        return detections
