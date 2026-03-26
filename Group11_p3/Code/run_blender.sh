@@ -1,56 +1,93 @@
 #!/usr/bin/env bash
 # =============================================================================
 # run_blender.sh
-# Invokes Blender headlessly to render one or all sequences.
+# Invokes Blender headlessly to render one scene+camera pair, or all of them.
 #
-# Usage:
-#   bash run_blender.sh Seq1            # render single sequence
-#   bash run_blender.sh all             # render all sequences
-#   bash run_blender.sh Seq1 --debug    # render with debug overlays
+# Usage (from the Code/ directory):
+#   bash run_blender.sh --scene scene1 --cam front
+#   bash run_blender.sh --scene scene1 --allcam
+#   bash run_blender.sh --all --cam front
+#   bash run_blender.sh --all --allcam
+#   bash run_blender.sh --scene scene1 --cam front --debug
 #
 # Requirements:
-#   - Blender must be on PATH, or set BLENDER_BIN below.
-#   - Perception JSONs must already exist in Data/outputs/detections/
+#   - Blender must be on PATH, or set BLENDER_BIN env var:
+#       export BLENDER_BIN=/Applications/Blender.app/Contents/MacOS/Blender
+#   - Perception JSONs must already exist in Outputs/Detections/
 # =============================================================================
+set -euo pipefail
 
-# set -euo pipefail
+BLENDER_BIN="${BLENDER_BIN:-blender}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BLENDER_SCRIPT="$SCRIPT_DIR/blender/scene.py"
+CONFIG="$SCRIPT_DIR/config.yaml"
 
-# BLENDER_BIN="${BLENDER_BIN:-blender}"
-# SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# BLENDER_SCRIPT="$SCRIPT_DIR/blender/scene.py"
-# CONFIG="$SCRIPT_DIR/config.yaml"
+# ── Argument parsing ──────────────────────────────────────────────────────────
+SCENE=""
+CAM=""
+ALL_SCENES=false
+ALL_CAMS=false
+EXTRA_ARGS=""
 
-# SEQ="${1:-}"
-# EXTRA_ARGS="${@:2}"   # pass any extra flags through to the Python script
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --scene)   SCENE="$2";    shift 2 ;;
+        --cam)     CAM="$2";      shift 2 ;;
+        --all)     ALL_SCENES=true; shift ;;
+        --allcam)  ALL_CAMS=true;   shift ;;
+        --debug)   EXTRA_ARGS="$EXTRA_ARGS --debug"; shift ;;
+        *) echo "Unknown argument: $1"; exit 1 ;;
+    esac
+done
 
-# if [[ -z "$SEQ" ]]; then
-#     echo "Usage: bash run_blender.sh <SeqName|all> [--debug]"
-#     exit 1
-# fi
+if [[ -z "$SCENE" && "$ALL_SCENES" == false ]]; then
+    echo "Usage: bash run_blender.sh (--scene <name> | --all) (--cam <name> | --allcam) [--debug]"
+    exit 1
+fi
+if [[ -z "$CAM" && "$ALL_CAMS" == false ]]; then
+    echo "Usage: bash run_blender.sh (--scene <name> | --all) (--cam <name> | --allcam) [--debug]"
+    exit 1
+fi
 
-# run_seq() {
-#     local seq="$1"
-#     echo "=== Rendering $seq ==="
-#     "$BLENDER_BIN" \
-#         --background \
-#         --python "$BLENDER_SCRIPT" \
-#         -- \
-#         --seq "$seq" \
-#         --config "$CONFIG" \
-#         $EXTRA_ARGS
-#     echo "=== Done: $seq ==="
-# }
+# ── Resolve scene and camera lists from config if --all / --allcam ────────────
+if $ALL_SCENES; then
+    SCENES=$(python3 -c "
+import yaml
+cfg = yaml.safe_load(open('$CONFIG'))
+print(' '.join(cfg['sequences']))
+")
+else
+    SCENES="$SCENE"
+fi
 
-# if [[ "$SEQ" == "all" ]]; then
-#     # Read sequence list from config.yaml (requires python3 + PyYAML)
-#     SEQUENCES=$(python3 -c "
-# import yaml, sys
-# cfg = yaml.safe_load(open('$CONFIG'))
-# print(' '.join(cfg['sequences']))
-# ")
-#     for s in $SEQUENCES; do
-#         run_seq "$s"
-#     done
-# else
-#     run_seq "$SEQ"
-# fi
+if $ALL_CAMS; then
+    CAMERAS=$(python3 -c "
+import yaml
+cfg = yaml.safe_load(open('$CONFIG'))
+print(' '.join(cfg['cameras']))
+")
+else
+    CAMERAS="$CAM"
+fi
+
+# ── Runner ────────────────────────────────────────────────────────────────────
+run_one() {
+    local scene="$1"
+    local cam="$2"
+    echo "=== Rendering $scene / $cam ==="
+    "$BLENDER_BIN" \
+        --background \
+        --python "$BLENDER_SCRIPT" \
+        -- \
+        --scene "$scene" \
+        --cam   "$cam" \
+        --config "$CONFIG" \
+        $EXTRA_ARGS
+    echo "=== Done: $scene / $cam ==="
+}
+
+for s in $SCENES; do
+    for c in $CAMERAS; do
+        run_one "$s" "$c"
+    done
+done
