@@ -83,13 +83,17 @@ class AssetLibrary:
         vehicle : dict with keys "position_3d", "depth_m"
         """
         obj = self._instance("car")
-        obj.location = self._json_to_blender(vehicle["position_3d"])
+        bpos = self._json_to_blender(vehicle["position_3d"])
+        print(f"[assets] vehicle: json_pos={vehicle['position_3d']}  →  blender_pos={bpos}  depth={vehicle['depth_m']:.1f}m")
+        obj.location = bpos
+        obj.scale = (0.02, 0.02, 0.02)
         self._frame_objects.append(obj)
 
     def place_pedestrian(self, ped: dict):
         """Instantiate the pedestrian asset."""
         obj = self._instance("pedestrian")
         obj.location = self._json_to_blender(ped["position_3d"])
+        obj.scale = (0.009, 0.009, 0.009)
         self._frame_objects.append(obj)
         pass
 
@@ -112,9 +116,9 @@ class AssetLibrary:
             bpy.data.objects.remove(obj, do_unlink=True)
         self._frame_objects.clear()
 
-        # for obj in bpy.data.objects:
-        #     if obj.name.startswith("vehicle") or obj.name.startswith("pedestrian"):
-        #         bpy.data.objects.remove(obj, do_unlink=True)
+        for obj in bpy.data.objects:
+            if obj.name.startswith("vehicle") or obj.name.startswith("pedestrian"):
+                bpy.data.objects.remove(obj, do_unlink=True)
 
     # ── Helpers ───────────────────────────────────────────────────────────
 

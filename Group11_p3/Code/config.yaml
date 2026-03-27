@@ -120,11 +120,10 @@ blender:
 
   camera:
     # Intrinsics from calibration — update after running calibration
-    fx: 1000.0
-    fy: 1000.0
+    fx: 2059.0
+    fy: 2059.0   # square pixels, so fy ≈ fx
     cx: 960.0
     cy: 540.0
-    # Camera height above ground plane (meters, approximate)
     height_m: 1.2
 
   # Visual style for Tesla-like overlay

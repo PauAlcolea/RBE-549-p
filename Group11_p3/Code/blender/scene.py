@@ -141,18 +141,23 @@ def render_sequence(scene_name: str, camera: str, cfg: dict, debug: bool = False
         # Step 7: traffic lights / stop signs        (added in Step 7)
         # ────────────────────────────────────────────────────────────────────
         
+        # empty the frame from all the objects
         if asset_lib:
             asset_lib.clear_frame_objects()
 
+        # go through all of the assets detected and place vehicles and pedestrians
         if asset_lib:
+            print("vehicles in frame: ")
             for v in frame_data.get("vehicles", []):
-                print("vehicles in frame: ")
                 print(v)
                 asset_lib.place_vehicle(v)
+            print("pedestrians in frame: ")
             for p in frame_data.get("pedestrians", []):
-                print("pedestrians in frame: ")
                 print(p)
                 asset_lib.place_pedestrian(p)
+            
+            # some white space for debugging
+            print()
 
  
         out_png = frames_dir / f"frame_{frame_idx:06d}.png"

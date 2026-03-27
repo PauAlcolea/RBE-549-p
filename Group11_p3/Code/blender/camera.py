@@ -29,8 +29,6 @@ def setup_camera(cfg: dict):
     for obj in bpy.data.objects:
         if obj.type == "CAMERA":
             bpy.data.objects.remove(obj, do_unlink=True)
-
-    print("[camera] creating camera")
     
     cam_data = bpy.data.cameras.new(name="DashCam")
     cam_obj  = bpy.data.objects.new("DashCam", cam_data)
@@ -38,8 +36,7 @@ def setup_camera(cfg: dict):
     # Add the camera to the scene
     bpy.context.collection.objects.link(cam_obj)
     bpy.context.scene.camera = cam_obj
-    
-    print("[camera] camera set:", bpy.context.scene.camera)
+
 
     res_x = cfg["blender"]["resolution"][0]
     res_y = cfg["blender"]["resolution"][1]
