@@ -29,3 +29,6 @@ __pycache__/
 
 # Model weights
 Group11_p3/Code/weights/*
+
+# Inference outputs
+Group11_p3/Outputs/Detections/
