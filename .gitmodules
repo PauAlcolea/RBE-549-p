@@ -7,6 +7,3 @@
 [submodule "Group11_p3/Code/perception/Lane_Segmentation"]
 	path = Group11_p3/Code/perception/Lane_Segmentation
 	url = https://github.com/benjaminorr/Object_Detection_Classification_-_Ford_Otosan_Intern_P2
-[submodule "Group11_p3/Code/perception/sam2"]
-	path = Group11_p3/Code/perception/sam2
-	url = https://github.com/benjaminorr/sam2
