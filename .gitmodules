@@ -1,3 +1,12 @@
 [submodule "Group11_p3/Code/perception/Depth_Anything_v2"]
 	path = Group11_p3/Code/perception/Depth_Anything_v2
 	url = https://github.com/DepthAnything/Depth-Anything-V2
+[submodule "Group11_p3/Code/perception/DART"]
+	path = Group11_p3/Code/perception/DART
+	url = https://github.com/benjaminorr/DART
+[submodule "Group11_p3/Code/perception/Lane_Segmentation"]
+	path = Group11_p3/Code/perception/Lane_Segmentation
+	url = https://github.com/benjaminorr/Object_Detection_Classification_-_Ford_Otosan_Intern_P2
+[submodule "Group11_p3/Code/perception/sam2"]
+	path = Group11_p3/Code/perception/sam2
+	url = https://github.com/benjaminorr/sam2
