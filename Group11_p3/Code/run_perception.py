@@ -25,13 +25,15 @@ import torch
 from pathlib import Path
 import os
 import sys
+import cv2
+import numpy as np
 sys.dont_write_bytecode = True
 
 # Make sure we can import our modules regardless of where the script is run from
 # sys.path.insert(0, str(Path(__file__).parent))
 
 from utils.io_utils import load_config, frame_generator, get_video_frames#, save_detection_json
-# from perception.lanes import LaneDetector
+from perception.lanes import LaneDetector
 from perception.objects import ObjectDetector
 # from perception.depth import DepthEstimator
 # from perception.traffic import TrafficLightDetector
@@ -90,7 +92,7 @@ def load_models(cfg, device):
     """Instantiate all detectors once — expensive, do it outside the frame loop."""
     print("[init] Loading models...")
     models = {
-        # "lanes":   LaneDetector(cfg, device),
+        "lanes":   LaneDetector(cfg, device),
         "objects": ObjectDetector(cfg, device),
         # "depth":   DepthEstimator(cfg, device),
         # "traffic": TrafficLightDetector(cfg, device),
@@ -98,6 +100,114 @@ def load_models(cfg, device):
     }
     print("[init] All models loaded in the process of instantializing detectors.")
     return models
+
+
+def _lane_color_bgr(color_name: str):
+    name = str(color_name).lower()
+    if name == "yellow":
+        return (0, 220, 255)
+    return (255, 255, 255)
+
+
+def _draw_dashed_polyline(img, points, color, thickness=2, dash_len=14, gap_len=8):
+    if len(points) < 2:
+        return
+
+    draw_segment = True
+    phase = 0.0
+    on_off = float(dash_len)
+
+    for i in range(len(points) - 1):
+        p1 = points[i]
+        p2 = points[i + 1]
+        seg_vec = (p2[0] - p1[0], p2[1] - p1[1])
+        seg_len = (seg_vec[0] ** 2 + seg_vec[1] ** 2) ** 0.5
+        if seg_len < 1e-6:
+            continue
+
+        ux, uy = seg_vec[0] / seg_len, seg_vec[1] / seg_len
+        progress = 0.0
+        while progress < seg_len:
+            step = min(on_off - phase, seg_len - progress)
+            if draw_segment and step > 0:
+                s = (
+                    int(round(p1[0] + ux * progress)),
+                    int(round(p1[1] + uy * progress)),
+                )
+                e = (
+                    int(round(p1[0] + ux * (progress + step))),
+                    int(round(p1[1] + uy * (progress + step))),
+                )
+                cv2.line(img, s, e, color, thickness, lineType=cv2.LINE_AA)
+
+            progress += step
+            phase += step
+            if phase >= on_off - 1e-6:
+                phase = 0.0
+                draw_segment = not draw_segment
+                on_off = float(dash_len if draw_segment else gap_len)
+
+
+def draw_lane_debug_overlay(frame_bgr, lane_results, lane_raw=None):
+    """Draw lane polylines and optional raw detector boxes on a frame."""
+    vis = frame_bgr.copy()
+
+    for lane in lane_results:
+        points = lane.get("points", []) if isinstance(lane, dict) else []
+        if len(points) < 2:
+            continue
+
+        poly = [(int(round(x)), int(round(y))) for x, y in points]
+        color = _lane_color_bgr(lane.get("color", "white"))
+        style = str(lane.get("style", "solid")).lower()
+        conf = float(lane.get("confidence", 0.0))
+
+        if style == "dashed":
+            _draw_dashed_polyline(vis, poly, color, thickness=2)
+        else:
+            cv2.polylines(
+                vis,
+                [np.array(poly, dtype=np.int32)],
+                False,
+                color,
+                2,
+                lineType=cv2.LINE_AA,
+            )
+
+        label = f"{lane.get('color', 'white')} {conf:.2f}"
+        cv2.putText(
+            vis,
+            label,
+            (poly[-1][0] + 6, max(poly[-1][1] - 6, 10)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            color,
+            1,
+            lineType=cv2.LINE_AA,
+        )
+
+    if isinstance(lane_raw, dict) and "boxes" in lane_raw and "scores" in lane_raw:
+        boxes = lane_raw["boxes"]
+        scores = lane_raw["scores"]
+        names = lane_raw.get("class_names", [])
+        for i in range(len(scores)):
+            box = boxes[i].detach().cpu().tolist()
+            score = float(scores[i].item())
+            cls_name = names[i] if i < len(names) else "lane"
+            x1, y1, x2, y2 = map(int, box)
+            cv2.rectangle(vis, (x1, y1), (x2, y2), (50, 255, 50), 1)
+            cv2.putText(
+                vis,
+                f"{cls_name} {score:.2f}",
+                (x1, max(y1 - 4, 10)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.4,
+                (50, 255, 50),
+                1,
+                lineType=cv2.LINE_AA,
+            )
+
+    return vis
 
 
 def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debug: bool = False):
@@ -110,6 +220,10 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
     out_dir = Path(cfg["paths"]["detections_dir"]) / scene_name / camera
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    debug_dir = out_dir / "debug"
+    if debug:
+        debug_dir.mkdir(parents=True, exist_ok=True)
+
     print(f"[{scene_name}] Camera: {camera}")
 
     # Use the generator so we never load all frames into RAM at once
@@ -118,7 +232,14 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
     ):
         # --- Run detectors ---
         # object_results = models["objects"].detect(frame_bgr)
-        # lane_results    = models["lanes"].detect(frame_bgr)
+        lane_output = models["lanes"].detect(frame_bgr)
+        if isinstance(lane_output, dict) and "lanes" in lane_output:
+            lane_results = lane_output["lanes"]
+            lane_raw = lane_output.get("raw")
+        else:
+            # Backward compatibility if detect returns a plain list.
+            lane_results = lane_output
+            lane_raw = None
         # depth_map       = models["depth"].estimate(frame_bgr)
         # object_results  = models["depth"].lift_to_3d(object_results, depth_map, cfg)
         # traffic_results = models["traffic"].detect(frame_bgr, object_results)
@@ -135,10 +256,23 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
         # )
         # save_detection_json(frame_dict, out_dir / f"frame_{frame_idx:06d}.json")
 
+        if debug:
+            overlay = draw_lane_debug_overlay(frame_bgr, lane_results, lane_raw)
+            debug_path = debug_dir / f"frame_{frame_idx:06d}.jpg"
+            cv2.imwrite(str(debug_path), overlay)
+
         if (i + 1) % 50 == 0:
-            print(f"  [{scene_name}/{camera}] {i+1} frames processed")
+            raw_count = 0
+            if isinstance(lane_raw, dict) and "scores" in lane_raw:
+                raw_count = len(lane_raw["scores"])
+            print(
+                f"  [{scene_name}/{camera}] {i+1} frames processed | "
+                f"lanes={len(lane_results)} raw_dets={raw_count}"
+            )
 
     print(f"[{scene_name}] Done. JSONs saved to {out_dir}")
+    if debug:
+        print(f"[{scene_name}] Debug overlays saved to {debug_dir}")
     return
 
 
