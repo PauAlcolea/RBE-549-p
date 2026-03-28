@@ -44,7 +44,7 @@ weights:
   yolo:       ../Weights/yolov9c.pt
   rtdetr:     ../Weights/rtdetr-x.pt      # download: ultralytics rtdetr-x (COCO pretrained)
   depth:      ../Weights/depth_anything_v2_metric_vkitti_vitb.pth
-  lanes:      ../Weights/clrnet_culane_r18.pth
+  lanes:      ../Weights/sam3.pt
 
 # ── Perception settings ────────────────────────────────────────────────────
 perception:
@@ -68,8 +68,30 @@ perception:
     merged_confidence: 0.65   # final gate: average of both scores must exceed this (0.65 if too many false positives, 0.45 if missing too many real objects)
 
   lanes:
-    model: clrnet        # clrnet | laneatt
+    model: DART
     max_lanes: 8
+    classes: ["white lane line", "yellow lane line"]
+    confidence: 0.30
+    nms: 0.40
+    imgsz: 1008
+    runtime: auto             # auto | trt | compile | pytorch
+    compile_mode: max-autotune
+    use_masks: true
+    return_raw: true
+    trt_max_classes: 4
+    trt_backbone: perception/DART/hf_backbone_fp16.engine
+    trt_enc_dec: perception/DART/enc_dec_fp16.engine
+    text_cache: null
+    polyline_points: 20
+    color_samples: 12
+    color_patch: 3
+    white_vote_ratio: 0.5
+    dash_gap_px: 60
+    min_length_px: 60.0
+    hsv_yellow_low: [15, 90, 70]
+    hsv_yellow_high: [38, 255, 255]
+    hsv_white_low: [0, 0, 160]
+    hsv_white_high: [179, 80, 255]
 
   depth:
     model:
