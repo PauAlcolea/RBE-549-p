@@ -26,10 +26,42 @@ possible JSON schema (one file per frame):
 }
 """
 
+
+def _serialize_lane(lane) -> dict:
+    """Normalize lane objects/dicts to the JSON lane schema."""
+    if isinstance(lane, dict):
+        points = lane.get("points", [])
+        color = lane.get("color", "white")
+        style = lane.get("style", None)
+        confidence = lane.get("confidence", None)
+    else:
+        points = getattr(lane, "points", [])
+        color = getattr(lane, "color", "white")
+        style = getattr(lane, "style", None)
+        confidence = getattr(lane, "confidence", None)
+
+    norm_points = []
+    for pt in points:
+        if not isinstance(pt, (list, tuple)) or len(pt) < 2:
+            continue
+        x, y = pt[0], pt[1]
+        norm_points.append([float(x), float(y)])
+
+    lane_out = {
+        "points": norm_points,
+        "color": str(color),
+    }
+    if style is not None:
+        lane_out["style"] = str(style)
+    if confidence is not None:
+        lane_out["confidence"] = float(confidence)
+
+    return lane_out
+
 def build_frame_dict(
     frame_idx: int,
     fps: float,
-    # lanes: list,
+    lanes: list,
     objects: list,
     traffic_lights: list,
     stop_signs: list,
@@ -52,20 +84,18 @@ def build_frame_dict(
     """
     vehicles        = [d for d in objects if d.label in {"bicycle", "car", "motorcycle", "bus", "truck"}]
     pedestrians     = [d for d in objects if d.label == "person"]
+    lanes_out = []
+    for lane in lanes:
+        lane_dict = _serialize_lane(lane)
+        if len(lane_dict["points"]) >= 2:
+            lanes_out.append(lane_dict)
 
 
     return {
         "frame":     frame_idx,
         "timestamp": round(frame_idx / fps, 4),
 
-        # "lanes": [
-        #     {
-        #         "points": [[float(x), float(y)] for x, y in lane.points],
-        #         "color":  lane.color,
-        #         "style":  lane.style,
-        #     }
-        #     for lane in lanes
-        # ],
+        "lanes": lanes_out,
 
         "vehicles": [
             {
