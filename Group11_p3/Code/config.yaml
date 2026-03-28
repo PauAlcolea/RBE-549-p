@@ -76,8 +76,9 @@ perception:
     polyline_points: 20
     color_samples: 12
     color_patch: 3
-    white_vote_ratio: 0.4
+    white_vote_ratio: 0.5
     dash_gap_px: 60
+    min_length_px: 60.0
     hsv_yellow_low: [15, 90, 70]
     hsv_yellow_high: [38, 255, 255]
     hsv_white_low: [0, 0, 160]

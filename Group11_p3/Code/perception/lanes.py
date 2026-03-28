@@ -70,6 +70,7 @@ class LaneDetector:
         self.sample_patch = int(self.lanes_cfg.get("color_patch", 3))
         self.white_vote_ratio = float(self.lanes_cfg.get("white_vote_ratio", 0.5))
         self.dash_gap_px = float(self.lanes_cfg.get("dash_gap_px", 60.0))
+        self.min_length_px = float(self.lanes_cfg.get("min_length_px", 50.0))
 
         self.white_low = np.array(
             self.lanes_cfg.get("hsv_white_low", [0, 0, 160]), dtype=np.uint8
@@ -305,6 +306,10 @@ class LaneDetector:
             if len(points) < 2:
                 continue
 
+            # Filter by polyline length
+            if self._polyline_length(points) < self.min_length_px:
+                continue
+
             cls_name = class_names[i] if i < len(class_names) else "lane line"
             cls_name_lower = cls_name.lower()
             if "yellow" in cls_name_lower:
@@ -326,6 +331,17 @@ class LaneDetector:
 
         lanes.sort(key=lambda lane: lane.confidence, reverse=True)
         return lanes
+
+    def _polyline_length(self, points: List[Tuple[float, float]]) -> float:
+        """Calculate total Euclidean length of a polyline."""
+        if len(points) < 2:
+            return 0.0
+        total = 0.0
+        for i in range(len(points) - 1):
+            x1, y1 = points[i]
+            x2, y2 = points[i + 1]
+            total += ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
+        return total
 
     def _mask_to_polyline(self, mask: np.ndarray) -> List[Tuple[float, float]]:
         ys = np.where(mask > 0)[0]
