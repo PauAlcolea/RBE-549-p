@@ -148,8 +148,8 @@
     "samples": 32,
     "output_format": "PNG",
     "camera": {
-      "fx": 1000.0,
-      "fy": 1000.0,
+      "fx": 2059.0,
+      "fy": 2059.0,
       "cx": 960.0,
       "cy": 540.0,
       "height_m": 1.2

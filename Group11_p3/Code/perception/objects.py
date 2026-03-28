@@ -31,6 +31,7 @@ class Detection:
     confidence: float               # YOLO confidence score from 0 to 1
     depth_m: float = 0.0            # filled in by DepthEstimator.lift_to_3d
     position_3d: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])     # field makes it so that each detection gets its own list
+    heading_rad: float = 0.0
 
 def _cls_id_to_label(cls_id: int) -> Optional[str]:
     """Map a COCO class ID to our label string, or None if we don't care about it."""
