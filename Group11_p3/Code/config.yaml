@@ -43,7 +43,7 @@ paths:
 weights:
   yolo:       weights/yolov9c.pt
   depth:      weights/depth_anything_v2_metric_vkitti_vitb.pth
-  lanes:      perception/DART/sam3/checkpoints/sam3.pt
+  lanes:      weights/sam3.pt
 
 # ── Perception settings ────────────────────────────────────────────────────
 perception:
