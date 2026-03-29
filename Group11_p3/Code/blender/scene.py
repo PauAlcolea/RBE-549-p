@@ -167,6 +167,11 @@ def render_sequence(scene_name: str, camera: str, cfg: dict, debug: bool = False
             for p in frame_data.get("pedestrians", []):
                 print(p)
                 asset_lib.place_pedestrian(p)
+            # traffic lights
+            print("traffic lights in frame: ")
+            for t in frame_data.get("traffic_lights", []):
+                print(t)
+                asset_lib.place_traffic_light(t)
 
             # lanes
             print("lanes in frame: ")

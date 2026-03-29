@@ -19,6 +19,8 @@ Coordinate system note:
 import math
 from pathlib import Path
 from typing import Dict
+import numpy as np
+import bpy
 
 
 class AssetLibrary:
@@ -43,7 +45,6 @@ class AssetLibrary:
         self._load_templates()
 
     def _load_templates(self):
-        import bpy
         asset_files = {
             "car":           self.assets_dir / "Vehicles/SedanAndHatchback.blend",
             "pedestrian":    self.assets_dir / "Pedestrain.blend",
@@ -103,7 +104,6 @@ class AssetLibrary:
         obj.scale = (0.009, 0.009, 0.009)
         self._align_object_to_ground(obj, ground_z=0.0, clearance=self.ground_clearance_m)
         self._frame_objects.append(obj)
-        pass
 
     def place_stop_sign(self, sign: dict):
         """
@@ -117,9 +117,19 @@ class AssetLibrary:
         # self._frame_objects.append(obj)
         pass
 
+    def place_traffic_light(self, light: dict):
+        """
+        Instantiate the traffic light asset and set its state (red/yellow/green).
+        Texture path: Data/Assets/traffic_light_texture.png (given by project).
+        """
+        obj = self._instance("traffic_light")
+        obj.location = self._json_to_blender(light["position_3d"])
+        obj.scale = (0.5, 0.5, 0.5)
+        obj.rotation_euler[2] = -np.pi/2  # rotate to face the camera
+        self._frame_objects.append(obj)
+
     def clear_frame_objects(self):
         """Delete all objects placed during the previous frame."""
-        import bpy
         for obj in self._frame_objects:
             bpy.data.objects.remove(obj, do_unlink=True)
         self._frame_objects.clear()
@@ -132,7 +142,6 @@ class AssetLibrary:
 
     def _instance(self, name: str):
         """Duplicate a template object and link it to the scene."""
-        import bpy
         template = self._templates[name]
         new_obj = template.copy()
         new_obj.data = template.data.copy()
