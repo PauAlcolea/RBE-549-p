@@ -21,6 +21,9 @@ from pathlib import Path
 from typing import Dict
 import numpy as np
 import bpy
+import bmesh
+from mathutils import Vector
+from .materials import MaterialLibrary
 
 
 class AssetLibrary:
@@ -43,6 +46,7 @@ class AssetLibrary:
         self._frame_objects = []     # track objects placed this frame for cleanup
         self._templates: Dict[str, object] = {}  # cache of linked template objects
         self._load_templates()
+        self.Materials = MaterialLibrary(cfg)
 
     def _load_templates(self):
         asset_files = {
@@ -125,7 +129,16 @@ class AssetLibrary:
         obj = self._instance("traffic_light")
         obj.location = self._json_to_blender(light["position_3d"])
         obj.scale = (0.5, 0.5, 0.5)
-        obj.rotation_euler[2] = -np.pi/2  # rotate to face the camera
+        obj.rotation_euler[2] = -np.pi / 2  # rotate to face the camera
+
+        # Choose state color from detection if available; default to red.
+        tl_color = light.get("color", "red")
+        if tl_color not in {"red", "yellow", "green"}:
+            tl_color = "red"
+
+        # Add three emissive "bulb" disks near the traffic light position.
+        self._add_traffic_light_bulbs(obj, active_color=tl_color)
+
         self._frame_objects.append(obj)
 
     def clear_frame_objects(self):
@@ -150,6 +163,73 @@ class AssetLibrary:
         bpy.context.collection.objects.link(new_obj)
         return new_obj
 
+    def _add_traffic_light_bulbs(self, obj, active_color: str = "red"):
+        """Create three emissive sphere bulbs near the traffic light.
+
+        Spheres are used instead of flat disks so visibility is robust from
+        different camera angles and independent of face orientation.
+        """
+
+        bpy.context.view_layer.update()
+
+        base = obj.location.copy()
+        cam = bpy.context.scene.camera
+
+        # Move bulbs slightly toward camera so they are not hidden by the
+        # traffic light mesh.
+        to_cam = Vector((0.0, -1.0, 0.0))
+        if cam is not None:
+            v = cam.location - base
+            if v.length > 1e-6:
+                to_cam = v.normalized()
+
+        toward_cam_offset = 0.35
+        vertical_spacing = 0.5
+        radius = 0.19
+
+        bulb_specs = [
+            ("red", vertical_spacing),
+            ("yellow", 0.0),
+            ("green", -vertical_spacing),
+        ]
+
+        for color, z_off in bulb_specs:
+            pos = base + Vector((0.0, 0.0, 0.8)) + to_cam * toward_cam_offset + Vector((0.0, 0.0, z_off))
+            bulb_obj = self._create_sphere_mesh_object(
+                name=f"TL_Bulb_{color}",
+                location=pos,
+                radius=radius,
+            )
+
+            # Use the traffic-light color only for the active bulb;
+            # others use the "unknown" grey for an "off" look.
+            mat_key = color if color == active_color else "unknown"
+            mat = self.Materials.get_traffic_light_material(mat_key)
+            if mat is not None:
+                bulb_obj.data.materials.clear()
+                bulb_obj.data.materials.append(mat)
+
+            self._frame_objects.append(bulb_obj)
+
+    @staticmethod
+    def _create_sphere_mesh_object(name: str, location: Vector, radius: float):
+        """Create a small UV-sphere mesh object without bpy.ops."""
+        mesh = bpy.data.meshes.new(f"{name}_Mesh")
+        bm = bmesh.new()
+        bmesh.ops.create_uvsphere(
+            bm,
+            u_segments=16,
+            v_segments=8,
+            radius=radius,
+        )
+        bm.to_mesh(mesh)
+        bm.free()
+
+        obj = bpy.data.objects.new(name, mesh)
+        obj.location = location
+        bpy.context.collection.objects.link(obj)
+        return obj
+
     @staticmethod
     def _align_object_to_ground(obj, ground_z: float = 0.0, clearance: float = 0.0):
         """
@@ -158,7 +238,6 @@ class AssetLibrary:
         This makes placement much more robust when the asset origin is not at
         the wheel/foot contact plane.
         """
-        import bpy
         from mathutils import Vector
 
         bpy.context.view_layer.update()
