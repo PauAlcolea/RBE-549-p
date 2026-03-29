@@ -7,7 +7,7 @@
 2. [YOLOv9c](https://github.com/ultralytics/ultralytics)
     We used YOLOv9c to detect vehicles, pedestrians, traffic lights, and stop signs.
 
-3. [RT-DETR] (https://github.com/lyuwenyu/RT-DETR)
+3. [RT-DETR](https://github.com/lyuwenyu/RT-DETR)
     This was used in combination with YOLO for increase accuracy and classification of vehicles.
 
 3. [Depth-Anything-V2](https://github.com/DepthAnything/Depth-Anything-V2/tree/main)
