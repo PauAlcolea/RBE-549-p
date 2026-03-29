@@ -20,6 +20,7 @@ import numpy as np
 _VEHICLE_IDS = {1: "bicycle", 2: "car", 3: "motorcycle", 5: "bus", 7: "truck", }
 _PERSON_ID = 0
 _TRAFFIC_IDS = {9: "traffic_light", 11: "stop_sign", }
+_VEHICLE_LABELS = set(_VEHICLE_IDS.values())
 
 
 # dataClass makes working with classes easier, no need for __init__ constructor and easier printing for debugging
@@ -31,7 +32,7 @@ class Detection:
     confidence: float               # YOLO confidence score from 0 to 1
     depth_m: float = 0.0            # filled in by DepthEstimator.lift_to_3d
     position_3d: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])     # field makes it so that each detection gets its own list
-    heading_rad: float = 0.0
+    direction: str = "unknown"      # motion inferred from bbox changes across frames
 
 def _cls_id_to_label(cls_id: int) -> Optional[str]:
     """Map a COCO class ID to our label string, or None if we don't care about it."""
@@ -58,6 +59,62 @@ def _compute_iou(a: List[float], b: List[float]) -> float:
     return inter / (area_a + area_b - inter)
 
 
+def _bbox_center(bbox: List[float]) -> tuple[float, float]:
+    """Return bbox center as (cx, cy)."""
+    return ((bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0)
+
+
+def _bbox_area(bbox: List[float]) -> float:
+    """Return bbox area in pixels^2."""
+    return max(0.0, bbox[2] - bbox[0]) * max(0.0, bbox[3] - bbox[1])
+
+
+def _estimate_direction_from_bboxes(
+    prev_bbox: List[float],
+    curr_bbox: List[float],
+    min_center_shift_px: float = 8.0,
+    min_area_change_ratio: float = 0.12,
+) -> str:
+    """
+    Estimate coarse motion direction using only bbox geometry over time.
+
+    What this can tell us reliably:
+      - left / right motion in the image plane from bbox-center movement
+      - approaching / receding from bbox-area growth/shrinkage
+
+    What it cannot tell us from boxes alone:
+      - the vehicle's true 3D heading (e.g. whether a side-view car faces left or right)
+    """
+    prev_cx, _ = _bbox_center(prev_bbox)
+    curr_cx, _ = _bbox_center(curr_bbox)
+    dx = curr_cx - prev_cx
+
+    prev_area = max(_bbox_area(prev_bbox), 1.0)
+    curr_area = _bbox_area(curr_bbox)
+    area_ratio = (curr_area - prev_area) / prev_area
+
+    lateral = "unknown"
+    depth = None
+
+    if dx >= min_center_shift_px:
+        lateral = "right"
+    elif dx <= -min_center_shift_px:
+        lateral = "left"
+
+    if area_ratio >= min_area_change_ratio:
+        depth = "approaching"
+    elif area_ratio <= -min_area_change_ratio:
+        depth = "receding"
+
+    if lateral == "unknown" and depth is None:
+        return "stationary"
+    if lateral != "unknown" and depth is not None:
+        return f"{depth}_{lateral}"
+    if lateral != "unknown":
+        return lateral
+    return depth
+
+
 class ObjectDetector:
     """
     Wraps an Ultralytics YOLO model for vehicle + pedestrian + sign detection.
@@ -82,9 +139,15 @@ class ObjectDetector:
         self.match_iou      = rtdetr_cfg["match_iou"]        # IoU needed to call two boxes "the same object"
         self.merged_conf    = rtdetr_cfg["merged_confidence"] # final gate after averaging both scores
         self.classes        = yolo_cfg["classes_phase1"]
+        self.direction_match_iou = rtdetr_cfg.get("direction_match_iou", 0.3)
 
         self.yolo = self._load_yolo(cfg["weights"]["yolo"])
         self.rtdetr = self._load_rtdetr(cfg["weights"]["rtdetr"])
+        self.prev_vehicle_detections: List[Detection] = []
+
+    def reset_tracking(self):
+        """Clear frame-to-frame state when starting a new scene/camera stream."""
+        self.prev_vehicle_detections = []
 
     def _load_yolo(self, weights_path: str):
         from ultralytics import YOLO
@@ -106,7 +169,9 @@ class ObjectDetector:
         """
         yolo_dets   = self._run_yolo(frame_bgr)
         rtdetr_dets = self._run_rtdetr(frame_bgr)
-        return self._merge(yolo_dets, rtdetr_dets)
+        detections = self._merge(yolo_dets, rtdetr_dets)
+        self._annotate_vehicle_directions(detections)
+        return detections
 
 
     # Run each model and return raw (bbox, label, conf) tuples:
@@ -188,3 +253,45 @@ class ObjectDetector:
                     ))
 
         return matched
+
+    def _annotate_vehicle_directions(self, detections: List[Detection]) -> None:
+        """
+        Estimate motion direction for vehicle detections using bbox changes only.
+
+        Each current vehicle is matched to the previous frame's best-overlap vehicle
+        of the same class, then assigned a coarse direction label.
+        """
+        current_vehicles = [det for det in detections if det.label in _VEHICLE_LABELS]
+        used_prev = set()
+
+        for det in current_vehicles:
+            best_idx = -1
+            best_iou = 0.0
+
+            for i, prev_det in enumerate(self.prev_vehicle_detections):
+                if i in used_prev:
+                    continue
+                if prev_det.label != det.label:
+                    continue
+
+                iou = _compute_iou(prev_det.bbox, det.bbox)
+                if iou > best_iou:
+                    best_iou = iou
+                    best_idx = i
+
+            if best_idx >= 0 and best_iou >= self.direction_match_iou:
+                det.direction = _estimate_direction_from_bboxes(
+                    self.prev_vehicle_detections[best_idx].bbox,
+                    det.bbox,
+                )
+                used_prev.add(best_idx)
+
+        self.prev_vehicle_detections = [
+            Detection(
+                label=det.label,
+                bbox=list(det.bbox),
+                confidence=det.confidence,
+                direction=det.direction,
+            )
+            for det in current_vehicles
+        ]

@@ -16,6 +16,7 @@ Coordinate system note:
     Blender Z = -JSON Y  (down flipped to up)
 """
 
+import math
 from pathlib import Path
 from typing import Dict
 
@@ -36,6 +37,7 @@ class AssetLibrary:
     def __init__(self, cfg: dict):
         self.cfg = cfg
         self.assets_dir = Path(cfg["paths"]["assets_dir"])
+        self.ground_clearance_m = cfg["blender"].get("ground_clearance_m", 0.03)
         self._frame_objects = []     # track objects placed this frame for cleanup
         self._templates: Dict[str, object] = {}  # cache of linked template objects
         self._load_templates()
@@ -87,6 +89,11 @@ class AssetLibrary:
         print(f"[assets] vehicle: json_pos={vehicle['position_3d']}  →  blender_pos={bpos}  depth={vehicle['depth_m']:.1f}m")
         obj.location = bpos
         obj.scale = (0.02, 0.02, 0.02)
+
+        direction = vehicle.get("direction", "unknown")
+        obj.rotation_euler[2] = self._vehicle_yaw_from_direction(direction)
+        self._align_object_to_ground(obj, ground_z=0.0, clearance=self.ground_clearance_m)
+
         self._frame_objects.append(obj)
 
     def place_pedestrian(self, ped: dict):
@@ -94,6 +101,7 @@ class AssetLibrary:
         obj = self._instance("pedestrian")
         obj.location = self._json_to_blender(ped["position_3d"])
         obj.scale = (0.009, 0.009, 0.009)
+        self._align_object_to_ground(obj, ground_z=0.0, clearance=self.ground_clearance_m)
         self._frame_objects.append(obj)
         pass
 
@@ -132,6 +140,45 @@ class AssetLibrary:
         new_obj.hide_viewport = False
         bpy.context.collection.objects.link(new_obj)
         return new_obj
+
+    @staticmethod
+    def _align_object_to_ground(obj, ground_z: float = 0.0, clearance: float = 0.0):
+        """
+        Lift an object so its lowest world-space bbox point sits on the ground.
+
+        This makes placement much more robust when the asset origin is not at
+        the wheel/foot contact plane.
+        """
+        import bpy
+        from mathutils import Vector
+
+        bpy.context.view_layer.update()
+        min_z = min((obj.matrix_world @ Vector(corner)).z for corner in obj.bound_box)
+        obj.location.z += (ground_z + clearance) - min_z
+
+    @staticmethod
+    def _vehicle_yaw_from_direction(direction: str) -> float:
+        """
+        Map coarse motion labels to a plausible vehicle yaw in Blender.
+
+        Convention:
+          - 0 rad      : facing away from camera / forward in scene
+          - pi rad     : facing toward camera
+          - +/- pi/2   : side-facing left/right
+        """
+        yaw_map = {
+            "right": -math.pi / 2,
+            "left": math.pi / 2,
+            "approaching_right": -math.pi / 4,
+            "approaching_left": math.pi / 4,
+            "receding_right": -3 * math.pi / 4,
+            "receding_left": 3 * math.pi / 4,
+            "approaching": 0.0,
+            "receding": math.pi,
+            "stationary": 0.0,
+            "unknown": 0.0,
+        }
+        return yaw_map.get(direction, 0.0)
 
     @staticmethod
     def _json_to_blender(pos: list) -> tuple:

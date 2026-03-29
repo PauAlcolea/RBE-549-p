@@ -188,6 +188,7 @@
     "render_engine": "CYCLES",
     "samples": 32,
     "output_format": "PNG",
+    "ground_clearance_m": 0.03,
     "camera": {
       "fx": 2059.0,
       "fy": 2059.0,

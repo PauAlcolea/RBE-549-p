@@ -139,6 +139,7 @@ blender:
   render_engine: CYCLES  # CYCLES | EEVEE
   samples: 32            # lower = faster; 32 is a reasonable Phase 1 default
   output_format: PNG
+  ground_clearance_m: 0.03
 
   camera:
     # Intrinsics from calibration — update after running calibration

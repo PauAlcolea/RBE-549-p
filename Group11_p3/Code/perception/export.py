@@ -101,6 +101,7 @@ def build_frame_dict(
             {
                 "bbox":        [round(v, 2) for v in det.bbox],
                 "class":       det.label,
+                "direction":   det.direction,
                 "depth_m":     round(det.depth_m, 3),
                 "position_3d": [round(v, 3) for v in det.position_3d],
                 "heading_rad": round(det.heading_rad, 4),

@@ -23,6 +23,8 @@ from .Depth_Anything_v2.metric_depth.depth_anything_v2.dpt import DepthAnythingV
 import torch
 from utils.io_utils import download_file_if_missing
 
+_GROUND_CONTACT_LABELS = {"bicycle", "car", "motorcycle", "bus", "truck", "person"}
+
 
 class DepthEstimator:
     """
@@ -102,18 +104,31 @@ class DepthEstimator:
         for det in detections:
             x1, y1, x2, y2 = det.bbox
 
-            # Pixel coordinates of the bbox center
-            u = (x1 + x2) / 2.0
-            v = (y1 + y2) / 2.0
+            # Use a ground-contact pixel for road users so the lifted 3D point
+            # better matches where the object touches the road, not its visual center.
+            if det.label in _GROUND_CONTACT_LABELS:
+                u = (x1 + x2) / 2.0
+                v = y2
+            else:
+                u = (x1 + x2) / 2.0
+                v = (y1 + y2) / 2.0
 
             # Sample the inner 50% of the bbox to reduce background bleed
             # at object boundaries (common failure mode for monocular depth).
             bh = y2 - y1
             bw = x2 - x1
-            y1i = max(0,         min(int(y1 + 0.25 * bh), H_map - 1))
-            y2i = max(y1i + 1,   min(int(y2 - 0.25 * bh), H_map))
-            x1i = max(0,         min(int(x1 + 0.25 * bw), W_map - 1))
-            x2i = max(x1i + 1,   min(int(x2 - 0.25 * bw), W_map))
+            if det.label in _GROUND_CONTACT_LABELS:
+                # Focus the depth estimate near the lower middle of the bbox,
+                # which better approximates wheel/foot contact with the road.
+                y1i = max(0,       min(int(y1 + 0.70 * bh), H_map - 1))
+                y2i = max(y1i + 1, min(int(y2), H_map))
+                x1i = max(0,       min(int(u - 0.15 * bw), W_map - 1))
+                x2i = max(x1i + 1, min(int(u + 0.15 * bw), W_map))
+            else:
+                y1i = max(0,         min(int(y1 + 0.25 * bh), H_map - 1))
+                y2i = max(y1i + 1,   min(int(y2 - 0.25 * bh), H_map))
+                x1i = max(0,         min(int(x1 + 0.25 * bw), W_map - 1))
+                x2i = max(x1i + 1,   min(int(x2 - 0.25 * bw), W_map))
 
             roi = depth_map[y1i:y2i, x1i:x2i]
             Z_raw = float(np.median(roi)) if roi.size > 0 else float(np.median(depth_map))
