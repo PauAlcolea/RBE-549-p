@@ -1,116 +1,138 @@
-# """
-# perception/traffic.py
-# =====================
-# Traffic light detection and color classification.
+"""
+perception/traffic.py
+=====================
+Traffic light detection and color classification.
 
-# Detection:  YOLO (same model as objects.py) already returns traffic light bboxes
-#             if we include COCO class 9 ("traffic light").
-# Color:      HSV thresholding on the top third of the detected bbox crop.
-#             (The illuminated bulb is at the top for red, middle for yellow,
-#             bottom for green — but thresholding is more robust than position.)
-# """
+Detection:  YOLO (same model as objects.py) already returns traffic light bboxes
+            if we include COCO class 9 ("traffic light").
+Color:      HSV thresholding on the top third of the detected bbox crop.
+            (The illuminated bulb is at the top for red, middle for yellow,
+            bottom for green — but thresholding is more robust than position.)
+"""
 
-# from __future__ import annotations
-# from dataclasses import dataclass
-# from typing import List
-# import numpy as np
-
-
-# @dataclass
-# class TrafficLight:
-#     bbox: List[float]       # [x1, y1, x2, y2]
-#     color: str              # "red" | "yellow" | "green" | "unknown"
-#     confidence: float
-#     depth_m: float = 0.0
+from dataclasses import dataclass
+from typing import List
+import numpy as np
+import cv2
 
 
-# # COCO class ID for traffic light
-# _TRAFFIC_LIGHT_ID = 9
+@dataclass
+class TrafficLight:
+    bbox: List[float]       # [x1, y1, x2, y2]
+    color: str              # "red" | "yellow" | "green" | "unknown"
+    confidence: float
+    depth_m: float = 0.0
 
+class TrafficLightDetector:
+    """
+    Detects traffic lights and classifies their color.
 
-# class TrafficLightDetector:
-#     """
-#     Detects traffic lights and classifies their color.
+    Two-stage approach:
+      1. YOLO bounding box (reuses the object detector model)
+      2. HSV color classification inside the bbox crop
 
-#     Two-stage approach:
-#       1. YOLO bounding box (reuses the object detector model)
-#       2. HSV color classification inside the bbox crop
+    Usage
+    -----
+    detector = TrafficLightDetector(cfg, device="cuda")
+    lights = detector.detect(frame_bgr, all_detections)
+    """
 
-#     Usage
-#     -----
-#     detector = TrafficLightDetector(cfg, device="cuda")
-#     lights = detector.detect(frame_bgr, all_detections)
-#     """
+    def __init__(self, cfg: dict):
+        self.cfg = cfg
+        self.hsv_ranges = self._build_hsv_ranges(cfg["perception"]["traffic_light"])
+        # Minimum pixel count to declare a color (avoids noise on tiny/dark crops)
+        self.min_pixels = cfg["perception"]["traffic_light"]["min_color_pixels"]
 
-#     def __init__(self, cfg: dict, device: str = "cuda"):
-#         self.cfg = cfg
-#         self.device = device
-#         self.hsv_ranges = self._build_hsv_ranges(cfg["perception"]["traffic_light"])
-#         # We reuse the YOLO model from ObjectDetector — no second load needed.
-#         # The caller (run_perception.py) passes in the full object detections
-#         # which already contain traffic lights if class 9 was included.
-#         # Alternatively, we can run a second YOLO pass here.
-#         self.model = self._load_model(cfg["weights"]["yolo"])
+    def _build_hsv_ranges(self, tl_cfg: dict):
+        """Package HSV range lists into a dict for color lookup."""
+        return {
+            "red": [
+                (np.array(tl_cfg["hsv_red_low"],    dtype=np.uint8),
+                 np.array(tl_cfg["hsv_red_high"],   dtype=np.uint8)),
+                # Red wraps around hue=0 in OpenCV HSV, so we need a second range
+                (np.array(tl_cfg["hsv_red_low2"],   dtype=np.uint8),
+                 np.array(tl_cfg["hsv_red_high2"],  dtype=np.uint8)),
+            ],
+            "yellow": [
+                (np.array(tl_cfg["hsv_yellow_low"],  dtype=np.uint8),
+                 np.array(tl_cfg["hsv_yellow_high"], dtype=np.uint8)),
+            ],
+            "green": [
+                (np.array(tl_cfg["hsv_green_low"],  dtype=np.uint8),
+                 np.array(tl_cfg["hsv_green_high"], dtype=np.uint8)),
+            ],
+        }
 
-#     def _load_model(self, weights_path: str):
-#         # TODO: same YOLO weights as objects.py — but now include class 9
-#         # Consider passing in the already-loaded model to avoid loading twice.
-#         print(f"[TrafficLightDetector] STUB: would reuse YOLO from {weights_path}")
-#         return None
+    def detect(self, frame_bgr: np.ndarray, object_detections: list) -> List[TrafficLight]:
+        """
+        Detect traffic lights in one BGR frame and classify their color.
 
-#     def _build_hsv_ranges(self, tl_cfg: dict):
-#         """Package HSV range lists into a dict for color lookup."""
-#         import numpy as np
-#         return {
-#             "red": [
-#                 (np.array(tl_cfg["hsv_red_low"]),  np.array(tl_cfg["hsv_red_high"])),
-#                 (np.array(tl_cfg["hsv_red_low2"]), np.array(tl_cfg["hsv_red_high2"])),
-#             ],
-#             "yellow": [
-#                 (np.array(tl_cfg["hsv_yellow_low"]), np.array(tl_cfg["hsv_yellow_high"])),
-#             ],
-#             "green": [
-#                 (np.array(tl_cfg["hsv_green_low"]), np.array(tl_cfg["hsv_green_high"])),
-#             ],
-#         }
+        Parameters
+        ----------
+        frame_bgr : np.ndarray
+        object_detections : list[Detection], optional
+            If provided, filter for traffic light class instead of re-running YOLO.
 
-#     def detect(self, frame_bgr: np.ndarray, object_detections: list = None) -> List[TrafficLight]:
-#         """
-#         Detect traffic lights in one BGR frame and classify their color.
+        Returns
+        -------
+        list[TrafficLight]
+        """
+        lights = []
 
-#         Parameters
-#         ----------
-#         frame_bgr : np.ndarray
-#         object_detections : list[Detection], optional
-#             If provided, filter for traffic light class instead of re-running YOLO.
+        for det in object_detections:
+            if det.label != "traffic_light":
+                continue
 
-#         Returns
-#         -------
-#         list[TrafficLight]
-#         """
-#         # TODO: implement
-#         # 1. Get traffic light bboxes (from YOLO class 9 or from object_detections)
-#         # 2. For each bbox: crop frame, classify color with _classify_color
-#         # 3. Return list of TrafficLight objects
-#         return []
+            color = self._classify_color(frame_bgr, det.bbox)
+            lights.append(TrafficLight(
+                bbox=det.bbox,
+                color=color,
+                confidence=det.confidence,
+                depth_m=det.depth_m,
+            ))
 
-#     def _classify_color(self, frame_bgr: np.ndarray, bbox: List[float]) -> str:
-#         """
-#         Classify the lit color of a single traffic light crop using HSV.
+        return lights
 
-#         Returns "red", "yellow", "green", or "unknown".
-#         """
-#         # TODO: implement
-#         # import cv2
-#         # x1, y1, x2, y2 = [int(v) for v in bbox]
-#         # crop = frame_bgr[y1:y2, x1:x2]
-#         # hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-#         # scores = {}
-#         # for color, ranges in self.hsv_ranges.items():
-#         #     mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
-#         #     for lo, hi in ranges:
-#         #         mask |= cv2.inRange(hsv, lo, hi)
-#         #     scores[color] = mask.sum()
-#         # best = max(scores, key=scores.get)
-#         # return best if scores[best] > 0 else "unknown"
-#         raise NotImplementedError("TrafficLightDetector._classify_color not yet implemented")
+    def _classify_color(self, frame_bgr: np.ndarray, bbox: List[float]) -> str:
+        """
+        Classify the lit color of a single traffic light crop using HSV.
+
+        Strategy:
+          - Crop the bbox (clamped to image bounds).
+          - Convert to HSV.
+          - Count pixels inside each color's HSV range(s).
+          - Return the color with the highest count if it exceeds min_pixels,
+            else "unknown".
+
+        Returns "red", "yellow", "green", or "unknown".
+        """
+        h_img, w_img = frame_bgr.shape[:2]
+
+        # Clamp bbox to image bounds
+        x1 = max(0, int(bbox[0]))
+        y1 = max(0, int(bbox[1]))
+        x2 = min(w_img, int(bbox[2]))
+        y2 = min(h_img, int(bbox[3]))
+
+        if x2 <= x1 or y2 <= y1:
+            return "unknown"
+
+        crop = frame_bgr[y1:y2, x1:x2]
+
+        # HSV is unreliable on very small crops (far-away lights)
+        if crop.shape[0] < 8 or crop.shape[1] < 8:
+            return "unknown"
+
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+
+        # Count masked pixels per color
+        scores: dict = {}
+        for color_name, ranges in self.hsv_ranges.items():
+            mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
+            for lo, hi in ranges:
+                mask |= cv2.inRange(hsv, lo, hi)
+            # mask values are 0 or 255, divide to get real pixel count
+            scores[color_name] = int(np.sum(mask) // 255)
+
+        best_color = max(scores, key=scores.get)
+        return best_color if scores[best_color] >= self.min_pixels else "unknown"

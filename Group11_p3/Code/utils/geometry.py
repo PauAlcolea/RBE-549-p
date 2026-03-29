@@ -1,31 +1,31 @@
-# """
-# utils/geometry.py
-# =================
-# Shared geometry math used by both perception (depth lifting) and
-# Blender (unprojection to ground plane, coordinate transforms).
+"""
+utils/geometry.py
+=================
+Shared geometry math used by both perception (depth lifting) and
+Blender (unprojection to ground plane, coordinate transforms).
 
-# All functions are pure numpy — no OpenCV or bpy dependency.
-# """
+All functions are pure numpy — no OpenCV or bpy dependency.
+"""
 
-# import numpy as np
+import numpy as np
 # from typing import List, Tuple
 
 
 # # ── Camera model ──────────────────────────────────────────────────────────────
 
-# def build_intrinsic_matrix(fx: float, fy: float, cx: float, cy: float) -> np.ndarray:
-#     """
-#     Build a 3×3 camera intrinsic matrix K from focal lengths and principal point.
+def build_intrinsic_matrix(fx: float, fy: float, cx: float, cy: float) -> np.ndarray:
+    """
+    Build a 3×3 camera intrinsic matrix K from focal lengths and principal point.
 
-#     Returns
-#     -------
-#     K : np.ndarray, shape (3, 3)
-#     """
-#     return np.array([
-#         [fx,  0, cx],
-#         [ 0, fy, cy],
-#         [ 0,  0,  1],
-#     ], dtype=np.float64)
+    Returns
+    -------
+    K : np.ndarray, shape (3, 3)
+    """
+    return np.array([
+        [fx,  0, cx],
+        [ 0, fy, cy],
+        [ 0,  0,  1],
+    ], dtype=np.float64)
 
 
 # def pixel_to_ray(u: float, v: float, K: np.ndarray) -> np.ndarray:

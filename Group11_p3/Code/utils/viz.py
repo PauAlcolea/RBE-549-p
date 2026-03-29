@@ -60,6 +60,9 @@ def draw_detections(frame_bgr: np.ndarray, detections: list) -> np.ndarray:
         else:
             text = f"{det.label} {det.confidence:.2f}"
 
+        if getattr(det, "direction", "unknown") != "unknown":
+            text = f"{text} {det.direction}"
+
         # Draw a filled background behind the text so it's readable on any frame
         (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
         cv2.rectangle(out, (x1, y1 - th - 8), (x1 + tw + 4, y1), color, -1)
@@ -97,33 +100,33 @@ def draw_detections(frame_bgr: np.ndarray, detections: list) -> np.ndarray:
 #     return out
 
 
-# def draw_traffic_lights(frame_bgr: np.ndarray, traffic_lights: list) -> np.ndarray:
-#     """Draw traffic light bboxes with their classified color."""
-#     out = frame_bgr.copy()
-#     color_map = {
-#         "red":     _COLOR_TL_RED,
-#         "yellow":  _COLOR_TL_YELLOW,
-#         "green":   _COLOR_TL_GREEN,
-#         "unknown": (128, 128, 128),
-#     }
-#     for tl in traffic_lights:
-#         x1, y1, x2, y2 = [int(v) for v in tl.bbox]
-#         c = color_map.get(tl.color, (128, 128, 128))
-#         cv2.rectangle(out, (x1, y1), (x2, y2), c, 2)
-#         cv2.putText(out, tl.color, (x1, y1 - 6),
-#                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, c, 1)
-#     return out
+def draw_traffic_lights(frame_bgr: np.ndarray, traffic_lights: list) -> np.ndarray:
+    """Draw traffic light bboxes with their classified color."""
+    out = frame_bgr.copy()
+    color_map = {
+        "red":     _COLOR_TL_RED,
+        "yellow":  _COLOR_TL_YELLOW,
+        "green":   _COLOR_TL_GREEN,
+        "unknown": (128, 128, 128),
+    }
+    for tl in traffic_lights:
+        x1, y1, x2, y2 = [int(v) for v in tl.bbox]
+        c = color_map.get(tl.color, (128, 128, 128))
+        cv2.rectangle(out, (x1, y1), (x2, y2), c, 2)
+        cv2.putText(out, tl.color, (x1, y1 - 6),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, c, 1)
+    return out
 
 
-# def draw_signs(frame_bgr: np.ndarray, signs: list) -> np.ndarray:
-#     """Draw sign bboxes."""
-#     out = frame_bgr.copy()
-#     for sign in signs:
-#         x1, y1, x2, y2 = [int(v) for v in sign.bbox]
-#         cv2.rectangle(out, (x1, y1), (x2, y2), _COLOR_SIGN, 2)
-#         cv2.putText(out, sign.label, (x1, y1 - 6),
-#                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, _COLOR_SIGN, 1)
-#     return out
+def draw_signs(frame_bgr: np.ndarray, signs: list) -> np.ndarray:
+    """Draw sign bboxes."""
+    out = frame_bgr.copy()
+    for sign in signs:
+        x1, y1, x2, y2 = [int(v) for v in sign.bbox]
+        cv2.rectangle(out, (x1, y1), (x2, y2), _COLOR_SIGN, 2)
+        cv2.putText(out, sign.label, (x1, y1 - 6),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, _COLOR_SIGN, 1)
+    return out
 
 
 # def draw_depth_map(depth_map: np.ndarray) -> np.ndarray:

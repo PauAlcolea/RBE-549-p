@@ -1,0 +1,243 @@
+{
+  "sequences": [
+    "scene1",
+    "scene2",
+    "scene3",
+    "scene4",
+    "scene5",
+    "scene6",
+    "scene7",
+    "scene8",
+    "scene9",
+    "scene10",
+    "scene11",
+    "scene12",
+    "scene13"
+  ],
+  "cameras": [
+    "front",
+    "back",
+    "left_repeater",
+    "right_repeater"
+  ],
+  "paths": {
+    "data_dir": "../Data",
+    "sequences_dir": "../Data/Sequences",
+    "calib_dir": "../Data/Calib",
+    "assets_dir": "../Data/Assets",
+    "detections_dir": "../Outputs/Detections",
+    "videos_dir": "../Outputs/Videos",
+    "frames_dir": "../Outputs/Frames"
+  },
+  "weights": {
+    "yolo": "../Weights/yolov9c.pt",
+    "rtdetr": "../Weights/rtdetr-x.pt",
+    "depth": "../Weights/depth_anything_v2_metric_vkitti_vitb.pth",
+    "lanes": "../Weights/sam3.pt"
+  },
+  "perception": {
+    "batch_size": 1,
+    "frame_skip": 30,
+    "yolo": {
+      "confidence": 0.25,
+      "iou_threshold": 0.45,
+      "classes_phase1": [
+        0,
+        1,
+        2,
+        3,
+        5,
+        7,
+        9,
+        11
+      ]
+    },
+    "rtdetr": {
+      "confidence": 0.25,
+      "iou_threshold": 0.45,
+      "match_iou": 0.5,
+      "merged_confidence": 0.65
+    },
+    "lanes": {
+      "model": "DART",
+      "max_lanes": 8,
+      "classes": [
+        "white lane line",
+        "yellow lane line"
+      ],
+      "confidence": 0.3,
+      "nms": 0.4,
+      "imgsz": 1008,
+      "runtime": "auto",
+      "compile_mode": "max-autotune",
+      "use_masks": true,
+      "return_raw": true,
+      "trt_max_classes": 4,
+      "trt_backbone": "perception/DART/hf_backbone_fp16.engine",
+      "trt_enc_dec": "perception/DART/enc_dec_fp16.engine",
+      "text_cache": null,
+      "polyline_points": 20,
+      "color_samples": 12,
+      "color_patch": 3,
+      "white_vote_ratio": 0.5,
+      "dash_gap_px": 60,
+      "min_length_px": 60.0,
+      "hsv_yellow_low": [
+        15,
+        90,
+        70
+      ],
+      "hsv_yellow_high": [
+        38,
+        255,
+        255
+      ],
+      "hsv_white_low": [
+        0,
+        0,
+        160
+      ],
+      "hsv_white_high": [
+        179,
+        80,
+        255
+      ]
+    },
+    "depth": {
+      "model": {
+        "encoder": "vitb",
+        "features": 128,
+        "out_channels": [
+          96,
+          192,
+          384,
+          768
+        ],
+        "max_depth": 80
+      },
+      "download_url": "https://huggingface.co/depth-anything/Depth-Anything-V2-Metric-VKITTI-Base/resolve/main/depth_anything_v2_metric_vkitti_vitb.pth?download=true",
+      "known_heights": {
+        "car": 1.5,
+        "person": 1.75,
+        "stop_sign": 0.75
+      }
+    },
+    "traffic_light": {
+      "hsv_red_low": [
+        0,
+        120,
+        70
+      ],
+      "hsv_red_high": [
+        10,
+        255,
+        255
+      ],
+      "hsv_red_low2": [
+        170,
+        120,
+        70
+      ],
+      "hsv_red_high2": [
+        180,
+        255,
+        255
+      ],
+      "hsv_yellow_low": [
+        15,
+        120,
+        70
+      ],
+      "hsv_yellow_high": [
+        35,
+        255,
+        255
+      ],
+      "hsv_green_low": [
+        40,
+        120,
+        70
+      ],
+      "hsv_green_high": [
+        90,
+        255,
+        255
+      ],
+      "min_color_pixels": 30
+    },
+    "stop_sign": {
+      "min_contour_area": 800,
+      "max_contour_area": 40000,
+      "dp_epsilon_factor": 0.04,
+      "min_sides": 7,
+      "max_sides": 9,
+      "aspect_ratio_min": 0.7,
+      "aspect_ratio_max": 1.43,
+      "min_solidity": 0.82,
+      "fallback_confidence": 0.5,
+      "fallback_window_frames": 10
+    }
+  },
+  "blender": {
+    "executable": "blender",
+    "fps": 30,
+    "resolution": [
+      1920,
+      1080
+    ],
+    "render_engine": "CYCLES",
+    "samples": 32,
+    "output_format": "PNG",
+    "ground_clearance_m": 0.03,
+    "camera": {
+      "fx": 2059.0,
+      "fy": 2059.0,
+      "cx": 960.0,
+      "cy": 540.0,
+      "height_m": 1.2
+    },
+    "style": {
+      "lane_solid_white": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "lane_dashed_white": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "lane_solid_yellow": [
+        1.0,
+        0.85,
+        0.0
+      ],
+      "lane_width": 0.15,
+      "car_color": [
+        0.2,
+        0.6,
+        1.0
+      ],
+      "ped_color": [
+        0.1,
+        0.9,
+        0.4
+      ],
+      "light_red": [
+        1.0,
+        0.15,
+        0.1
+      ],
+      "light_yellow": [
+        1.0,
+        0.85,
+        0.0
+      ],
+      "light_green": [
+        0.1,
+        0.9,
+        0.2
+      ]
+    }
+  }
+}

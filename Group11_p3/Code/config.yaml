@@ -39,11 +39,12 @@ paths:
   videos_dir:       ../Outputs/Videos       # Final rendered MP4s
   frames_dir:       ../Outputs/Frames       # Intermediate PNG frames
 
-# ── Model weights (download separately, place in Code/weights/) ─────────────
+# ── Model weights (download separately, place in Code/../Weights/) ─────────────
 weights:
-  yolo:       weights/yolov9c.pt
-  depth:      weights/depth_anything_v2_metric_vkitti_vitb.pth
-  lanes:      weights/clrnet_culane_r18.pth
+  yolo:       ../Weights/yolov9c.pt
+  rtdetr:     ../Weights/rtdetr-x.pt      # download: ultralytics rtdetr-x (COCO pretrained)
+  depth:      ../Weights/depth_anything_v2_metric_vkitti_vitb.pth
+  lanes:      ../Weights/sam3.pt
 
 # ── Perception settings ────────────────────────────────────────────────────
 perception:
@@ -52,15 +53,45 @@ perception:
   frame_skip: 30         # process every Nth frame (30 = every frame)
 
   yolo:
-    confidence: 0.40
+    confidence: 0.25    # low on purpose
     iou_threshold: 0.45
     # COCO class IDs we care about for Phase 1
     # 0=person, 1=bicycle, 2=car, 3=motorcycle, 5=bus, 7=truck, 9=traffic light, 11=stop sign
     classes_phase1: [0, 1, 2, 3, 5, 7, 9, 11]
+  
+  rtdetr:
+    confidence: 0.25          # also low — merged threshold does the real gating
+    iou_threshold: 0.45
+    match_iou: 0.50           # IoU needed between a YOLO and RT-DETR box to count as same object
+                              # lower = more lenient matching (good for large/truncated objects)
+                              # higher = stricter spatial agreement required
+    merged_confidence: 0.65   # final gate: average of both scores must exceed this (0.65 if too many false positives, 0.45 if missing too many real objects)
 
   lanes:
-    model: clrnet        # clrnet | laneatt
+    model: DART
     max_lanes: 8
+    classes: ["white lane line", "yellow lane line"]
+    confidence: 0.30
+    nms: 0.40
+    imgsz: 1008
+    runtime: auto             # auto | trt | compile | pytorch
+    compile_mode: max-autotune
+    use_masks: true
+    return_raw: true
+    trt_max_classes: 4
+    trt_backbone: perception/DART/hf_backbone_fp16.engine
+    trt_enc_dec: perception/DART/enc_dec_fp16.engine
+    text_cache: null
+    polyline_points: 20
+    color_samples: 12
+    color_patch: 3
+    white_vote_ratio: 0.5
+    dash_gap_px: 60
+    min_length_px: 60.0
+    hsv_yellow_low: [15, 90, 70]
+    hsv_yellow_high: [38, 255, 255]
+    hsv_white_low: [0, 0, 160]
+    hsv_white_high: [179, 80, 255]
 
   depth:
     model:
@@ -86,6 +117,19 @@ perception:
     hsv_yellow_high: [35,  255, 255]
     hsv_green_low:  [40,  120, 70]
     hsv_green_high: [90,  255, 255]
+    min_color_pixels: 30            # min pixel count to declare a color (vs "unknown")
+
+  stop_sign:
+    min_contour_area: 800       # fallback: ignore red shapes smaller than this (px²)
+    max_contour_area: 40000     # fallback: ignore red shapes larger than this (px²)
+    dp_epsilon_factor: 0.04     # Douglas-Peucker coarseness (fraction of perimeter)
+    min_sides: 7                # tightened — rectangles approx to 4-6 sides
+    max_sides: 9                # tightened — real octagons land in 7-9
+    aspect_ratio_min: 0.70      # stop signs are nearly square
+    aspect_ratio_max: 1.43      # inverse of 0.70 for symmetry
+    min_solidity: 0.82          # contour area / convex hull area; filled octagon ~0.95
+    fallback_confidence: 0.50
+    fallback_window_frames: 10  # how many frames after a YOLO sighting to keep fallback active
 
 # ── Blender / render settings ──────────────────────────────────────────────
 blender:
@@ -95,14 +139,14 @@ blender:
   render_engine: CYCLES  # CYCLES | EEVEE
   samples: 32            # lower = faster; 32 is a reasonable Phase 1 default
   output_format: PNG
+  ground_clearance_m: 0.03
 
   camera:
     # Intrinsics from calibration — update after running calibration
-    fx: 1000.0
-    fy: 1000.0
+    fx: 2059.0
+    fy: 2059.0   # square pixels, so fy ≈ fx
     cx: 960.0
     cy: 540.0
-    # Camera height above ground plane (meters, approximate)
     height_m: 1.2
 
   # Visual style for Tesla-like overlay

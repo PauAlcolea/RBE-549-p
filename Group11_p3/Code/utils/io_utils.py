@@ -28,38 +28,54 @@ from pathlib import Path
 from typing import Iterator, List, Tuple
 import os
 import numpy as np
-# import json
+import json
 
 
 # # ── Config ────────────────────────────────────────────────────────────────────
 
 def load_config(config_path: str) -> dict:
     """
-    Load config.yaml. Searches for it relative to the Code/ directory
-    if no explicit path is given.
+    Blender ships its own Python interpreter that may not have PyYAML installed.
+    To avoid that dependency on the Blender side, we maintain a JSON sidecar
+    file (config.json) next to config.yaml.
+ 
+    - When PyYAML IS available (cluster / normal Python): parse the YAML and
+      immediately write / refresh config.json as a side effect. This keeps the
+      JSON in sync whenever config.yaml changes.
+    - When PyYAML is NOT available (Blender's Python): load config.json instead.
+      If config.json is missing too, raise a clear error telling the user to
+      run `python utils/io_utils.py` once from normal Python to generate it.
 
     Returns
     -------
     dict : parsed config
     """
-    import yaml
+    config_path = Path(config_path)
+    json_path   = config_path.with_suffix(".json")
 
-    # if config_path is None:
-    #     # Walk up from this file until we find config.yaml
-    #     here = Path(__file__).resolve().parent
-    #     for candidate in [here, here.parent, here.parent.parent]:
-    #         p = candidate / "config.yaml"
-    #         if p.exists():
-    #             config_path = p
-    #             break
-    #     else:
-    #         raise FileNotFoundError("config.yaml not found. Pass an explicit path.")
+    try:
+        import yaml
+        with open(config_path, "r") as f:
+            cfg = yaml.safe_load(f)
+        # Refresh JSON sidecar so Blender can always read it
+        with open(json_path, "w") as f:
+            json.dump(cfg, f, indent=2)
+        return cfg
+    
+    except ImportError:
+        # Running inside Blender's bundled Python — fall back to JSON sidecar
+        if json_path.exists():
+            with open(json_path, "r") as f:
+                return json.load(f)
+        raise RuntimeError(
+            f"PyYAML is not available and no JSON sidecar found at {json_path}.\n"
+            f"Run this once from your normal Python environment to generate it:\n"
+            f"  python -c \"from utils.io_utils import load_config; "
+            f"load_config('{config_path}')\""
+        )
 
-    with open(config_path, "r") as f:
-        return yaml.safe_load(f)
 
-
-def download_file_if_missing(path: os.PathLike | str, url: str, timeout: float = 60.0) -> Path:
+def download_file_if_missing(path: os.PathLike, url: str, timeout: float = 60.0) -> Path:
     """Download a file from ``url`` to ``path`` if it does not already exist.
 
     Uses a temporary file and atomic rename to avoid leaving corrupted files
@@ -199,52 +215,52 @@ def _find_video(scene_dir: Path, camera: str = "front") -> Path:
     return matches[0]
 
 
-# # ── Detection JSON ────────────────────────────────────────────────────────────
+# ── Detection JSON ────────────────────────────────────────────────────────────
 
-# def save_detection_json(frame_dict: dict, out_path: Path):
-#     """
-#     Write a per-frame detection dict to a JSON file.
+def save_detection_json(frame_dict: dict, out_path: Path):
+    """
+    Write a per-frame detection dict to a JSON file.
 
-#     Parameters
-#     ----------
-#     frame_dict : output of perception/export.py build_frame_dict()
-#     out_path   : destination file, e.g. Outputs/Detections/scene1/frame_000001.json
-#     """
-#     out_path = Path(out_path)
-#     out_path.parent.mkdir(parents=True, exist_ok=True)
-#     with open(out_path, "w") as f:
-#         json.dump(frame_dict, f, indent=2)
+    Parameters
+    ----------
+    frame_dict : output of perception/export.py build_frame_dict()
+    out_path   : destination file, e.g. Outputs/Detections/scene1/frame_000001.json
+    """
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w") as f:
+        json.dump(frame_dict, f, indent=2)
     
 
 
-# def load_detection_json(json_path: Path) -> dict:
-#     """
-#     Load a single per-frame detection JSON.
+def load_detection_json(json_path: Path) -> dict:
+    """
+    Load a single per-frame detection JSON.
 
-#     Returns
-#     -------
-#     dict matching the schema in perception/export.py
-#     """
-#     with open(json_path, "r") as f:
-#         return json.load(f)
+    Returns
+    -------
+    dict matching the schema in perception/export.py
+    """
+    with open(json_path, "r") as f:
+        return json.load(f)
 
 
-# def list_frame_jsons(detections_dir: Path) -> List[Path]:
-#     """
-#     Return a sorted list of all frame JSON files in a detections directory.
+def list_frame_jsons(detections_dir: Path) -> List[Path]:
+    """
+    Return a sorted list of all frame JSON files in a detections directory.
 
-#     Parameters
-#     ----------
-#     detections_dir : e.g. Outputs/Detections/scene1/
+    Parameters
+    ----------
+    detections_dir : e.g. Outputs/Detections/scene1/
 
-#     Returns
-#     -------
-#     list[Path] sorted by frame number
-#     """
-#     d = Path(detections_dir)
-#     if not d.exists():
-#         return []
-#     return sorted(d.glob("frame_*.json"))
+    Returns
+    -------
+    list[Path] sorted by frame number
+    """
+    d = Path(detections_dir)
+    if not d.exists():
+        return []
+    return sorted(d.glob("frame_*.json"))
 
 
 # # ── Image save ────────────────────────────────────────────────────────────────
