@@ -90,7 +90,6 @@ class AssetLibrary:
         """
         obj = self._instance("car")
         bpos = self._json_to_blender(vehicle["position_3d"])
-        print(f"[assets] vehicle: json_pos={vehicle['position_3d']}  →  blender_pos={bpos}  depth={vehicle['depth_m']:.1f}m")
         obj.location = bpos
         obj.scale = (0.02, 0.02, 0.02)
 
@@ -99,6 +98,7 @@ class AssetLibrary:
         self._align_object_to_ground(obj, ground_z=0.0, clearance=self.ground_clearance_m)
 
         self._frame_objects.append(obj)
+        print(f"[assets] vehicle: json_pos={vehicle['position_3d']}  →  blender_pos={bpos}  depth={vehicle['depth_m']:.1f}m")
 
     def place_pedestrian(self, ped: dict):
         """Instantiate the pedestrian asset."""
@@ -107,6 +107,7 @@ class AssetLibrary:
         obj.scale = (0.009, 0.009, 0.009)
         self._align_object_to_ground(obj, ground_z=0.0, clearance=self.ground_clearance_m)
         self._frame_objects.append(obj)
+        print(f"[assets] pedestrian: json_pos={ped['position_3d']}  →  blender_pos={obj.location}")
 
     def place_stop_sign(self, sign: dict):
         """
@@ -125,6 +126,7 @@ class AssetLibrary:
         self._frame_objects.append(decal_obj)
 
         self._frame_objects.append(obj)
+        print(f"[assets] stop sign: json_pos={sign['position_3d']}  →  blender_pos={obj.location}")
 
     def place_traffic_light(self, light: dict):
         """
@@ -145,6 +147,7 @@ class AssetLibrary:
         self._add_traffic_light_bulbs(obj, active_color=tl_color)
 
         self._frame_objects.append(obj)
+        print(f"[assets] traffic light: json_pos={light['position_3d']}  →  blender_pos={obj.location}  state={tl_color}")
 
     def clear_frame_objects(self):
         """Delete all objects placed during the previous frame."""
