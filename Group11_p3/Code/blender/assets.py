@@ -19,7 +19,6 @@ Coordinate system note:
 import math
 from pathlib import Path
 from typing import Dict
-import numpy as np
 import bpy
 import bmesh
 from mathutils import Vector
@@ -114,12 +113,16 @@ class AssetLibrary:
         Instantiate the stop sign asset and apply the provided texture.
         Texture path: Data/Assets/stop_sign_texture.png (given by project).
         """
-        # TODO: implement
-        # obj = self._instance("stop_sign")
-        # obj.location = self._json_to_blender(sign["position_3d"])
-        # materials.apply_texture(obj, self.assets_dir / "StopSignImage.png")
-        # self._frame_objects.append(obj)
-        pass
+        obj = self._instance("stop_sign")
+        obj.location = self._json_to_blender(sign["position_3d"])
+        obj.scale = (0.5, 0.5, 0.5)
+        obj.rotation_euler[2] = -math.pi / 2  # rotate to face camera diagonally
+        self._align_object_to_ground(obj, ground_z=0.0, clearance=self.ground_clearance_m)
+
+        texture_path = Path(self.cfg["paths"]["assets_dir"]) / "StopSignImage.png"
+        self.Materials.apply_texture(obj, texture_path)
+
+        self._frame_objects.append(obj)
 
     def place_traffic_light(self, light: dict):
         """
@@ -129,7 +132,7 @@ class AssetLibrary:
         obj = self._instance("traffic_light")
         obj.location = self._json_to_blender(light["position_3d"])
         obj.scale = (0.5, 0.5, 0.5)
-        obj.rotation_euler[2] = -np.pi / 2  # rotate to face the camera
+        obj.rotation_euler[2] = -math.pi / 2  # rotate to face the camera
 
         # Choose state color from detection if available; default to red.
         tl_color = light.get("color", "red")
