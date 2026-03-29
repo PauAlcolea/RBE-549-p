@@ -120,7 +120,9 @@ class AssetLibrary:
         self._align_object_to_ground(obj, ground_z=0.0, clearance=self.ground_clearance_m)
 
         texture_path = Path(self.cfg["paths"]["assets_dir"]) / "StopSignImage.png"
-        self.Materials.apply_texture(obj, texture_path)
+        decal_obj = self._create_stop_sign_decal(obj)
+        self.Materials.apply_texture(decal_obj, texture_path)
+        self._frame_objects.append(decal_obj)
 
         self._frame_objects.append(obj)
 
@@ -232,6 +234,77 @@ class AssetLibrary:
         obj.location = location
         bpy.context.collection.objects.link(obj)
         return obj
+
+    def _create_stop_sign_decal(self, stop_obj):
+        """Create a textured octagon decal in front of the stop-sign head.
+
+        The decal has clean UVs and is independent of the imported asset's
+        material slots/UV layout, which avoids clipped edges and texture bleed.
+        """
+        bpy.context.view_layer.update()
+
+        world_corners = [stop_obj.matrix_world @ Vector(corner) for corner in stop_obj.bound_box]
+        min_x = min(c.x for c in world_corners)
+        max_x = max(c.x for c in world_corners)
+        max_z = max(c.z for c in world_corners)
+
+        width = max(max_x - min_x, 1e-4)
+        # Slightly oversize so the decal fully covers the white sign face.
+        radius = max(0.18, 0.52 * width)
+
+        center = Vector(((min_x + max_x) * 0.5, stop_obj.location.y, max_z - 1.05 * radius))
+
+        cam = bpy.context.scene.camera
+        if cam is not None:
+            to_cam = cam.location - center
+            if to_cam.length > 1e-6:
+                center += to_cam.normalized() * 0.02
+
+        mesh = bpy.data.meshes.new("StopSignDecal_Mesh")
+
+        # Build a quad in local XZ plane (normal +Y). The PNG alpha defines
+        # the octagon silhouette, while the quad guarantees robust UV mapping.
+        verts = [
+            (-radius, 0.0, -radius),
+            ( radius, 0.0, -radius),
+            ( radius, 0.0,  radius),
+            (-radius, 0.0,  radius),
+        ]
+        faces = [(0, 1, 2, 3)]
+        mesh.from_pydata(verts, [], faces)
+        mesh.update()
+
+        # Full-range UV mapping with U flipped so STOP reads correctly.
+        uv_layer = mesh.uv_layers.new(name="UVMap")
+        uv_coords = [
+            (1.0, 0.0),
+            (0.0, 0.0),
+            (0.0, 1.0),
+            (1.0, 1.0),
+        ]
+        for loop_idx, uv in zip(mesh.polygons[0].loop_indices, uv_coords):
+            uv_layer.data[loop_idx].uv = uv
+
+        decal_obj = bpy.data.objects.new("StopSignDecal", mesh)
+
+        # Billboard the decal toward camera so orientation does not depend on
+        # the imported asset's local axis conventions.
+        cam = bpy.context.scene.camera
+        if cam is not None:
+            to_cam = cam.location - center
+            if to_cam.length > 1e-6:
+                dir_cam = to_cam.normalized()
+                decal_obj.rotation_euler = dir_cam.to_track_quat("Y", "Z").to_euler()
+                decal_obj.location = center + dir_cam * 0.12
+            else:
+                decal_obj.rotation_euler = stop_obj.rotation_euler.copy()
+                decal_obj.location = center
+        else:
+            decal_obj.rotation_euler = stop_obj.rotation_euler.copy()
+            decal_obj.location = center
+
+        bpy.context.collection.objects.link(decal_obj)
+        return decal_obj
 
     @staticmethod
     def _align_object_to_ground(obj, ground_z: float = 0.0, clearance: float = 0.0):

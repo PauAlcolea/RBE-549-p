@@ -62,28 +62,68 @@ class MaterialLibrary:
             mat = bpy.data.materials[mat_name]
         else:
             mat = bpy.data.materials.new(name=mat_name)
-            mat.use_nodes = True
-            nodes = mat.node_tree.nodes
-            links = mat.node_tree.links
 
-            # Clear default nodes to have a predictable graph
-            for n in list(nodes):
-                nodes.remove(n)
+        mat.use_nodes = True
+        nodes = mat.node_tree.nodes
+        links = mat.node_tree.links
 
-            bsdf = nodes.new("ShaderNodeBsdfPrincipled")
-            bsdf.location = (200, 0)
-            out_node = nodes.new("ShaderNodeOutputMaterial")
-            out_node.location = (400, 0)
+        # Rebuild every time so pre-existing materials from imported assets
+        # cannot keep stale node links or coordinate modes.
+        for n in list(nodes):
+            nodes.remove(n)
 
-            tex_node = nodes.new("ShaderNodeTexImage")
-            tex_node.location = (0, 0)
-            tex_node.image = bpy.data.images.load(str(texture_path))
+        bsdf = nodes.new("ShaderNodeBsdfPrincipled")
+        bsdf.location = (200, 0)
+        out_node = nodes.new("ShaderNodeOutputMaterial")
+        out_node.location = (400, 0)
 
-            links.new(tex_node.outputs["Color"], bsdf.inputs["Base Color"])
-            links.new(bsdf.outputs["BSDF"], out_node.inputs["Surface"])
+        texcoord_node = nodes.new("ShaderNodeTexCoord")
+        texcoord_node.location = (-220, 0)
 
-        obj.data.materials.clear()
-        obj.data.materials.append(mat)
+        tex_node = nodes.new("ShaderNodeTexImage")
+        tex_node.location = (0, 0)
+        image = bpy.data.images.load(str(texture_path), check_existing=True)
+        # Prevent white fringes from premultiplied-alpha interpretation.
+        if hasattr(image, "alpha_mode"):
+            image.alpha_mode = "STRAIGHT"
+        tex_node.image = image
+        # Some stop-sign UVs extend slightly outside [0, 1]. EXTEND avoids
+        # hard clipping at the border in those cases.
+        tex_node.extension = "EXTEND"
+
+        # Sample by mesh UVs (not Generated coords) for stable mapping.
+        links.new(texcoord_node.outputs["UV"], tex_node.inputs["Vector"])
+
+        links.new(tex_node.outputs["Color"], bsdf.inputs["Base Color"])
+        alpha_in = next((inp for inp in bsdf.inputs if inp.name == "Alpha"), None)
+        if alpha_in is not None:
+            links.new(tex_node.outputs["Alpha"], alpha_in)
+        links.new(bsdf.outputs["BSDF"], out_node.inputs["Surface"])
+
+        # Use alpha blending/shadow handling for textures with transparent
+        # borders when supported by the current Blender version.
+        if hasattr(mat, "blend_method"):
+            mat.blend_method = "HASHED"
+        if hasattr(mat, "shadow_method"):
+            mat.shadow_method = "HASHED"
+
+        # Preserve existing slots (e.g., pole material) and replace only the
+        # sign-face slot when possible.
+        target_slot = 0
+        for idx, existing_mat in enumerate(obj.data.materials):
+            if existing_mat is None:
+                continue
+            name = existing_mat.name.lower()
+            if any(token in name for token in ("sign", "stop", "face", "board")):
+                target_slot = idx
+                break
+
+        if len(obj.data.materials) == 0:
+            obj.data.materials.append(mat)
+        elif target_slot < len(obj.data.materials):
+            obj.data.materials[target_slot] = mat
+        else:
+            obj.data.materials.append(mat)
 
     def set_traffic_light_color(self, color: str):
         """
