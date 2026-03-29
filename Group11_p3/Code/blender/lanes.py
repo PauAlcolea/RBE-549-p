@@ -1,133 +1,278 @@
-# """
-# blender/lanes.py
-# ================
-# Creates lane geometry in the Blender scene from detection JSON polylines.
+"""
+blender/lanes.py
+================
+Creates lane geometry in the Blender scene from detection JSON polylines.
 
-# Each lane is rendered as a flat ribbon (narrow plane mesh) lying on the
-# estimated ground plane. Color and dash pattern are set via materials.
+Each lane is rendered as a flat ribbon (narrow plane mesh) lying on the
+estimated ground plane. Color and dash pattern are set via materials.
 
-# Approach:
-#   - Project the image-space lane polypoints through the camera to the
-#     ground plane (Y=0 in world space, i.e. the road surface).
-#   - Extrude the polyline into a flat strip using the lane_width from config.
-#   - Assign a material: white solid, white dashed, or yellow solid.
-#   - For dashed lanes: either use a UV-tiled texture or place multiple
-#     short segments with gaps.
-# """
-# from typing import List
+Approach:
+  - Project the image-space lane polypoints through the camera to the
+	ground plane (Z=0 in world space, i.e. the road surface).
+  - Extrude the polyline into a flat strip using the lane_width from config.
+  - Assign a material: white solid, white dashed, or yellow solid.
+  - For dashed lanes: either use a UV-tiled texture or place multiple
+	short segments with gaps.
+"""
+
+from typing import List, Optional
+
+import numpy as np
 
 
-# class LaneRenderer:
-#     """
-#     Manages lane geometry objects in the Blender scene.
+class LaneRenderer:
+	"""Manages lane geometry objects in the Blender scene.
 
-#     Usage
-#     -----
-#     renderer = LaneRenderer(cfg)
-#     renderer.draw_lane(lane_dict)
-#     renderer.clear()             # call before each new frame
-#     """
+	Usage
+	-----
+	renderer = LaneRenderer(cfg)
+	renderer.draw_lane(lane_dict)
+	renderer.clear()             # call before each new frame
+	"""
 
-#     def __init__(self, cfg: dict):
-#         self.cfg = cfg
-#         self.lane_width = cfg["blender"]["style"]["lane_width"]
-#         self.cam_cfg    = cfg["blender"]["camera"]
-#         self._lane_objects = []
+	def __init__(self, cfg: dict):
+		self.cfg = cfg
+		self.lane_width = cfg["blender"]["style"]["lane_width"]
+		self.cam_cfg = cfg["blender"]["camera"]
 
-#     def draw_lane(self, lane: dict):
-#         """
-#         Create a lane ribbon object for one lane.
+		self._lane_objects = []
+		self._mat_cache = {}
 
-#         Parameters
-#         ----------
-#         lane : dict with keys "points" [[x,y],...], "color", "style"
-#         """
-#         # TODO: implement
-#         # 1. Unproject image points to ground plane using camera intrinsics
-#         #    ground_pts = [self._unproject_to_ground(pt) for pt in lane["points"]]
-#         # 2. Build a ribbon mesh along the polyline
-#         #    mesh = self._build_ribbon(ground_pts, self.lane_width)
-#         # 3. Apply appropriate material
-#         #    mat = self._get_material(lane["color"], lane["style"])
-#         #    mesh.data.materials.append(mat)
-#         # 4. Track for cleanup
-#         #    self._lane_objects.append(mesh)
-#         pass
+		# Threshold below which we skip drawing lanes
+		self._min_conf = float(
+			cfg.get("perception", {})
+			.get("lanes", {})
+			.get("confidence", 0.0)
+		)
 
-#     def clear(self):
-#         """Remove all lane objects from the previous frame."""
-#         # TODO: implement
-#         # import bpy
-#         # for obj in self._lane_objects:
-#         #     bpy.data.objects.remove(obj, do_unlink=True)
-#         self._lane_objects.clear()
+	# ── Public API ────────────────────────────────────────────────────────
 
-#     # ── Helpers ───────────────────────────────────────────────────────────
+	def draw_lane(self, lane: dict):
+		"""Create a lane ribbon object for one lane.
 
-#     def _unproject_to_ground(self, img_pt: List[float]) -> tuple:
-#         """
-#         Unproject an image-space point (x, y) to the world ground plane (Z=0).
+		Parameters
+		----------
+		lane : dict with keys "points" [[x,y],...], "color", "confidence", optional "style".
+		"""
 
-#         Uses the pinhole camera model + known camera height above ground.
-#         Formula:
-#           ray_dir = K_inv @ [u, v, 1]
-#           t = -cam_height / ray_dir.y
-#           world_pt = cam_pos + t * ray_dir
+		points = lane.get("points") or []
+		if len(points) < 2:
+			return
 
-#         Returns (world_x, world_y, 0.0).
-#         """
-#         # TODO: implement
-#         # fx = self.cam_cfg["fx"]
-#         # fy = self.cam_cfg["fy"]
-#         # cx = self.cam_cfg["cx"]
-#         # cy = self.cam_cfg["cy"]
-#         # h  = self.cam_cfg["height_m"]
-#         # u, v = img_pt
-#         # ray = np.array([(u - cx)/fx, (v - cy)/fy, 1.0])
-#         # t = h / ray[1]   # intersect with Y = 0 plane
-#         # world = t * ray
-#         # return (world[0], world[2], 0.0)  # Blender coords
-#         raise NotImplementedError
+		confidence = float(lane.get("confidence", 1.0))
+		if confidence < self._min_conf:
+			return
 
-#     def _build_ribbon(self, ground_pts: list, width: float):
-#         """
-#         Create a flat ribbon mesh from a sequence of ground-plane points.
-#         Returns a Blender object.
-#         """
-#         # TODO: implement using bmesh
-#         # import bpy, bmesh, mathutils
-#         # bm = bmesh.new()
-#         # verts_left  = []
-#         # verts_right = []
-#         # for i, pt in enumerate(ground_pts):
-#         #     ... compute left/right offset perpendicular to lane direction ...
-#         #     verts_left.append(bm.verts.new(left))
-#         #     verts_right.append(bm.verts.new(right))
-#         # for i in range(len(ground_pts) - 1):
-#         #     bm.faces.new([verts_left[i], verts_right[i], verts_right[i+1], verts_left[i+1]])
-#         # mesh = bpy.data.meshes.new("lane")
-#         # bm.to_mesh(mesh)
-#         # obj = bpy.data.objects.new("lane", mesh)
-#         # bpy.context.collection.objects.link(obj)
-#         # return obj
-#         raise NotImplementedError
+		# Unproject image points to ground plane
+		ground_pts = []
+		for pt in points:
+			wp = self._unproject_to_ground(pt)
+			if wp is not None:
+				ground_pts.append(wp)
 
-#     def _get_material(self, color: str, style: str):
-#         """
-#         Return (or create) a Blender material for the given lane color and style.
-#         Materials are cached by (color, style) to avoid duplicates.
-#         """
-#         # TODO: implement
-#         # import bpy
-#         # key = f"lane_{color}_{style}"
-#         # if key in bpy.data.materials:
-#         #     return bpy.data.materials[key]
-#         # mat = bpy.data.materials.new(name=key)
-#         # mat.use_nodes = True
-#         # bsdf = mat.node_tree.nodes["Principled BSDF"]
-#         # rgb = self.cfg["blender"]["style"][f"lane_{style}_{color}"]
-#         # bsdf.inputs["Base Color"].default_value = (*rgb, 1.0)
-#         # bsdf.inputs["Emission"].default_value = (*rgb, 1.0)   # unlit look
-#         # bsdf.inputs["Emission Strength"].default_value = 2.0
-#         # return mat
-#         raise NotImplementedError
+		if len(ground_pts) < 2:
+			return
+
+		lane_obj = self._build_ribbon(ground_pts, self.lane_width)
+		if lane_obj is None:
+			return
+
+		color = lane.get("color", "white")
+		style = lane.get("style", "solid")
+		mat = self._get_material(color, style)
+
+		# Attach material
+		if mat is not None:
+			if lane_obj.data.materials:
+				lane_obj.data.materials.clear()
+			lane_obj.data.materials.append(mat)
+
+		self._lane_objects.append(lane_obj)
+
+	def clear(self):
+		"""Remove all lane objects from the previous frame."""
+		try:
+			import bpy
+		except ImportError:
+			# Not running inside Blender; nothing to clear.
+			self._lane_objects.clear()
+			return
+
+		for obj in self._lane_objects:
+			if obj.name in bpy.data.objects:
+				bpy.data.objects.remove(obj, do_unlink=True)
+		self._lane_objects.clear()
+
+	# ── Helpers ───────────────────────────────────────────────────────────
+
+	def _unproject_to_ground(self, img_pt: List[float]) -> Optional[tuple]:
+		"""Unproject an image-space point (u, v) to the world ground plane (Z=0).
+
+		Uses a simple pinhole camera model with intrinsics from cfg["blender"]["camera"].
+		The camera is assumed to be at (0, 0, height_m) looking forward along +Y.
+
+		The ray direction in world coordinates is approximated as:
+			d = [(u - cx) / fx, 1, -(v - cy) / fy]
+
+		We then intersect this ray with the plane Z=0.
+		Returns (world_x, world_y, 0.0) or None if the ray does not hit the ground.
+		"""
+
+		fx = float(self.cam_cfg["fx"])
+		fy = float(self.cam_cfg["fy"])
+		cx = float(self.cam_cfg["cx"])
+		cy = float(self.cam_cfg["cy"])
+		h = float(self.cam_cfg["height_m"])
+
+		u, v = float(img_pt[0]), float(img_pt[1])
+
+		x_cam = (u - cx) / fx
+		y_cam = (v - cy) / fy
+
+		# Approximate world ray (x, forward, -z)
+		d = np.array([x_cam, 1.0, -y_cam], dtype=float)
+		norm = np.linalg.norm(d)
+		if norm == 0.0:
+			return None
+		d /= norm
+
+		# Camera origin in world coords
+		o = np.array([0.0, 0.0, h], dtype=float)
+
+		# Intersect with Z=0 plane: o.z + t * d.z = 0 -> t = -o.z / d.z
+		if d[2] >= -1e-5:
+			# Ray does not point downwards towards the ground
+			return None
+
+		t = -o[2] / d[2]
+		if t <= 0.0:
+			return None
+
+		p = o + t * d
+		return float(p[0]), float(p[1]), 0.0
+
+	def _build_ribbon(self, ground_pts: list, width: float):
+		"""Create a flat ribbon mesh from a sequence of ground-plane points.
+
+		Returns a Blender object or None if creation fails.
+		"""
+
+		try:
+			import bpy
+			import bmesh
+			from mathutils import Vector
+		except ImportError:
+			# Not running inside Blender; cannot build geometry.
+			return None
+
+		if len(ground_pts) < 2:
+			return None
+
+		bm = bmesh.new()
+		verts_left = []
+		verts_right = []
+		half_w = float(width) / 2.0
+
+		n = len(ground_pts)
+		for i, pt in enumerate(ground_pts):
+			x, y, z = float(pt[0]), float(pt[1]), float(pt[2])
+
+			if i == 0:
+				x2, y2, _ = ground_pts[i + 1]
+				dir_vec = Vector((x2 - x, y2 - y, 0.0))
+			elif i == n - 1:
+				x2, y2, _ = ground_pts[i - 1]
+				dir_vec = Vector((x - x2, y - y2, 0.0))
+			else:
+				x_prev, y_prev, _ = ground_pts[i - 1]
+				x_next, y_next, _ = ground_pts[i + 1]
+				dir_vec = Vector((x_next - x_prev, y_next - y_prev, 0.0))
+
+			if dir_vec.length == 0.0:
+				dir_vec = Vector((0.0, 1.0, 0.0))
+			else:
+				dir_vec.normalize()
+
+			# Perpendicular vector in the ground plane
+			perp = Vector((dir_vec.y, -dir_vec.x, 0.0))
+
+			center = Vector((x, y, z))
+			left = center - half_w * perp
+			right = center + half_w * perp
+
+			v_l = bm.verts.new(left)
+			v_r = bm.verts.new(right)
+			verts_left.append(v_l)
+			verts_right.append(v_r)
+
+		bm.verts.ensure_lookup_table()
+
+		for i in range(n - 1):
+			v1 = verts_left[i]
+			v2 = verts_right[i]
+			v3 = verts_right[i + 1]
+			v4 = verts_left[i + 1]
+			try:
+				bm.faces.new((v1, v2, v3, v4))
+			except ValueError:
+				# Face may already exist if inputs are degenerate
+				continue
+
+		mesh = bpy.data.meshes.new("Lane")
+		bm.to_mesh(mesh)
+		bm.free()
+
+		obj = bpy.data.objects.new("Lane", mesh)
+		bpy.context.collection.objects.link(obj)
+		return obj
+
+	def _get_material(self, color: str, style: str):
+		"""Return (or create) a Blender material for the given lane color and style."""
+
+		try:
+			import bpy
+		except ImportError:
+			return None
+
+		key = f"lane_{color}_{style}"
+
+		if key in self._mat_cache:
+			return self._mat_cache[key]
+
+		if key in bpy.data.materials:
+			mat = bpy.data.materials[key]
+			self._mat_cache[key] = mat
+			return mat
+
+		style_cfg = self.cfg["blender"]["style"]
+		rgb_key = f"lane_{style}_{color}"
+		rgb = style_cfg.get(rgb_key, style_cfg.get("lane_solid_white", [1.0, 1.0, 1.0]))
+		r, g, b = float(rgb[0]), float(rgb[1]), float(rgb[2])
+
+		mat = bpy.data.materials.new(name=key)
+		mat.use_nodes = True
+		nodes = mat.node_tree.nodes
+		bsdf = nodes.get("Principled BSDF")
+		if bsdf is None:
+			bsdf = nodes.new("ShaderNodeBsdfPrincipled")
+
+		bsdf.inputs["Base Color"].default_value = (r, g, b, 1.0)
+		# Roughness exists across Blender versions; keep it high for a flat look.
+		rough_inp = next((inp for inp in bsdf.inputs if inp.name == "Roughness"), None)
+		if rough_inp is not None:
+			rough_inp.default_value = 1.0
+		# "Specular" was renamed in newer Blender versions; only set it if present.
+		spec_inp = next((inp for inp in bsdf.inputs if inp.name == "Specular"), None)
+		if spec_inp is not None:
+			spec_inp.default_value = 0.0
+		# Emission inputs may not exist on older Principled nodes; guard them.
+		emit_inp = next((inp for inp in bsdf.inputs if inp.name == "Emission"), None)
+		if emit_inp is not None:
+			emit_inp.default_value = (r, g, b, 1.0)
+		strength_inp = next((inp for inp in bsdf.inputs if inp.name in ("Emission Strength", "Emission Strength")), None)
+		if strength_inp is not None:
+			strength_inp.default_value = 2.0
+
+		self._mat_cache[key] = mat
+		return mat
+

@@ -28,6 +28,7 @@ from utils.io_utils import load_detection_json, list_frame_jsons, load_config
 from blender.render  import render_frame, frames_to_video
 from blender.camera import setup_camera
 from blender.assets import AssetLibrary
+from blender.lanes import LaneRenderer
 
 # bpy is only available inside Blender — guarded below
 try:
@@ -82,10 +83,10 @@ def setup_scene(cfg: dict):
     lamp_obj.location = (5, 5, 10)
 
     # make ground plane
-    bpy.ops.mesh.primitive_plane_add(size=200, location=(0, 0, 0))
-    ground = bpy.context.active_object
-    ground.name = "Ground"
-    ground.location.z = 0       # slightly below 0 so objects sit on z=0
+    # bpy.ops.mesh.primitive_plane_add(size=200, location=(0, 0, 0))
+    # ground = bpy.context.active_object
+    # ground.name = "Ground"
+    # ground.location.z = 0       # slightly below 0 so objects sit on z=0
 
     scene.render.resolution_percentage = 100
     scene.render.film_transparent = True                               # RGBA output, background = alpha 0
@@ -130,6 +131,9 @@ def render_sequence(scene_name: str, camera: str, cfg: dict, debug: bool = False
     # Camera is fixed for the entire sequence, the objects are the ones that move around
     setup_camera(cfg)
 
+    # Lane renderer: persists across frames, geometry cleared per frame
+    lane_renderer = LaneRenderer(cfg)
+
     for i, json_path in enumerate(jsons):
         frame_data = load_detection_json(json_path)
         frame_idx  = frame_data["frame"]
@@ -145,6 +149,9 @@ def render_sequence(scene_name: str, camera: str, cfg: dict, debug: bool = False
         if asset_lib:
             asset_lib.clear_frame_objects()
 
+        # clear previous frame's lane geometry
+        lane_renderer.clear()
+
         # go through all of the assets detected and place vehicles and pedestrians
         if asset_lib:
             print("vehicles in frame: ")
@@ -155,7 +162,13 @@ def render_sequence(scene_name: str, camera: str, cfg: dict, debug: bool = False
             for p in frame_data.get("pedestrians", []):
                 print(p)
                 asset_lib.place_pedestrian(p)
-            
+
+            # lanes
+            print("lanes in frame: ")
+            for lane in frame_data.get("lanes", []):
+                print(lane)
+                lane_renderer.draw_lane(lane)
+
             # some white space for debugging
             print()
 
