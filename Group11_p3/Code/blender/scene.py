@@ -86,6 +86,11 @@ def setup_scene(cfg: dict):
     ground = bpy.context.active_object
     ground.name = "Ground"
     ground.location.z = 0       # slightly below 0 so objects sit on z=0
+    mat = bpy.data.materials.new(name="GroundMaterial")
+    mat.use_nodes = True
+    bsdf = mat.node_tree.nodes["Principled BSDF"]
+    bsdf.inputs["Base Color"].default_value = (0.2, 0.2, 0.2, 1.0)  # dark gray
+    ground.data.materials.append(mat)
 
     scene.render.resolution_percentage = 100
     scene.render.film_transparent = True                               # RGBA output, background = alpha 0

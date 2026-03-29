@@ -60,6 +60,9 @@ def draw_detections(frame_bgr: np.ndarray, detections: list) -> np.ndarray:
         else:
             text = f"{det.label} {det.confidence:.2f}"
 
+        if getattr(det, "direction", "unknown") != "unknown":
+            text = f"{text} {det.direction}"
+
         # Draw a filled background behind the text so it's readable on any frame
         (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
         cv2.rectangle(out, (x1, y1 - th - 8), (x1 + tw + 4, y1), color, -1)

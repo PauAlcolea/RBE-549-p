@@ -112,6 +112,7 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"[{scene_name}] Camera: {camera}")
+    models["objects"].reset_tracking()
 
     # Use the generator so we never load all frames into RAM at once
     for i, (frame_idx, frame_bgr) in enumerate(
