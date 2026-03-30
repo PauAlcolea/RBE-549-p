@@ -18,7 +18,7 @@ possible JSON schema (one file per frame):
     {"bbox": [x1,y1,x2,y2], "depth_m": float, "position_3d": [x,y,z]}
   ],
   "traffic_lights": [
-    {"bbox": [x1,y1,x2,y2], "color": "red"|"yellow"|"green", "depth_m": float}
+        {"bbox": [x1,y1,x2,y2], "color": "red"|"yellow"|"green", "depth_m": float, "position_3d": [x,y,z]}
   ],
   "stop_signs": [
     {"bbox": [x1,y1,x2,y2], "depth_m": float, "position_3d": [x,y,z]}
@@ -123,6 +123,7 @@ def build_frame_dict(
                 "bbox":    [round(v, 2) for v in tl.bbox],
                 "color":   tl.color,
                 "depth_m": round(tl.depth_m, 3),
+                "position_3d": [round(v, 3) for v in tl.position_3d],
             }
             for tl in traffic_lights
         ],
