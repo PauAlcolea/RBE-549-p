@@ -25,7 +25,7 @@ class Lane:
 
     points: List[Tuple[float, float]]
     color: str = "white"
-    # style: str = "solid"
+    
     confidence: float = 1.0
 
 

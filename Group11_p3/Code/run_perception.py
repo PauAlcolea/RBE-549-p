@@ -160,20 +160,16 @@ def draw_lane_debug_overlay(frame_bgr, lane_results, lane_raw=None):
 
         poly = [(int(round(x)), int(round(y))) for x, y in points]
         color = _lane_color_bgr(lane.get("color", "white"))
-        style = str(lane.get("style", "solid")).lower()
         conf = float(lane.get("confidence", 0.0))
 
-        if style == "dashed":
-            _draw_dashed_polyline(vis, poly, color, thickness=2)
-        else:
-            cv2.polylines(
-                vis,
-                [np.array(poly, dtype=np.int32)],
-                False,
-                color,
-                2,
-                lineType=cv2.LINE_AA,
-            )
+        cv2.polylines(
+            vis,
+            [np.array(poly, dtype=np.int32)],
+            False,
+            color,
+            2,
+            lineType=cv2.LINE_AA,
+        )
 
         label = f"{lane.get('color', 'white')} {conf:.2f}"
         cv2.putText(

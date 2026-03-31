@@ -32,12 +32,10 @@ def _serialize_lane(lane) -> dict:
     if isinstance(lane, dict):
         points = lane.get("points", [])
         color = lane.get("color", "white")
-        style = lane.get("style", None)
         confidence = lane.get("confidence", None)
     else:
         points = getattr(lane, "points", [])
         color = getattr(lane, "color", "white")
-        style = getattr(lane, "style", None)
         confidence = getattr(lane, "confidence", None)
 
     norm_points = []
@@ -51,8 +49,7 @@ def _serialize_lane(lane) -> dict:
         "points": norm_points,
         "color": str(color),
     }
-    if style is not None:
-        lane_out["style"] = str(style)
+
     if confidence is not None:
         lane_out["confidence"] = float(confidence)
 
