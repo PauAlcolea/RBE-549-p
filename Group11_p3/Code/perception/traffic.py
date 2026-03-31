@@ -10,7 +10,7 @@ Color:      HSV thresholding on the top third of the detected bbox crop.
             bottom for green — but thresholding is more robust than position.)
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List
 import numpy as np
 import cv2
@@ -22,6 +22,8 @@ class TrafficLight:
     color: str              # "red" | "yellow" | "green" | "unknown"
     confidence: float
     depth_m: float = 0.0
+    label: str = "traffic_light"   # for consistency with Detection
+    position_3d: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])  # optional, can be filled in by DepthEstimator.lift_to_3d
 
 class TrafficLightDetector:
     """
@@ -89,6 +91,7 @@ class TrafficLightDetector:
                 color=color,
                 confidence=det.confidence,
                 depth_m=det.depth_m,
+                label=det.label
             ))
 
         return lights

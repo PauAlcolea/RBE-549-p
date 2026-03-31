@@ -237,7 +237,7 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
         lane_output    = models["lanes"].detect(frame_bgr)
         depth_map       = models["depth"].estimate(frame_bgr)
         object_results  = models["depth"].lift_to_3d(object_results, depth_map)
-        traffic_results = models["traffic"].detect(frame_bgr, object_results)
+        traffic_results = models["depth"].lift_to_3d(models["traffic"].detect(frame_bgr, object_results), depth_map)
         sign_results    = models["signs"].detect(frame_bgr, object_results)
 
         _SPECIALIZED = {"traffic_light", "stop_sign"}

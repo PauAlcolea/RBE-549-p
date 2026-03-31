@@ -159,19 +159,18 @@ def render_sequence(scene_name: str, camera: str, cfg: dict, debug: bool = False
 
         # go through all of the assets detected and place vehicles and pedestrians
         if asset_lib:
-            print("vehicles in frame: ")
             for v in frame_data.get("vehicles", []):
-                print(v)
                 asset_lib.place_vehicle(v)
-            print("pedestrians in frame: ")
             for p in frame_data.get("pedestrians", []):
-                print(p)
                 asset_lib.place_pedestrian(p)
-
+            # traffic lights
+            for t in frame_data.get("traffic_lights", []):
+                asset_lib.place_traffic_light(t)
+            # stop signs
+            for s in frame_data.get("stop_signs", []):
+                asset_lib.place_stop_sign(s)
             # lanes
-            print("lanes in frame: ")
             for lane in frame_data.get("lanes", []):
-                print(lane)
                 lane_renderer.draw_lane(lane)
 
             # some white space for debugging
@@ -179,7 +178,6 @@ def render_sequence(scene_name: str, camera: str, cfg: dict, debug: bool = False
 
  
         out_png = frames_dir / f"frame_{frame_idx:06d}.png"
-        print("Objects in scene:", [(o.name, o.type) for o in bpy.data.objects])
 
         render_frame(cfg, out_png)
  

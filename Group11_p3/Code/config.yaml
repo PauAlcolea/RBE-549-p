@@ -106,6 +106,7 @@ perception:
       car: 1.5
       person: 1.75
       stop_sign: 0.75
+      traffic_light: 5
 
   traffic_light:
     # HSV ranges for color classification (H in [0,179] for OpenCV)
