@@ -172,6 +172,9 @@ def render_sequence(scene_name: str, camera: str, cfg: dict, debug: bool = False
             # traffic cones
             for c in frame_data.get("traffic_cones", []):
                 asset_lib.place_traffic_cone(c)
+            # "dustbins"
+            for d in frame_data.get("trash_cans", []):
+                asset_lib.place_trash_can(d)
             # lanes
             for lane in frame_data.get("lanes", []):
                 lane_renderer.draw_lane(lane)
