@@ -4,11 +4,311 @@ utils/geometry.py
 Shared geometry math used by both perception (depth lifting) and
 Blender (unprojection to ground plane, coordinate transforms).
 
-All functions are pure numpy — no OpenCV or bpy dependency.
+Most functions are pure numpy. Camera calibration helpers import
+OpenCV lazily so the rest of the module stays lightweight.
 """
 
+from __future__ import annotations
+from dataclasses import dataclass
+from pathlib import Path
+import re
 import numpy as np
-# from typing import List, Tuple
+
+
+@dataclass(frozen=True)
+class CalibrationResult:
+    """Container for checkerboard-based camera calibration outputs."""
+
+    K: np.ndarray
+    dist_coeffs: np.ndarray
+    image_size: tuple[int, int]
+    rms_error: float
+    mean_reprojection_error: float
+    used_images: list[str]
+    total_images: int
+
+    # these methods make it easier to use fx, fy, cx, and cy by renaming them
+    @property
+    def fx(self) -> float:
+        return float(self.K[0, 0])
+
+    @property
+    def fy(self) -> float:
+        return float(self.K[1, 1])
+
+    @property
+    def cx(self) -> float:
+        return float(self.K[0, 2])
+
+    @property
+    def cy(self) -> float:
+        return float(self.K[1, 2])
+
+    def as_dict(self) -> dict:
+        # this dictionary makes it easier to use all of the informationfrom this class
+        width, height = self.image_size
+        return {
+            "fx": self.fx,
+            "fy": self.fy,
+            "cx": self.cx,
+            "cy": self.cy,
+            "image_width": int(width),
+            "image_height": int(height),
+            "rms_error": float(self.rms_error),
+            "mean_reprojection_error": float(self.mean_reprojection_error),
+            "dist_coeffs": self.dist_coeffs.reshape(-1).tolist(),
+            "used_images": list(self.used_images),
+            "total_images": int(self.total_images),
+        }
+
+# Square size will not affect the intrinsics, only the extrinsics scale, which is alright for us
+def _checkerboard_object_points(
+    pattern_size: tuple[int, int],
+    square_size: float,
+) -> np.ndarray:
+    """Build the planar 3D checkerboard coordinates for OpenCV calibration."""
+    cols, rows = pattern_size
+    objp = np.zeros((cols * rows, 3), dtype=np.float32)
+    objp[:, :2] = np.mgrid[0:cols, 0:rows].T.reshape(-1, 2)
+    objp *= np.float32(square_size)
+    return objp
+
+# this is the main calibratin function that returns the CalibrationResult object
+def calibrate_intrinsics_from_checkerboard(
+    image_dir: str | Path,
+    pattern_size: tuple[int, int] = (9, 6),
+    square_size: float = 1.0,
+    image_glob: str = "*.jpg",
+) -> CalibrationResult:
+    """
+    Estimate camera intrinsics from a folder of checkerboard images.
+
+    Parameters
+    ----------
+    image_dir : str | Path
+        Folder containing calibration frames for a single camera.
+    pattern_size : tuple[int, int], default=(9, 6)
+        Number of inner checkerboard corners as (columns, rows).
+    square_size : float, default=1.0
+        Physical checker square size in any consistent unit. This does not
+        change fx/fy/cx/cy, but it does affect the extrinsic scale.
+    image_glob : str, default="*.jpg"
+        Glob used to collect calibration images from ``image_dir``.
+
+    Returns
+    -------
+    CalibrationResult
+        Intrinsic matrix, distortion coefficients, and error metrics.
+    """
+    try:
+        import cv2
+    except ImportError as exc:
+        raise ImportError(
+            "OpenCV is required for calibration. Install opencv-python-headless "
+            "or activate the project environment before calling this helper."
+        ) from exc
+
+    image_dir = Path(image_dir)
+    image_paths = sorted(image_dir.glob(image_glob))
+    if not image_paths:
+        raise FileNotFoundError(
+            f"No calibration images matching '{image_glob}' were found in {image_dir}."
+        )
+
+    objp = _checkerboard_object_points(pattern_size, square_size)
+    objpoints: list[np.ndarray] = []
+    imgpoints: list[np.ndarray] = []
+    used_images: list[str] = []
+    image_size: tuple[int, int] | None = None
+
+    corner_criteria = (
+        cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER,
+        30,
+        1e-3,
+    )
+
+    for image_path in image_paths:
+        gray = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
+        if gray is None:
+            continue
+
+        current_size = (gray.shape[1], gray.shape[0])
+        if image_size is None:
+            image_size = current_size
+        elif current_size != image_size:
+            raise ValueError(
+                "All calibration images must have the same resolution. "
+                f"Expected {image_size}, got {current_size} for {image_path.name}."
+            )
+
+        found, corners = cv2.findChessboardCorners(gray, pattern_size)
+        if not found:
+            found, corners = cv2.findChessboardCornersSB(gray, pattern_size)
+        if not found or corners is None:
+            continue
+
+        refined_corners = cv2.cornerSubPix(
+            gray,
+            corners,
+            (11, 11),
+            (-1, -1),
+            corner_criteria,
+        )
+
+        objpoints.append(objp.copy())
+        imgpoints.append(refined_corners)
+        used_images.append(image_path.name)
+
+    if image_size is None:
+        raise RuntimeError(f"Unable to read any calibration images from {image_dir}.")
+    if len(objpoints) < 3:
+        raise RuntimeError(
+            "Calibration needs at least 3 valid checkerboard detections. "
+            f"Only found {len(objpoints)} in {len(image_paths)} images."
+        )
+
+    rms_error, K, dist_coeffs, rvecs, tvecs = cv2.calibrateCamera(
+        objpoints,
+        imgpoints,
+        image_size,
+        None,
+        None,
+    )
+
+    per_view_errors = []
+    for obj_pts, img_pts, rvec, tvec in zip(objpoints, imgpoints, rvecs, tvecs):
+        projected, _ = cv2.projectPoints(obj_pts, rvec, tvec, K, dist_coeffs)
+        error = cv2.norm(img_pts, projected, cv2.NORM_L2) / len(projected)
+        per_view_errors.append(float(error))
+
+    return CalibrationResult(
+        K=K.astype(np.float64),
+        dist_coeffs=dist_coeffs.astype(np.float64),
+        image_size=image_size,
+        rms_error=float(rms_error),
+        mean_reprojection_error=float(np.mean(per_view_errors)),
+        used_images=used_images,
+        total_images=len(image_paths),
+    )
+
+
+def write_intrinsics_to_config(
+    calibration: CalibrationResult,
+    config_path: str | Path | None = None,
+) -> Path:
+    """
+    Update ``blender.camera`` intrinsics in config.yaml while preserving comments.
+
+    Only ``fx``, ``fy``, ``cx``, and ``cy`` are rewritten. After updating the
+    YAML file, the config.json sidecar is refreshed to keep Blender reads in sync.
+    """
+    if config_path is None:
+        config_path = Path(__file__).resolve().parents[1] / "config.yaml"
+    config_path = Path(config_path)
+
+    if not config_path.exists():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+
+    lines = config_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    replacements = {
+        "fx": f"{calibration.fx:.6f}",
+        "fy": f"{calibration.fy:.6f}",
+        "cx": f"{calibration.cx:.6f}",
+        "cy": f"{calibration.cy:.6f}",
+    }
+    updated_keys: set[str] = set()
+
+    in_blender = False
+    in_camera = False
+    blender_indent = None
+    camera_indent = None
+
+    section_pattern = re.compile(r"^(\s*)([A-Za-z_][\w-]*)\s*:\s*(?:#.*)?$")
+    value_pattern = re.compile(r"^(\s*)(fx|fy|cx|cy)(\s*:\s*)([^#\n]*?)(\s*(#.*)?)?(\r?\n)?$")
+
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+
+        section_match = section_pattern.match(line)
+        if section_match:
+            indent = len(section_match.group(1))
+            section_name = section_match.group(2)
+
+            if in_camera and indent <= camera_indent and section_name != "camera":
+                in_camera = False
+                camera_indent = None
+            if in_blender and indent <= blender_indent and section_name != "blender":
+                in_blender = False
+                blender_indent = None
+
+            if section_name == "blender" and indent == 0:
+                in_blender = True
+                blender_indent = indent
+                continue
+
+            if in_blender and section_name == "camera":
+                in_camera = True
+                camera_indent = indent
+                continue
+
+        if not in_camera:
+            continue
+
+        value_match = value_pattern.match(line)
+        if not value_match:
+            continue
+
+        key = value_match.group(2)
+        if key not in replacements:
+            continue
+
+        suffix = value_match.group(5) or ""
+        newline = value_match.group(7) or ""
+        lines[idx] = (
+            f"{value_match.group(1)}{key}{value_match.group(3)}"
+            f"{replacements[key]}{suffix}{newline}"
+        )
+        updated_keys.add(key)
+
+    missing = sorted(set(replacements) - updated_keys)
+    if missing:
+        raise RuntimeError(
+            "Could not find all blender.camera intrinsic keys in config.yaml. "
+            f"Missing: {missing}"
+        )
+
+    config_path.write_text("".join(lines), encoding="utf-8")
+
+    from utils.io_utils import load_config
+
+    load_config(str(config_path))
+    return config_path
+
+
+def calibrate_front_camera_intrinsics(
+    calib_dir: str | Path | None = None,
+    pattern_size: tuple[int, int] = (9, 6),
+    square_size: float = 1.0,
+    update_config: bool = False,
+    config_path: str | Path | None = None,
+) -> CalibrationResult:
+    """
+    Convenience wrapper for the repo's front-camera calibration images.
+
+    By default this looks for ``Group11_p3/Data/Calib/front`` relative to this
+    file, which matches the current project layout.
+    """
+    if calib_dir is None:
+        calib_dir = Path(__file__).resolve().parents[2] / "Data" / "Calib" / "front" / "undistorted"
+
+    result = calibrate_intrinsics_from_checkerboard(
+        image_dir=calib_dir,
+        pattern_size=pattern_size,
+        square_size=square_size,
+    )
+    if update_config:
+        write_intrinsics_to_config(result, config_path=config_path)
+    return result
 
 
 # # ── Camera model ──────────────────────────────────────────────────────────────
@@ -26,202 +326,3 @@ def build_intrinsic_matrix(fx: float, fy: float, cx: float, cy: float) -> np.nda
         [ 0, fy, cy],
         [ 0,  0,  1],
     ], dtype=np.float64)
-
-
-# def pixel_to_ray(u: float, v: float, K: np.ndarray) -> np.ndarray:
-#     """
-#     Compute a unit ray direction in camera space for image pixel (u, v).
-
-#     Parameters
-#     ----------
-#     u, v : pixel coordinates (x right, y down)
-#     K    : 3×3 intrinsic matrix
-
-#     Returns
-#     -------
-#     ray : np.ndarray shape (3,), unit vector in camera space
-#     """
-#     # K_inv = np.linalg.inv(K)
-#     # ray = K_inv @ np.array([u, v, 1.0])
-#     # return ray / np.linalg.norm(ray)
-#     return
-
-
-# def backproject_to_depth(
-#     u: float, v: float,
-#     depth_m: float,
-#     K: np.ndarray,
-# ) -> np.ndarray:
-#     """
-#     Backproject a single image pixel at a known metric depth to camera-space 3D.
-
-#     Parameters
-#     ----------
-#     u, v    : pixel coordinates
-#     depth_m : metric depth (Z in camera space, meters)
-#     K       : 3×3 intrinsic matrix
-
-#     Returns
-#     -------
-#     np.ndarray shape (3,) : [X, Y, Z] in camera coordinates
-#     """
-#     # K_inv = np.linalg.inv(K)
-#     # ray = K_inv @ np.array([u, v, 1.0])
-#     # return ray * depth_m
-#     return
-
-
-# def bbox_center_to_3d(
-#     bbox: List[float],
-#     depth_m: float,
-#     K: np.ndarray,
-# ) -> np.ndarray:
-#     """
-#     Lift the center of a 2D bounding box to a 3D camera-space point.
-
-#     Parameters
-#     ----------
-#     bbox    : [x1, y1, x2, y2] in pixels
-#     depth_m : estimated metric depth for this object
-#     K       : 3×3 intrinsic matrix
-
-#     Returns
-#     -------
-#     np.ndarray shape (3,) : [X, Y, Z] in camera space (meters)
-#     """
-#     # cx = (bbox[0] + bbox[2]) / 2.0
-#     # cy = (bbox[1] + bbox[3]) / 2.0
-#     # return backproject_to_depth(cx, cy, depth_m, K)
-#     return
-
-
-# # ── Ground plane unprojection ─────────────────────────────────────────────────
-
-# def unproject_to_ground(
-#     u: float, v: float,
-#     K: np.ndarray,
-#     cam_height_m: float,
-# ) -> np.ndarray:
-#     """
-#     Unproject an image point onto the flat ground plane (Y = 0 in world space).
-
-#     Assumes the camera is at height cam_height_m above the ground,
-#     looking forward. Camera Y-axis points down in image space.
-
-#     Parameters
-#     ----------
-#     u, v         : pixel coordinates
-#     K            : 3×3 intrinsic matrix
-#     cam_height_m : camera height above ground (meters)
-
-#     Returns
-#     -------
-#     np.ndarray shape (3,) : [X, Y, Z] world coordinates, Y=0 (ground)
-#                             X = lateral, Z = forward, Y = up
-#     """
-#     # K_inv = np.linalg.inv(K)
-#     # ray_cam = K_inv @ np.array([u, v, 1.0])   # camera space: x right, y down, z fwd
-
-#     # # Camera sits at (0, cam_height_m, 0) in world space (X right, Y up, Z fwd)
-#     # # Ray in world: X = ray_cam[0], Y = -ray_cam[1], Z = ray_cam[2]
-#     # ray_world = np.array([ray_cam[0], -ray_cam[1], ray_cam[2]])
-
-#     # # Intersect with Y=0 plane: cam_pos + t * ray = (*, 0, *)
-#     # #   cam_height_m + t * ray_world[1] = 0  =>  t = -cam_height_m / ray_world[1]
-#     # if abs(ray_world[1]) < 1e-6:
-#     #     # Ray is nearly horizontal — no valid ground intersection
-#     #     return np.array([0.0, 0.0, 0.0])
-
-#     # t = -cam_height_m / ray_world[1]
-#     # if t < 0:
-#     #     # Intersection is behind the camera
-#     #     return np.array([0.0, 0.0, 0.0])
-
-#     # world_pt = np.array([0.0, cam_height_m, 0.0]) + t * ray_world
-#     # return world_pt  # [X, 0, Z] in world
-#     return
-
-
-# # ── Coordinate system transforms ──────────────────────────────────────────────
-
-# def camera_to_blender(pos_cam: np.ndarray) -> Tuple[float, float, float]:
-#     """
-#     Convert a point from camera space to Blender world space.
-
-#     Camera space: X right, Y down, Z forward
-#     Blender space: X right, Y forward, Z up
-
-#     Parameters
-#     ----------
-#     pos_cam : np.ndarray shape (3,) [X, Y, Z] in camera space
-
-#     Returns
-#     -------
-#     (bx, by, bz) suitable for bpy object.location
-#     """
-#     # x, y, z = pos_cam
-#     # return (float(x), float(z), float(-y))
-#     return
-
-
-# def blender_to_camera(pos_bl: Tuple[float, float, float]) -> np.ndarray:
-#     """Inverse of camera_to_blender."""
-#     # bx, by, bz = pos_bl
-#     # return np.array([bx, -bz, by])
-#     return
-
-
-# # ── Bounding box helpers ───────────────────────────────────────────────────────
-
-# def bbox_area(bbox: List[float]) -> float:
-#     """Return pixel area of a bounding box [x1, y1, x2, y2]."""
-#     # return max(0.0, bbox[2] - bbox[0]) * max(0.0, bbox[3] - bbox[1])
-#     return
-
-
-# def bbox_iou(a: List[float], b: List[float]) -> float:
-#     """
-#     Compute Intersection over Union of two bounding boxes.
-
-#     Parameters
-#     ----------
-#     a, b : [x1, y1, x2, y2]
-
-#     Returns
-#     -------
-#     float in [0, 1]
-#     """
-#     # ix1 = max(a[0], b[0])
-#     # iy1 = max(a[1], b[1])
-#     # ix2 = min(a[2], b[2])
-#     # iy2 = min(a[3], b[3])
-#     # inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
-#     # union = bbox_area(a) + bbox_area(b) - inter
-#     # return inter / union if union > 0 else 0.0
-#     return
-
-
-# def estimate_metric_depth_from_bbox(
-#     bbox: List[float],
-#     known_height_m: float,
-#     fy: float,
-# ) -> float:
-#     """
-#     Estimate metric depth of an object from its bounding box height
-#     and known real-world height, using the thin-lens formula:
-
-#         Z = fy * known_height_m / bbox_height_px
-
-#     Parameters
-#     ----------
-#     bbox            : [x1, y1, x2, y2] in pixels
-#     known_height_m  : real-world height of the object (meters)
-#     fy              : vertical focal length in pixels
-
-#     Returns
-#     -------
-#     float : estimated depth in meters
-#     """
-#     # bbox_h = max(1.0, bbox[3] - bbox[1])
-#     # return (fy * known_height_m) / bbox_h
-#     return

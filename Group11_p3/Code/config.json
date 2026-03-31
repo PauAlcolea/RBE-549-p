@@ -183,18 +183,18 @@
     "executable": "blender",
     "fps": 30,
     "resolution": [
-      1920,
-      1080
+      1280,
+      960
     ],
     "render_engine": "CYCLES",
     "samples": 32,
     "output_format": "PNG",
     "ground_clearance_m": 0.03,
     "camera": {
-      "fx": 2059.0,
-      "fy": 2059.0,
-      "cx": 960.0,
-      "cy": 540.0,
+      "fx": 1402.939107,
+      "fy": 1178.218632,
+      "cx": 448.030821,
+      "cy": 306.365558,
       "height_m": 1.2
     },
     "style": {
