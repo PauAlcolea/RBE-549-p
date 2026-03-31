@@ -111,6 +111,31 @@ perception:
     min_height_px: 8
     max_instances: 30
 
+  non_coco_dart:
+    enabled: true
+    model: DART
+    classes:
+    - prompt: "traffic cone"
+      label: "traffic_cone"
+      export_bucket: "traffic_cones"
+    - prompt: "garbage can"
+      label: "trash_can"
+      export_bucket: "trash_cans"
+    default_export_bucket: "non_coco_objects"
+    confidence: 0.35
+    nms: 0.40
+    imgsz: 1008
+    runtime: auto             # auto | trt | compile | pytorch
+    compile_mode: max-autotune
+    use_masks: true
+    trt_max_classes: 4
+    trt_backbone: perception/DART/hf_backbone_fp16.engine
+    trt_enc_dec: perception/DART/enc_dec_fp16.engine
+    text_cache: null
+    min_width_px: 8
+    min_height_px: 8
+    max_instances: 30
+
   depth:
     model:
       encoder: vitb        # vits | vitb | vitl
@@ -126,6 +151,7 @@ perception:
       stop_sign: 0.75
       traffic_light: 5
       traffic_cone: 0.7
+      trash_can: 1.0
 
   traffic_light:
     # HSV ranges for color classification (H in [0,179] for OpenCV)

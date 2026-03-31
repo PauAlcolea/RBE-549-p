@@ -31,6 +31,7 @@ _COLOR_TL_YELLOW = ( 30, 210, 255)
 _COLOR_TL_GREEN  = ( 60, 220,  60)
 _COLOR_SIGN  = ( 50,  50, 220)   # red
 _COLOR_CONE  = (  0, 140, 255)   # orange
+_COLOR_NON_COCO = (180, 120, 255)
 
 
 
@@ -130,16 +131,22 @@ def draw_signs(frame_bgr: np.ndarray, signs: list) -> np.ndarray:
     return out
 
 
-def draw_cones(frame_bgr: np.ndarray, cones: list) -> np.ndarray:
-    """Draw traffic cone bboxes."""
+def draw_non_coco_objects(frame_bgr: np.ndarray, detections: list) -> np.ndarray:
+    """Draw DART non-COCO object detections."""
     out = frame_bgr.copy()
-    for cone in cones:
-        x1, y1, x2, y2 = [int(v) for v in cone.bbox]
-        cv2.rectangle(out, (x1, y1), (x2, y2), _COLOR_CONE, 2)
-        label = f"{cone.label} {cone.confidence:.2f}"
+    for det in detections:
+        x1, y1, x2, y2 = [int(v) for v in det.bbox]
+        color = _COLOR_CONE if det.label == "traffic_cone" else _COLOR_NON_COCO
+        cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
+        label = f"{det.label} {det.confidence:.2f}"
         cv2.putText(out, label, (x1, y1 - 6),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, _COLOR_CONE, 1)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
     return out
+
+
+def draw_cones(frame_bgr: np.ndarray, cones: list) -> np.ndarray:
+    """Backward-compatible wrapper around draw_non_coco_objects."""
+    return draw_non_coco_objects(frame_bgr, cones)
 
 
 # def draw_depth_map(depth_map: np.ndarray) -> np.ndarray:

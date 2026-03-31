@@ -1,15 +1,17 @@
 """
 perception/objectsDART.py
 =========================
-DART-based traffic cone detection for non-COCO objects.
+Generic DART-based detector for non-COCO objects.
 
 The detector returns object-style records compatible with DepthEstimator.lift_to_3d
-and JSON export flow used by run_perception.py.
+and export flow. Labels and export buckets are config-driven so new classes can
+be added without creating one module per object type.
 """
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
+import re
 import sys
 
 import cv2
@@ -19,16 +21,17 @@ from PIL import Image
 
 
 @dataclass
-class Cone:
-	label: str = "traffic_cone"
+class NonCocoObject:
+	label: str = "non_coco_object"
 	bbox: List[float] = field(default_factory=list)
 	confidence: float = 0.0
 	depth_m: float = 0.0
 	position_3d: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
+	export_bucket: str = "non_coco_objects"
 
 
-class ConeDetector:
-	"""Wraps DART/SAM3 for prompt-based traffic-cone detection."""
+class NonCocoDartDetector:
+	"""Wraps DART/SAM3 for prompt-based non-COCO object detection."""
 
 	def __init__(self, cfg: dict, device: str = "cuda"):
 		self.cfg = cfg
@@ -36,35 +39,101 @@ class ConeDetector:
 
 		self.code_dir = Path(__file__).resolve().parents[1]
 		self.dart_dir = Path(__file__).resolve().parent / "DART"
-		self.cones_cfg = cfg.get("perception", {}).get("cones", {})
 
-		self.enabled = bool(self.cones_cfg.get("enabled", False))
-		self.classes = list(self.cones_cfg.get("classes", ["traffic cone"]))
-		self.confidence = float(self.cones_cfg.get("confidence", 0.35))
-		self.nms = float(self.cones_cfg.get("nms", 0.40))
-		self.imgsz = int(self.cones_cfg.get("imgsz", 1008))
-		self.compile_mode = str(self.cones_cfg.get("compile_mode", "max-autotune"))
-		self.runtime_mode = str(self.cones_cfg.get("runtime", "auto")).lower()
-		self.use_masks = bool(self.cones_cfg.get("use_masks", True))
-		self.trt_max_classes = int(self.cones_cfg.get("trt_max_classes", 4))
-		self.min_width_px = float(self.cones_cfg.get("min_width_px", 8.0))
-		self.min_height_px = float(self.cones_cfg.get("min_height_px", 8.0))
-		self.max_instances = int(self.cones_cfg.get("max_instances", 30))
+		# New key for extensibility, with backward-compatible fallback.
+		self.detector_cfg = (
+			cfg.get("perception", {}).get("non_coco_dart")
+			or cfg.get("perception", {}).get("cones", {})
+		)
 
-		requested_weights = self.cones_cfg.get("checkpoint", cfg.get("weights", {}).get("lanes"))
+		self.enabled = bool(self.detector_cfg.get("enabled", False))
+		self.confidence = float(self.detector_cfg.get("confidence", 0.35))
+		self.nms = float(self.detector_cfg.get("nms", 0.40))
+		self.imgsz = int(self.detector_cfg.get("imgsz", 1008))
+		self.compile_mode = str(self.detector_cfg.get("compile_mode", "max-autotune"))
+		self.runtime_mode = str(self.detector_cfg.get("runtime", "auto")).lower()
+		self.use_masks = bool(self.detector_cfg.get("use_masks", True))
+		self.trt_max_classes = int(self.detector_cfg.get("trt_max_classes", 4))
+		self.min_width_px = float(self.detector_cfg.get("min_width_px", 8.0))
+		self.min_height_px = float(self.detector_cfg.get("min_height_px", 8.0))
+		self.max_instances = int(self.detector_cfg.get("max_instances", 30))
+		self.default_export_bucket = str(
+			self.detector_cfg.get("default_export_bucket", "non_coco_objects")
+		)
+
+		self.class_specs = self._parse_class_specs(self.detector_cfg)
+		self.prompt_to_spec = {
+			spec["prompt"].lower(): spec for spec in self.class_specs
+		}
+		self.prompts = [spec["prompt"] for spec in self.class_specs]
+
+		requested_weights = self.detector_cfg.get("checkpoint", cfg.get("weights", {}).get("lanes"))
 		self.checkpoint_path = self._resolve_path(requested_weights)
 		self.trt_backbone_path = self._resolve_path(
-			self.cones_cfg.get("trt_backbone", "perception/DART/hf_backbone_fp16.engine")
+			self.detector_cfg.get("trt_backbone", "perception/DART/hf_backbone_fp16.engine")
 		)
 		self.trt_enc_dec_path = self._resolve_path(
-			self.cones_cfg.get("trt_enc_dec", "perception/DART/enc_dec_fp16.engine")
+			self.detector_cfg.get("trt_enc_dec", "perception/DART/enc_dec_fp16.engine")
 		)
-		self.text_cache_path = self._resolve_path(self.cones_cfg.get("text_cache", None))
+		self.text_cache_path = self._resolve_path(self.detector_cfg.get("text_cache", None))
 
 		self.predictor = None
 		self.active_runtime = "disabled"
-		if self.enabled:
+		if self.enabled and len(self.prompts) > 0:
 			self._load_predictor()
+
+	@staticmethod
+	def _slugify(name: str) -> str:
+		clean = re.sub(r"[^a-z0-9]+", "_", str(name).strip().lower())
+		return clean.strip("_") or "non_coco_object"
+
+	def _default_bucket(self, label: str) -> str:
+		return f"{label}s"
+
+	def _parse_class_specs(self, detector_cfg: dict) -> List[Dict[str, str]]:
+		"""Build class mapping from config. Supports strings and dict entries."""
+		raw_classes = detector_cfg.get("classes", ["traffic cone"])
+		specs: List[Dict[str, str]] = []
+
+		for item in raw_classes:
+			if isinstance(item, dict):
+				prompt = str(item.get("prompt", "")).strip()
+				if not prompt:
+					continue
+				label = str(item.get("label", self._slugify(prompt))).strip()
+				export_bucket = str(
+					item.get("export_bucket", self._default_bucket(label))
+				).strip()
+				specs.append(
+					{
+						"prompt": prompt,
+						"label": label,
+						"export_bucket": export_bucket or self.default_export_bucket,
+					}
+				)
+				continue
+
+			prompt = str(item).strip()
+			if not prompt:
+				continue
+
+			# Backward-compatible default: old cones config maps all prompts to traffic_cone.
+			if "non_coco_dart" not in self.cfg.get("perception", {}):
+				label = "traffic_cone"
+				export_bucket = "traffic_cones"
+			else:
+				label = self._slugify(prompt)
+				export_bucket = self._default_bucket(label)
+
+			specs.append(
+				{
+					"prompt": prompt,
+					"label": label,
+					"export_bucket": export_bucket,
+				}
+			)
+
+		return specs
 
 	def _normalize_device(self, device: str) -> str:
 		if device == "cuda" and torch.cuda.is_available():
@@ -109,7 +178,7 @@ class ConeDetector:
 		if mode == "trt":
 			if not has_trt_backbone:
 				raise FileNotFoundError(
-					"cones.runtime=trt requires a valid cones.trt_backbone engine"
+					"non_coco_dart.runtime=trt requires a valid trt_backbone engine"
 				)
 			use_trt_backbone = True
 			use_trt_enc_dec = has_trt_enc_dec and not self.use_masks
@@ -134,7 +203,7 @@ class ConeDetector:
 			use_trt_enc_dec = False
 
 		print(
-			"[cones] runtime="
+			"[non-coco-dart] runtime="
 			f"{self.active_runtime}, device={self.device}, "
 			f"trt_backbone={use_trt_backbone}, trt_enc_dec={use_trt_enc_dec}, "
 			f"compile_mode={compile_mode}, use_masks={self.use_masks}"
@@ -143,7 +212,7 @@ class ConeDetector:
 
 	def _load_predictor(self) -> None:
 		if self.imgsz % 14 != 0:
-			raise ValueError(f"cones.imgsz must be divisible by 14, got {self.imgsz}")
+			raise ValueError(f"non_coco_dart.imgsz must be divisible by 14, got {self.imgsz}")
 
 		if str(self.dart_dir) not in sys.path:
 			sys.path.insert(0, str(self.dart_dir))
@@ -193,11 +262,11 @@ class ConeDetector:
 			trt_enc_dec_engine_path=self.trt_enc_dec_path if use_trt_enc_dec else None,
 			trt_max_classes=self.trt_max_classes,
 		)
-		predictor.set_classes(self.classes, text_cache=self.text_cache_path)
+		predictor.set_classes(self.prompts, text_cache=self.text_cache_path)
 		self.predictor = predictor
 
-	def detect(self, frame_bgr: np.ndarray) -> List[Cone]:
-		"""Run DART cone detection on a single BGR frame."""
+	def detect(self, frame_bgr: np.ndarray) -> List[NonCocoObject]:
+		"""Run DART non-COCO detection on a single BGR frame."""
 		if not self.enabled or self.predictor is None:
 			return []
 
@@ -212,19 +281,39 @@ class ConeDetector:
 				nms_threshold=self.nms,
 			)
 
-		cones = self._results_to_cones(raw)
+		objects = self._results_to_objects(raw)
 		if self.max_instances > 0:
-			cones = cones[: self.max_instances]
-		return cones
+			objects = objects[: self.max_instances]
+		return objects
 
-	def _results_to_cones(self, results: dict) -> List[Cone]:
+	def _spec_for_prediction(self, i: int, class_names: list, class_ids) -> Dict[str, str]:
+		prompt_name = ""
+		if i < len(class_names):
+			prompt_name = str(class_names[i]).strip().lower()
+		if prompt_name in self.prompt_to_spec:
+			return self.prompt_to_spec[prompt_name]
+
+		if class_ids is not None and len(class_ids) > i:
+			cls_idx = int(class_ids[i].item())
+			if 0 <= cls_idx < len(self.class_specs):
+				return self.class_specs[cls_idx]
+
+		return {
+			"prompt": prompt_name or "unknown",
+			"label": "non_coco_object",
+			"export_bucket": self.default_export_bucket,
+		}
+
+	def _results_to_objects(self, results: dict) -> List[NonCocoObject]:
 		boxes = results.get("boxes")
 		scores = results.get("scores")
+		class_names = results.get("class_names", [])
+		class_ids = results.get("class_ids")
 
 		if boxes is None or scores is None or len(scores) == 0:
 			return []
 
-		cones: List[Cone] = []
+		objects: List[NonCocoObject] = []
 		for i in range(len(scores)):
 			score = float(scores[i].item())
 			if score < self.confidence:
@@ -234,17 +323,26 @@ class ConeDetector:
 			x1, y1, x2, y2 = [float(v) for v in box]
 			if x2 <= x1 or y2 <= y1:
 				continue
-
 			if (x2 - x1) < self.min_width_px or (y2 - y1) < self.min_height_px:
 				continue
 
-			cones.append(
-				Cone(
-					label="traffic_cone",
+			spec = self._spec_for_prediction(i, class_names, class_ids)
+			objects.append(
+				NonCocoObject(
+					label=spec["label"],
 					bbox=[x1, y1, x2, y2],
 					confidence=round(score, 4),
+					export_bucket=spec["export_bucket"],
 				)
 			)
 
-		cones.sort(key=lambda d: d.confidence, reverse=True)
-		return cones
+		objects.sort(key=lambda d: d.confidence, reverse=True)
+		return objects
+
+
+# Backward-compatible aliases while the rest of the pipeline transitions.
+Cone = NonCocoObject
+
+
+class ConeDetector(NonCocoDartDetector):
+	pass

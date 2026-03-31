@@ -20,11 +20,17 @@ possible JSON schema (one file per frame):
   "traffic_lights": [
         {"bbox": [x1,y1,x2,y2], "color": "red"|"yellow"|"green", "depth_m": float, "position_3d": [x,y,z]}
   ],
-  "stop_signs": [
-    {"bbox": [x1,y1,x2,y2], "depth_m": float, "position_3d": [x,y,z]}
+    "stop_signs": [
+        {"bbox": [x1,y1,x2,y2], "depth_m": float, "position_3d": [x,y,z]}
     ],
     "traffic_cones": [
         {"bbox": [x1,y1,x2,y2], "depth_m": float, "position_3d": [x,y,z]}
+    ],
+    "trash_cans": [
+        {"bbox": [x1,y1,x2,y2], "depth_m": float, "position_3d": [x,y,z]}
+    ],
+    "non_coco_objects": [
+        {"class": "traffic_cone|trash_can|...", "bbox": [x1,y1,x2,y2], "depth_m": float, "position_3d": [x,y,z]}
   ]
 }
 """
@@ -65,7 +71,7 @@ def build_frame_dict(
     objects: list,
     traffic_lights: list,
     stop_signs: list,
-    traffic_cones: list,
+    non_coco_objects: list,
 ) -> dict:
     """
     Convert all detector outputs for one frame into the shared JSON schema.
@@ -85,6 +91,29 @@ def build_frame_dict(
     """
     vehicles        = [d for d in objects if d.label in {"bicycle", "car", "motorcycle", "bus", "truck"}]
     pedestrians     = [d for d in objects if d.label == "person"]
+    non_coco_records = []
+    bucket_map = {}
+
+    for det in non_coco_objects:
+        entry = {
+            "class": det.label,
+            "bbox": [round(v, 2) for v in det.bbox],
+            "depth_m": round(det.depth_m, 3),
+            "position_3d": [round(v, 3) for v in det.position_3d],
+        }
+        non_coco_records.append(entry)
+
+        bucket = getattr(det, "export_bucket", "non_coco_objects")
+        if bucket not in bucket_map:
+            bucket_map[bucket] = []
+        bucket_map[bucket].append(
+            {
+                "bbox": entry["bbox"],
+                "depth_m": entry["depth_m"],
+                "position_3d": entry["position_3d"],
+            }
+        )
+
     lanes_out = []
     for lane in lanes:
         lane_dict = _serialize_lane(lane)
@@ -138,12 +167,7 @@ def build_frame_dict(
             for sign in stop_signs
         ],
 
-        "traffic_cones": [
-            {
-                "bbox":        [round(v, 2) for v in cone.bbox],
-                "depth_m":     round(cone.depth_m, 3),
-                "position_3d": [round(v, 3) for v in cone.position_3d],
-            }
-            for cone in traffic_cones
-        ],
+        "traffic_cones": bucket_map.get("traffic_cones", []),
+        "trash_cans": bucket_map.get("trash_cans", []),
+        "non_coco_objects": non_coco_records,
     }
