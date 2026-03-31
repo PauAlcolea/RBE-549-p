@@ -53,6 +53,7 @@ class AssetLibrary:
             "pedestrian":    self.assets_dir / "Pedestrain.blend",
             "stop_sign":     self.assets_dir / "StopSign.blend",
             "traffic_light": self.assets_dir / "TrafficSignal.blend",
+            "traffic_cone":  self.assets_dir / "TrafficConeAndCylinder.blend",
         }
 
         for name, path in asset_files.items():
@@ -148,6 +149,17 @@ class AssetLibrary:
 
         self._frame_objects.append(obj)
         print(f"[assets] traffic light: json_pos={light['position_3d']}  →  blender_pos={obj.location}  state={tl_color}")
+
+    
+    def place_traffic_cone(self, cone: dict):
+        """Instantiate a traffic cone asset (using the car template scaled down)."""
+        obj = self._instance("traffic_cone")
+        obj.location = self._json_to_blender(cone["position_3d"])
+        obj.scale = (1.0, 1.0, 1.0)  # adjust if the cone model is not already at the right size
+        self._align_object_to_ground(obj, ground_z=0.0, clearance=self.ground_clearance_m)
+        self._frame_objects.append(obj)
+        print(f"[assets] traffic cone: json_pos={cone['position_3d']}  →  blender_pos={obj.location}")
+
 
     def clear_frame_objects(self):
         """Delete all objects placed during the previous frame."""

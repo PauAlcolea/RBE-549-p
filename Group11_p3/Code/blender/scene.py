@@ -169,6 +169,9 @@ def render_sequence(scene_name: str, camera: str, cfg: dict, debug: bool = False
             # stop signs
             for s in frame_data.get("stop_signs", []):
                 asset_lib.place_stop_sign(s)
+            # traffic cones
+            for c in frame_data.get("traffic_cones", []):
+                asset_lib.place_traffic_cone(c)
             # lanes
             for lane in frame_data.get("lanes", []):
                 lane_renderer.draw_lane(lane)
