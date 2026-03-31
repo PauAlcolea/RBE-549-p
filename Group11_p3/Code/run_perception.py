@@ -33,9 +33,10 @@ sys.dont_write_bytecode = True
 # sys.path.insert(0, str(Path(__file__).parent))
 
 from utils.io_utils import load_config, frame_generator, get_video_frames, save_detection_json
-from utils.viz import draw_detections, show_or_save, draw_traffic_lights, draw_signs
+from utils.viz import draw_detections, show_or_save, draw_traffic_lights, draw_signs, draw_cones
 from perception.lanes import LaneDetector
 from perception.objects import ObjectDetector
+from perception.objectsDART import ConeDetector
 from perception.depth import DepthEstimator
 from perception.traffic import TrafficLightDetector
 from perception.signs import SignDetector
@@ -92,12 +93,14 @@ def parse_args():
 def load_models(cfg, device):
     """Instantiate all detectors once — expensive, do it outside the frame loop."""
     print("[init] Loading models...")
+    cones_enabled = bool(cfg.get("perception", {}).get("cones", {}).get("enabled", False))
     models = {
         "lanes":   LaneDetector(cfg, device),
         "objects": ObjectDetector(cfg, device),
         "depth":   DepthEstimator(cfg, device),
         "traffic": TrafficLightDetector(cfg),
         "signs":   SignDetector(cfg),
+        "cones":   ConeDetector(cfg, device) if cones_enabled else None,
     }
     print("[init] All models loaded in the process of instantializing detectors.")
     return models
@@ -228,11 +231,17 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
     for i, (frame_idx, frame_bgr) in enumerate(
         frame_generator(scene_dir, camera=camera, frame_skip=cfg["perception"]["frame_skip"])
     ):
+        if frame_idx < 530:
+            continue
+
+
         # --- Run detectors ---
         object_results = models["objects"].detect(frame_bgr)
         lane_output    = models["lanes"].detect(frame_bgr)
-        depth_map       = models["depth"].estimate(frame_bgr)
-        object_results  = models["depth"].lift_to_3d(object_results, depth_map)
+        cone_results    = models["cones"].detect(frame_bgr) if models.get("cones") is not None else []
+        depth_map      = models["depth"].estimate(frame_bgr)
+        object_results = models["depth"].lift_to_3d(object_results, depth_map)
+        cone_results   = models["depth"].lift_to_3d(cone_results, depth_map)
         traffic_results = models["depth"].lift_to_3d(models["traffic"].detect(frame_bgr, object_results), depth_map)
         sign_results    = models["signs"].detect(frame_bgr, object_results)
 
@@ -255,6 +264,7 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
             objects=object_results,
             traffic_lights=traffic_results,
             stop_signs=sign_results,
+            traffic_cones=cone_results,
         )
         save_detection_json(frame_dict, out_dir / f"frame_{frame_idx:06d}.json")
 
@@ -262,9 +272,10 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
             annotated = draw_detections(frame_bgr, object_results)
             annotated_traffic = draw_traffic_lights(annotated, traffic_results)
             annotated_signs = draw_signs(annotated_traffic, sign_results)
+            annotated_cones = draw_cones(annotated_signs, cone_results)
 
             show_or_save(
-                annotated_signs,
+                annotated_cones,
                 save_path=str(out_dir / f"debug_frame_{frame_idx:06d}.png")
             )
             overlay = draw_lane_debug_overlay(frame_bgr, lane_results, lane_raw)

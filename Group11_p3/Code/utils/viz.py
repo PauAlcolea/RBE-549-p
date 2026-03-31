@@ -30,6 +30,7 @@ _COLOR_TL_RED    = ( 50,  50, 220)
 _COLOR_TL_YELLOW = ( 30, 210, 255)
 _COLOR_TL_GREEN  = ( 60, 220,  60)
 _COLOR_SIGN  = ( 50,  50, 220)   # red
+_COLOR_CONE  = (  0, 140, 255)   # orange
 
 
 
@@ -126,6 +127,18 @@ def draw_signs(frame_bgr: np.ndarray, signs: list) -> np.ndarray:
         cv2.rectangle(out, (x1, y1), (x2, y2), _COLOR_SIGN, 2)
         cv2.putText(out, sign.label, (x1, y1 - 6),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, _COLOR_SIGN, 1)
+    return out
+
+
+def draw_cones(frame_bgr: np.ndarray, cones: list) -> np.ndarray:
+    """Draw traffic cone bboxes."""
+    out = frame_bgr.copy()
+    for cone in cones:
+        x1, y1, x2, y2 = [int(v) for v in cone.bbox]
+        cv2.rectangle(out, (x1, y1), (x2, y2), _COLOR_CONE, 2)
+        label = f"{cone.label} {cone.confidence:.2f}"
+        cv2.putText(out, label, (x1, y1 - 6),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, _COLOR_CONE, 1)
     return out
 
 

@@ -22,6 +22,9 @@ possible JSON schema (one file per frame):
   ],
   "stop_signs": [
     {"bbox": [x1,y1,x2,y2], "depth_m": float, "position_3d": [x,y,z]}
+    ],
+    "traffic_cones": [
+        {"bbox": [x1,y1,x2,y2], "depth_m": float, "position_3d": [x,y,z]}
   ]
 }
 """
@@ -62,6 +65,7 @@ def build_frame_dict(
     objects: list,
     traffic_lights: list,
     stop_signs: list,
+    traffic_cones: list,
 ) -> dict:
     """
     Convert all detector outputs for one frame into the shared JSON schema.
@@ -101,7 +105,7 @@ def build_frame_dict(
                 "direction":   det.direction,
                 "depth_m":     round(det.depth_m, 3),
                 "position_3d": [round(v, 3) for v in det.position_3d],
-                "heading_rad": round(det.heading_rad, 4),
+                # "heading_rad": round(det.heading_rad, 4),
             }
             for det in vehicles
         ],
@@ -132,5 +136,14 @@ def build_frame_dict(
                 "position_3d": [round(v, 3) for v in sign.position_3d],
             }
             for sign in stop_signs
+        ],
+
+        "traffic_cones": [
+            {
+                "bbox":        [round(v, 2) for v in cone.bbox],
+                "depth_m":     round(cone.depth_m, 3),
+                "position_3d": [round(v, 3) for v in cone.position_3d],
+            }
+            for cone in traffic_cones
         ],
     }
