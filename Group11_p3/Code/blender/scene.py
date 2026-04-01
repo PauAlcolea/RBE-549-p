@@ -175,6 +175,9 @@ def render_sequence(scene_name: str, camera: str, cfg: dict, debug: bool = False
             # "dustbins"
             for d in frame_data.get("trash_cans", []):
                 asset_lib.place_trash_can(d)
+            # traffic poles
+            for tp in frame_data.get("traffic_poles", []):
+                asset_lib.place_traffic_pole(tp)
             # lanes
             for lane in frame_data.get("lanes", []):
                 lane_renderer.draw_lane(lane)
