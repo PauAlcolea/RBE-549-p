@@ -41,10 +41,11 @@ paths:
 
 # ── Model weights (download separately, place in Code/../Weights/) ─────────────
 weights:
-  yolo:       ../Weights/yolov9c.pt
-  rtdetr:     ../Weights/rtdetr-x.pt      # download: ultralytics rtdetr-x (COCO pretrained)
-  depth:      ../Weights/depth_anything_v2_metric_vkitti_vitb.pth
-  lanes:      ../Weights/sam3.pt
+  yolo:         ../Weights/yolov9c.pt
+  rtdetr:       ../Weights/rtdetr-x.pt      # download: ultralytics rtdetr-x (COCO pretrained)
+  depth:        ../Weights/depth_anything_v2_metric_vkitti_vitb.pth
+  lanes:        ../Weights/sam3.pt
+  orientation:  ../Weights/boundingbox.pkl
 
 # ── Perception settings ────────────────────────────────────────────────────
 perception:

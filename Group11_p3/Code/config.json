@@ -33,7 +33,8 @@
     "yolo": "../Weights/yolov9c.pt",
     "rtdetr": "../Weights/rtdetr-x.pt",
     "depth": "../Weights/depth_anything_v2_metric_vkitti_vitb.pth",
-    "lanes": "../Weights/sam3.pt"
+    "lanes": "../Weights/sam3.pt",
+    "orientation": "../Weights/boundingbox.pkl"
   },
   "perception": {
     "batch_size": 1,
