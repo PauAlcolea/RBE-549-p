@@ -95,7 +95,7 @@ class AssetLibrary:
 
         heading_rad = vehicle.get("heading_rad")
         if heading_rad is not None:
-            obj.rotation_euler[2] = float(heading_rad)
+            obj.rotation_euler[2] = -(float(heading_rad) - math.pi / 2)
         # else:
         #     direction = vehicle.get("direction", "unknown")
         #     obj.rotation_euler[2] = self._vehicle_yaw_from_direction(direction)
