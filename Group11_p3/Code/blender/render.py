@@ -14,7 +14,6 @@ available on PATH (it's pre-installed on most Linux clusters).
 
 from pathlib import Path
 import subprocess
-# import cv2
 
 
 def render_frame(cfg: dict, out_path: Path):
@@ -34,11 +33,11 @@ def render_frame(cfg: dict, out_path: Path):
     bpy.ops.render.render(write_still=True)
 
 
-def frames_to_video(frames_dir: Path, out_path: Path, fps: int = 6, ext: str = "png"):
+def frames_to_video(frames_dir: Path, out_path: Path, fps: int = 30):
     """
-    Stitch a directory of image frames into an MP4 using ffmpeg.
+    Stitch a directory of PNG frames into an MP4 using ffmpeg.
 
-    Expects frames named like frame_000001.<ext>, frame_000002.<ext>, etc.
+    Expects frames named frame_000001.png, frame_000002.png, etc.
 
     Parameters
     ----------
@@ -47,33 +46,21 @@ def frames_to_video(frames_dir: Path, out_path: Path, fps: int = 6, ext: str = "
     fps        : output frame rate
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Use glob pattern so that non-contiguous frame indices (e.g. 000000, 000030, ...)
-    # are still picked up by ffmpeg in alphanumeric order.
-    # This avoids the default image2 behavior of stopping at the first missing index.
-    pattern = str(frames_dir / f"frame_*.{ext}")
+    pattern = str(frames_dir / "frame_%06d.png")
 
     cmd = [
-        "ffmpeg",
+        "ffmpeg", 
         "-y",
-        "-framerate",
-        str(fps),
-        "-pattern_type",
-        "glob",
-        "-i",
-        pattern,
-        "-c:v",
-        "libx264",
-        "-pix_fmt",
-        "yuv420p",
-        "-crf",
-        "18",  # quality: 0=lossless, 23=default, 51=worst
-        "-preset",
-        "fast",
+        "-framerate", str(fps),
+        "-i", pattern,
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        "-crf", "18",           # quality: 0=lossless, 23=default, 51=worst
+        "-preset", "fast",
         str(out_path),
     ]
 
-    print(f"[render] Stitching frames {frames_dir} → {out_path}")
+    print(f"[render] Stitching frames → {out_path}")
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode != 0:
@@ -105,49 +92,3 @@ def frames_to_video(frames_dir: Path, out_path: Path, fps: int = 6, ext: str = "
 #     # comp = bg * (1 - a) + ov[:, :, :3] * a
 #     # cv2.imwrite(str(out_path), comp.astype("uint8"))
 #     raise NotImplementedError("composite_overlay not yet implemented")
-
-
-def extract_frame_from_video_by_index(video_path: Path, frame_idx: int, out_path: Path):
-    """
-    OPTIONAL: Extract a single frame from the original video by index.
-
-    Useful for debugging or for compositing the rendered overlay onto the
-    original video frame.
-
-    Parameters
-    ----------
-    video_path : input video file
-    frame_idx  : zero-based frame index to extract
-    out_path   : destination PNG path
-    """
-
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        raise RuntimeError(f"Failed to open video: {video_path}")
-
-    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-    ret, frame = cap.read()
-    cap.release()
-
-    if not ret:
-        raise RuntimeError(f"Failed to read frame {frame_idx} from {video_path}")
-
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    cv2.imwrite(str(out_path), frame)
-    print(f"[render] Extracted frame {frame_idx} to {out_path}")
-
-
-if __name__ == "__main__":
-    # Example: Blender-rendered PNG frames
-    frames_to_video(Path("../Outputs/Frames/scene2/front"), Path("../Outputs/Videos/scene2_front.mp4"), fps=15, ext="png")
-
-    # Example: detection debug JPG frames
-    # frames_to_video(
-    #     Path("../Outputs/Detections/scene4/front/debug/"),
-    #     Path("../Outputs/Videos/scene4_front_det.mp4"),
-    #     fps=6,
-    #     ext="jpg",
-    # )
-
-
-
