@@ -128,6 +128,11 @@
     "non_coco_dart": {
       "enabled": true,
       "model": "DART",
+      "object_list": [
+        "traffic_cones",
+        "trash_cans",
+        "traffic_poles"
+      ],
       "classes": [
         {
           "prompt": "traffic cone",
