@@ -6,11 +6,6 @@ from typing import Any, Optional, Sequence
 import sys
 import torch
 import numpy as np
-from torchvision.models import vgg
-
-from library.Math import calc_location
-from torch_lib import ClassAverages, Model
-from torch_lib.Dataset import DetectedObject, generate_bins
 
 # The forked 3D-BoundingBox repo still uses np.float internally.
 if not hasattr(np, "float"):
@@ -240,6 +235,12 @@ class OrientationEstimator:
         if str(self.submodule_dir) not in sys.path:
             sys.path.insert(0, str(self.submodule_dir))
 
+        from torchvision.models import vgg
+
+        from library.Math import calc_location
+        from torch_lib import ClassAverages, Model
+        from torch_lib.Dataset import DetectedObject, generate_bins
+        
         self._DetectedObject = DetectedObject
         self._ModelModule = Model
         self._calc_location = calc_location
