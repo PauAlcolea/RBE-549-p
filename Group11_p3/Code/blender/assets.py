@@ -56,6 +56,7 @@ class AssetLibrary:
             "traffic_light": self.assets_dir / "TrafficSignal.blend",
             "traffic_cone":  self.assets_dir / "TrafficConeAndCylinder.blend",
             "trash_can":     self.assets_dir / "Dustbin.blend",
+            "traffic_pole":  self.assets_dir / "TrafficAssets.blend", # iron pole
         }
 
         for name, path in asset_files.items():
@@ -71,6 +72,9 @@ class AssetLibrary:
             mesh_obj = meshes[0]
             keep_meshes = [mesh_obj]
 
+            def norm(obj_name: str) -> str:
+                return obj_name.lower().replace(" ", "_")
+
             # Dustbin.blend contains multiple meshes (bin/lid/wheels).
             # Keep the full set and instance as one grouped object.
             if name == "trash_can":
@@ -81,6 +85,15 @@ class AssetLibrary:
                 if len(meshes) > 1:
                     mesh_names = [m.name for m in meshes]
                     print(f"[assets] trash_can mesh group: {mesh_names}")
+
+            if name == "traffic_pole":
+                iron_poles = [m for m in meshes if norm(m.name) == "iron_pole" or "iron_pole" in norm(m.name)]
+                if iron_poles:
+                    mesh_obj = iron_poles[0]
+                    keep_meshes = [mesh_obj]
+                if len(meshes) > 1:
+                    mesh_names = [m.name for m in meshes]
+                    print(f"[assets] traffic_pole mesh selection: chose '{mesh_obj.name}' from {mesh_names}")
 
             # Hide all loaded objects, keep only selected mesh(es).
             for obj in list(data_to.objects):
@@ -183,6 +196,14 @@ class AssetLibrary:
         self._frame_objects.append(obj)
         self._frame_objects.extend(children)
         print(f"[assets] trash can: json_pos={can['position_3d']}  →  blender_pos={obj.location}")
+
+    def place_traffic_pole(self, pole: dict):
+        obj = self._instance("traffic_pole")
+        obj.location = self._json_to_blender(pole["position_3d"])
+        obj.scale = (0.1, 0.1, 0.4)
+        self._align_object_to_ground(obj, ground_z=0.0, clearance=self.ground_clearance_m)
+        self._frame_objects.append(obj)
+        print(f"[assets] traffic pole: json_pos={pole['position_3d']}  →  blender_pos={obj.location}")
 
 
     def clear_frame_objects(self):
