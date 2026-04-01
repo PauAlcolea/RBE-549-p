@@ -78,13 +78,22 @@ class AssetLibrary:
             # Dustbin.blend contains multiple meshes (bin/lid/wheels).
             # Keep the full set and instance as one grouped object.
             if name == "trash_can":
-                keep_meshes = list(meshes)
+                preferred_parts = ("bin_mesh", "lid_mesh", "wheels_mesh")
+                by_name = {norm(m.name): m for m in meshes}
+                selected = [by_name[p] for p in preferred_parts if p in by_name]
+
+                # If exact names are not present, include all mesh objects.
+                keep_meshes = selected if selected else list(meshes)
+
+                # Stable order for consistent transforms/material behavior.
+                keep_meshes = sorted(keep_meshes, key=lambda m: norm(m.name))
                 self._template_groups[name] = keep_meshes
                 mesh_obj = keep_meshes[0]
 
                 if len(meshes) > 1:
                     mesh_names = [m.name for m in meshes]
-                    print(f"[assets] trash_can mesh group: {mesh_names}")
+                    chosen_names = [m.name for m in keep_meshes]
+                    print(f"[assets] trash_can mesh group: all={mesh_names} chosen={chosen_names}")
 
             if name == "traffic_pole":
                 iron_poles = [m for m in meshes if norm(m.name) == "iron_pole" or "iron_pole" in norm(m.name)]
@@ -164,6 +173,12 @@ class AssetLibrary:
         obj.scale = (0.5, 0.5, 0.5)
         obj.rotation_euler[2] = -math.pi / 2  # rotate to face the camera
 
+        # Color the traffic-light body/housing yellow (bulbs are separate).
+        body_mat = self.Materials.get_traffic_light_body_material()
+        if body_mat is not None:
+            obj.data.materials.clear()
+            obj.data.materials.append(body_mat)
+
         # Choose state color from detection if available; default to red.
         tl_color = light.get("color", "red")
         if tl_color not in {"red", "yellow", "green"}:
@@ -181,6 +196,12 @@ class AssetLibrary:
         obj = self._instance("traffic_cone")
         obj.location = self._json_to_blender(cone["position_3d"])
         obj.scale = (1.0, 1.0, 1.0)  # adjust if the cone model is not already at the right size
+
+        cone_mat = self.Materials.get_traffic_cone_material()
+        if cone_mat is not None:
+            obj.data.materials.clear()
+            obj.data.materials.append(cone_mat)
+
         self._align_object_to_ground(obj, ground_z=0.0, clearance=self.ground_clearance_m)
         self._frame_objects.append(obj)
         print(f"[assets] traffic cone: json_pos={cone['position_3d']}  →  blender_pos={obj.location}")
@@ -190,6 +211,21 @@ class AssetLibrary:
         """Instantiate a trash can asset."""
         obj, children = self._instance_group("trash_can")
         obj.location = self._json_to_blender(can["position_3d"])
+
+        part_scales = {
+            "bin_mesh": 1.0,
+            "lid_mesh": 10,
+            "wheels_mesh": 10,
+        }
+        self._scale_group_children(children, part_scales)
+
+        part_materials = {
+            "bin_mesh": self.Materials.get_trash_can_bin_material(),
+            "lid_mesh": self.Materials.get_trash_can_lid_material(),
+            "wheels_mesh": self.Materials.get_trash_can_wheels_material(),
+        }
+        self._apply_group_child_materials(children, part_materials)
+
         obj.scale = (0.2, 0.2, 0.2)
         obj.rotation_euler[2] = -math.pi / 2
         self._align_group_to_ground(obj, children, ground_z=0.0, clearance=self.ground_clearance_m)
@@ -247,6 +283,29 @@ class AssetLibrary:
             children.append(child)
 
         return root, children
+
+    @staticmethod
+    def _scale_group_children(objects, part_scales: dict):
+        """Apply per-part scale multipliers to grouped meshes by name token."""
+        for obj in objects:
+            obj_name = obj.name.lower()
+            factor = 1.0
+            for token, multiplier in part_scales.items():
+                if token in obj_name:
+                    factor = float(multiplier)
+                    break
+            obj.scale = (obj.scale.x * factor, obj.scale.y * factor, obj.scale.z * factor)
+
+    @staticmethod
+    def _apply_group_child_materials(objects, part_materials: dict):
+        """Assign materials to grouped meshes by child-name token."""
+        for obj in objects:
+            obj_name = obj.name.lower()
+            for token, mat in part_materials.items():
+                if token in obj_name and mat is not None:
+                    obj.data.materials.clear()
+                    obj.data.materials.append(mat)
+                    break
 
     def _add_traffic_light_bulbs(self, obj, active_color: str = "red"):
         """Create three emissive sphere bulbs near the traffic light.
