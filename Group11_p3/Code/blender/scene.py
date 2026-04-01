@@ -136,6 +136,18 @@ def render_sequence(scene_name: str, camera: str, cfg: dict, debug: bool = False
     # Camera is fixed for the entire sequence, the objects are the ones that move around
     setup_camera(cfg)
 
+    non_coco_cfg = cfg.get("perception", {}).get("non_coco_dart", {})
+    nonCOCO_objects = non_coco_cfg.get("object_list", [])
+    if not nonCOCO_objects:
+        classes_cfg = non_coco_cfg.get("classes", [])
+        nonCOCO_objects = [c.get("export_bucket") for c in classes_cfg if isinstance(c, dict) and c.get("export_bucket")]
+
+    dispatch = {
+        "traffic_cones": "place_traffic_cone",
+        "trash_cans": "place_trash_can",
+        "traffic_poles": "place_traffic_pole",
+    }
+
     # Lane renderer: persists across frames, geometry cleared per frame
     lane_renderer = LaneRenderer(cfg)
 
@@ -172,6 +184,11 @@ def render_sequence(scene_name: str, camera: str, cfg: dict, debug: bool = False
             # lanes
             for lane in frame_data.get("lanes", []):
                 lane_renderer.draw_lane(lane)
+            # non-COCO objects
+            for obj_type in nonCOCO_objects:
+                place_fn = getattr(asset_lib, dispatch.get(obj_type), None)
+                for obj in frame_data.get(obj_type, []):
+                    place_fn(obj)
 
             # some white space for debugging
             print()
