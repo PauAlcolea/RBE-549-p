@@ -29,8 +29,11 @@ possible JSON schema (one file per frame):
     "trash_cans": [
         {"bbox": [x1,y1,x2,y2], "depth_m": float, "position_3d": [x,y,z]}
     ],
+    "traffic_poles": [
+        {"bbox": [x1,y1,x2,y2], "depth_m": float, "position_3d": [x,y,z]}
+    ],
     "non_coco_objects": [
-        {"class": "traffic_cone|trash_can|...", "bbox": [x1,y1,x2,y2], "depth_m": float, "position_3d": [x,y,z]}
+        {"class": "traffic_cone|trash_can|traffic_pole|...", "bbox": [x1,y1,x2,y2], "depth_m": float, "position_3d": [x,y,z]}
   ]
 }
 """
@@ -169,5 +172,6 @@ def build_frame_dict(
 
         "traffic_cones": bucket_map.get("traffic_cones", []),
         "trash_cans": bucket_map.get("trash_cans", []),
+        "traffic_poles": bucket_map.get("traffic_poles", []),
         "non_coco_objects": non_coco_records,
     }

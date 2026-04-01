@@ -121,6 +121,9 @@ perception:
     - prompt: "garbage can"
       label: "trash_can"
       export_bucket: "trash_cans"
+    - prompt: "traffic pole"
+      label: "traffic_pole"
+      export_bucket: "traffic_poles"
     default_export_bucket: "non_coco_objects"
     confidence: 0.35
     nms: 0.40
@@ -152,6 +155,7 @@ perception:
       traffic_light: 5
       traffic_cone: 0.7
       trash_can: 1.0
+      traffic_pole: 3.0
 
   traffic_light:
     # HSV ranges for color classification (H in [0,179] for OpenCV)
