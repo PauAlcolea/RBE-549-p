@@ -4,3 +4,6 @@
 [submodule "Group11_p3/Code/perception/DART"]
 	path = Group11_p3/Code/perception/DART
 	url = https://github.com/benjaminorr/DART
+[submodule "Group11_p3/Code/perception/BoundingBox_3D"]
+	path = Group11_p3/Code/perception/BoundingBox_3D
+	url = https://github.com/PauAlcolea/BoundingBox_3D
