@@ -44,6 +44,7 @@ class AssetLibrary:
         self.ground_clearance_m = cfg["blender"].get("ground_clearance_m", 0.03)
         self._frame_objects = []     # track objects placed this frame for cleanup
         self._templates: Dict[str, object] = {}  # cache of linked template objects
+        self._template_groups: Dict[str, list] = {}  # cache of linked grouped templates
         self._load_templates()
         self.Materials = MaterialLibrary(cfg)
 
@@ -54,6 +55,7 @@ class AssetLibrary:
             "stop_sign":     self.assets_dir / "StopSign.blend",
             "traffic_light": self.assets_dir / "TrafficSignal.blend",
             "traffic_cone":  self.assets_dir / "TrafficConeAndCylinder.blend",
+            "trash_can":     self.assets_dir / "Dustbin.blend",
         }
 
         for name, path in asset_files.items():
@@ -61,24 +63,34 @@ class AssetLibrary:
                 # Load ALL objects from the file so we can pick the right one
                 data_to.objects = list(data_from.objects)
 
-            # Find the first MESH object (skip lights, cameras, empties)
-            mesh_obj = None
-            for obj in data_to.objects:
-                if obj is not None and obj.type == "MESH":
-                    mesh_obj = obj
-                    break
-
-            if mesh_obj is None:
+            meshes = [obj for obj in data_to.objects if obj is not None and obj.type == "MESH"]
+            if not meshes:
                 print(f"[assets] WARNING: no MESH object found in {path}, objects: {[o.name for o in data_to.objects if o]}")
                 continue
 
-            # Hide all loaded objects, keep only the mesh template
-            for obj in data_to.objects:
-                if obj is not None and obj is not mesh_obj:
+            mesh_obj = meshes[0]
+            keep_meshes = [mesh_obj]
+
+            # Dustbin.blend contains multiple meshes (bin/lid/wheels).
+            # Keep the full set and instance as one grouped object.
+            if name == "trash_can":
+                keep_meshes = list(meshes)
+                self._template_groups[name] = keep_meshes
+                mesh_obj = keep_meshes[0]
+
+                if len(meshes) > 1:
+                    mesh_names = [m.name for m in meshes]
+                    print(f"[assets] trash_can mesh group: {mesh_names}")
+
+            # Hide all loaded objects, keep only selected mesh(es).
+            for obj in list(data_to.objects):
+                if obj is not None and obj not in keep_meshes:
                     bpy.data.objects.remove(obj, do_unlink=True)
 
-            mesh_obj.hide_render = True
-            mesh_obj.hide_viewport = True
+            for obj in keep_meshes:
+                obj.hide_render = True
+                obj.hide_viewport = True
+
             self._templates[name] = mesh_obj
 
     def place_vehicle(self, vehicle: dict):
@@ -152,13 +164,25 @@ class AssetLibrary:
 
     
     def place_traffic_cone(self, cone: dict):
-        """Instantiate a traffic cone asset (using the car template scaled down)."""
+        """Instantiate a traffic cone asset."""
         obj = self._instance("traffic_cone")
         obj.location = self._json_to_blender(cone["position_3d"])
         obj.scale = (1.0, 1.0, 1.0)  # adjust if the cone model is not already at the right size
         self._align_object_to_ground(obj, ground_z=0.0, clearance=self.ground_clearance_m)
         self._frame_objects.append(obj)
         print(f"[assets] traffic cone: json_pos={cone['position_3d']}  →  blender_pos={obj.location}")
+
+
+    def place_trash_can(self, can: dict):
+        """Instantiate a trash can asset."""
+        obj, children = self._instance_group("trash_can")
+        obj.location = self._json_to_blender(can["position_3d"])
+        obj.scale = (0.2, 0.2, 0.2)
+        obj.rotation_euler[2] = -math.pi / 2
+        self._align_group_to_ground(obj, children, ground_z=0.0, clearance=self.ground_clearance_m)
+        self._frame_objects.append(obj)
+        self._frame_objects.extend(children)
+        print(f"[assets] trash can: json_pos={can['position_3d']}  →  blender_pos={obj.location}")
 
 
     def clear_frame_objects(self):
@@ -182,6 +206,26 @@ class AssetLibrary:
         new_obj.hide_viewport = False
         bpy.context.collection.objects.link(new_obj)
         return new_obj
+
+    def _instance_group(self, name: str):
+        """Duplicate a grouped template and return (root, children)."""
+        templates = self._template_groups[name]
+        root = bpy.data.objects.new(f"{name}_group", None)
+        root.empty_display_type = "PLAIN_AXES"
+        bpy.context.collection.objects.link(root)
+
+        children = []
+        for template in templates:
+            child = template.copy()
+            child.data = template.data.copy()
+            child.hide_render = False
+            child.hide_viewport = False
+            bpy.context.collection.objects.link(child)
+            child.parent = root
+            child.matrix_parent_inverse = root.matrix_world.inverted()
+            children.append(child)
+
+        return root, children
 
     def _add_traffic_light_bulbs(self, obj, active_color: str = "red"):
         """Create three emissive sphere bulbs near the traffic light.
@@ -334,6 +378,15 @@ class AssetLibrary:
         bpy.context.view_layer.update()
         min_z = min((obj.matrix_world @ Vector(corner)).z for corner in obj.bound_box)
         obj.location.z += (ground_z + clearance) - min_z
+
+    @staticmethod
+    def _align_group_to_ground(parent_obj, objects, ground_z: float = 0.0, clearance: float = 0.0):
+        """Lift a grouped object so the group's lowest world-space point sits on ground."""
+        from mathutils import Vector
+
+        bpy.context.view_layer.update()
+        min_z = min((obj.matrix_world @ Vector(corner)).z for obj in objects for corner in obj.bound_box)
+        parent_obj.location.z += (ground_z + clearance) - min_z
 
     @staticmethod
     def _vehicle_yaw_from_direction(direction: str) -> float:
