@@ -238,6 +238,10 @@ class TrafficLightDetector:
             ih, iw = h, w
             inner_x0, inner_y0 = 0, 0
 
+        # Decide wide-light behavior before focus cropping shrinks the width.
+        pre_focus_aspect = float(iw) / max(float(ih), 1.0)
+        use_dual_columns = pre_focus_aspect >= self.wide_aspect_threshold
+
         # Focus on the central columns to suppress bright clutter near bbox edges.
         focus_ratio = min(max(self.center_focus_ratio, 0.2), 1.0)
         focus_w = max(int(iw * focus_ratio), 1)
@@ -265,7 +269,7 @@ class TrafficLightDetector:
             "value_means": [],
         }
 
-        scores, roi_geom = self._score_bulb_rois(inner, global_v_thr)
+        scores, roi_geom = self._score_bulb_rois(inner, global_v_thr, use_dual_columns)
         # Shift ROI centers from inner-local to crop-local coords.
         geom["roi_circles"] = [
             [inner_x0 + int(cx), inner_y0 + int(cy), int(r), int(region_idx)]
@@ -275,7 +279,12 @@ class TrafficLightDetector:
         geom["value_means"] = [float(v) for v in roi_geom.get("value_means", [])]
         return scores, geom
 
-    def _score_bulb_rois(self, hsv_crop: np.ndarray, global_v_thr: float) -> Tuple[List[float], Dict[str, Any]]:
+    def _score_bulb_rois(
+        self,
+        hsv_crop: np.ndarray,
+        global_v_thr: float,
+        use_dual_columns: bool,
+    ) -> Tuple[List[float], Dict[str, Any]]:
         """Score compact circular ROIs near expected bulb centers (top/mid/bottom)."""
         h, w = hsv_crop.shape[:2]
         if h < 3 or w < 3:
@@ -296,8 +305,7 @@ class TrafficLightDetector:
         val_means: List[float] = []
 
         # Wide/arrow style traffic lights can have side-by-side bulbs per row.
-        aspect = float(w) / max(float(h), 1.0)
-        if aspect >= self.wide_aspect_threshold:
+        if use_dual_columns:
             off = int(round(w * self.wide_column_offset_ratio))
             col_centers = [int(np.clip(cx - off, 0, w - 1)), int(np.clip(cx + off, 0, w - 1))]
         else:
