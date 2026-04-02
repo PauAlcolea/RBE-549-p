@@ -107,10 +107,12 @@ perception:
     - prompt: "garbage can"
       label: "trash_can"
       export_bucket: "trash_cans"
-    - prompt: "traffic pole"
+    - prompt: "bollard"
       label: "traffic_pole"
       export_bucket: "traffic_poles"
+      exclude_labels: ["traffic_cone"]
     default_export_bucket: "non_coco_objects"
+    negative_overlap_iou: 0.35   # suppress a class if it overlaps an excluded class at/above this IoU
     confidence: 0.35
     nms: 0.40
     imgsz: 1008

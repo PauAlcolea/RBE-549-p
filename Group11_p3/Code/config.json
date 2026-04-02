@@ -128,12 +128,16 @@
           "export_bucket": "trash_cans"
         },
         {
-          "prompt": "traffic pole",
+          "prompt": "bollard",
           "label": "traffic_pole",
-          "export_bucket": "traffic_poles"
+          "export_bucket": "traffic_poles",
+          "exclude_labels": [
+            "traffic_cone"
+          ]
         }
       ],
       "default_export_bucket": "non_coco_objects",
+      "negative_overlap_iou": 0.35,
       "confidence": 0.35,
       "nms": 0.4,
       "imgsz": 1008,

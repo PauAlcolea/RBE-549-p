@@ -10,7 +10,7 @@ be added without creating one module per object type.
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import re
 import sys
 
@@ -28,6 +28,23 @@ class NonCocoObject:
 	depth_m: float = 0.0
 	position_3d: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
 	export_bucket: str = "non_coco_objects"
+
+
+def _compute_iou(a: List[float], b: List[float]) -> float:
+	"""Compute IoU between two [x1, y1, x2, y2] boxes."""
+	ix1 = max(a[0], b[0])
+	iy1 = max(a[1], b[1])
+	ix2 = min(a[2], b[2])
+	iy2 = min(a[3], b[3])
+	inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+	if inter == 0:
+		return 0.0
+	area_a = max(0.0, a[2] - a[0]) * max(0.0, a[3] - a[1])
+	area_b = max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
+	den = area_a + area_b - inter
+	if den <= 0:
+		return 0.0
+	return inter / den
 
 
 class NonCocoDartDetector:
@@ -90,10 +107,10 @@ class NonCocoDartDetector:
 	def _default_bucket(self, label: str) -> str:
 		return f"{label}s"
 
-	def _parse_class_specs(self, detector_cfg: dict) -> List[Dict[str, str]]:
+	def _parse_class_specs(self, detector_cfg: dict) -> List[Dict[str, Any]]:
 		"""Build class mapping from config. Supports strings and dict entries."""
 		raw_classes = detector_cfg.get("classes", ["traffic cone"])
-		specs: List[Dict[str, str]] = []
+		specs: List[Dict[str, Any]] = []
 
 		for item in raw_classes:
 			if isinstance(item, dict):
@@ -104,11 +121,19 @@ class NonCocoDartDetector:
 				export_bucket = str(
 					item.get("export_bucket", self._default_bucket(label))
 				).strip()
+				raw_excludes = item.get("exclude_labels", item.get("negative_prompts", []))
+				exclude_labels: List[str] = []
+				if isinstance(raw_excludes, (list, tuple)):
+					exclude_labels = [str(v).strip() for v in raw_excludes if str(v).strip()]
+				elif raw_excludes is not None:
+					exclude_labels = [str(raw_excludes).strip()]
+				exclude_labels = [self._slugify(v) for v in exclude_labels]
 				specs.append(
 					{
 						"prompt": prompt,
 						"label": label,
 						"export_bucket": export_bucket or self.default_export_bucket,
+						"exclude_labels": exclude_labels,
 					}
 				)
 				continue
@@ -130,6 +155,7 @@ class NonCocoDartDetector:
 					"prompt": prompt,
 					"label": label,
 					"export_bucket": export_bucket,
+					"exclude_labels": [],
 				}
 			)
 
@@ -286,7 +312,7 @@ class NonCocoDartDetector:
 			objects = objects[: self.max_instances]
 		return objects
 
-	def _spec_for_prediction(self, i: int, class_names: list, class_ids) -> Dict[str, str]:
+	def _spec_for_prediction(self, i: int, class_names: list, class_ids) -> Dict[str, Any]:
 		prompt_name = ""
 		if i < len(class_names):
 			prompt_name = str(class_names[i]).strip().lower()
@@ -302,7 +328,42 @@ class NonCocoDartDetector:
 			"prompt": prompt_name or "unknown",
 			"label": "non_coco_object",
 			"export_bucket": self.default_export_bucket,
+			"exclude_labels": [],
 		}
+
+	def _apply_negative_label_suppression(self, objects: List[NonCocoObject], iou_thr: float) -> List[NonCocoObject]:
+		"""Drop detections that overlap labels listed in each class spec's exclude_labels."""
+		if not objects:
+			return objects
+
+		label_excludes = {
+			str(spec.get("label", "")).strip(): set(spec.get("exclude_labels", []) or [])
+			for spec in self.class_specs
+		}
+		if not any(label_excludes.values()):
+			return objects
+
+		kept: List[NonCocoObject] = []
+		for obj in objects:
+			excludes = label_excludes.get(obj.label, set())
+			if not excludes:
+				kept.append(obj)
+				continue
+
+			suppressed = False
+			for other in objects:
+				if other is obj:
+					continue
+				if other.label not in excludes:
+					continue
+				if _compute_iou(obj.bbox, other.bbox) >= iou_thr:
+					suppressed = True
+					break
+
+			if not suppressed:
+				kept.append(obj)
+
+		return kept
 
 	def _results_to_objects(self, results: dict) -> List[NonCocoObject]:
 		boxes = results.get("boxes")
@@ -312,6 +373,8 @@ class NonCocoDartDetector:
 
 		if boxes is None or scores is None or len(scores) == 0:
 			return []
+
+		negative_overlap_iou = float(self.detector_cfg.get("negative_overlap_iou", 0.35))
 
 		objects: List[NonCocoObject] = []
 		for i in range(len(scores)):
@@ -337,6 +400,7 @@ class NonCocoDartDetector:
 			)
 
 		objects.sort(key=lambda d: d.confidence, reverse=True)
+		objects = self._apply_negative_label_suppression(objects, iou_thr=negative_overlap_iou)
 		return objects
 
 
