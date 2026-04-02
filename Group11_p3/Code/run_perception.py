@@ -40,6 +40,7 @@ from perception.objectsDART import NonCocoDartDetector
 from perception.depth import DepthEstimator
 from perception.traffic import TrafficLightDetector
 from perception.signs import SignDetector
+from perception.orientation import OrientationEstimator
 from perception.export import build_frame_dict
 
 
@@ -85,8 +86,6 @@ def parse_args():
         help="Write debug overlay images alongside JSONs"
     )
 
-    
-    
     return parser.parse_args()
 
 
@@ -97,8 +96,9 @@ def load_models(cfg, device):
     non_coco_cfg = perception_cfg.get("non_coco_dart") or perception_cfg.get("cones", {})
     non_coco_enabled = bool(non_coco_cfg.get("enabled", False))
     models = {
+        "objects":     ObjectDetector(cfg, device),
+        "orientation": OrientationEstimator(cfg, device, strict=True),
         "lanes":   LaneDetector(cfg, device),
-        "objects": ObjectDetector(cfg, device),
         "depth":   DepthEstimator(cfg, device),
         "traffic": TrafficLightDetector(cfg),
         "signs":   SignDetector(cfg),
@@ -212,8 +212,27 @@ def draw_lane_debug_overlay(frame_bgr, lane_results, lane_raw=None):
     return vis
 
 
-def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debug: bool = False):
+def _camera_projection_matrix(cfg: dict) -> np.ndarray:
+    cam = cfg["blender"]["camera"]
+    return np.array(
+        [
+            [float(cam["fx"]), 0.0, float(cam["cx"]), 0.0],
+            [0.0, float(cam["fy"]), float(cam["cy"]), 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+
+
+def process_sequence(
+    scene_name: str,
+    camera: str,
+    cfg: dict,
+    models: dict,
+    debug: bool = False,
+):
     """Run every active detector on every frame of one sequence and write JSONs."""
+    vehicle_labels = {"bicycle", "car", "motorcycle", "bus", "truck"}
 
     # scene_dir is the root of this sequence, e.g. Data/Sequences/scene1/
     scene_dir = Path(cfg["paths"]["sequences_dir"]) / scene_name
@@ -225,26 +244,33 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
     debug_dir = out_dir / "../debug"
     if debug:
         debug_dir.mkdir(parents=True, exist_ok=True)
+    debug_proj_matrix = _camera_projection_matrix(cfg) if debug else None
 
     print(f"[{scene_name}] Camera: {camera}")
-    models["objects"].reset_tracking()
-
     # Use the generator so we never load all frames into RAM at once
     for i, (frame_idx, frame_bgr) in enumerate(
         frame_generator(scene_dir, camera=camera, frame_skip=cfg["perception"]["frame_skip"])
-    ):
+):
         # --- Run detectors ---
         object_results = models["objects"].detect(frame_bgr)
-        lane_output    = models["lanes"].detect(frame_bgr)
+        lane_results = []
+        lane_raw = None
+        traffic_results = []
+        sign_results = []
+
+        lane_output = models["lanes"].detect(frame_bgr)
         non_coco_results = models["non_coco"].detect(frame_bgr) if models.get("non_coco") is not None else []
-        depth_map      = models["depth"].estimate(frame_bgr)
+        depth_map = models["depth"].estimate(frame_bgr)
         object_results = models["depth"].lift_to_3d(object_results, depth_map)
         non_coco_results = models["depth"].lift_to_3d(non_coco_results, depth_map)
         traffic_results = models["depth"].lift_to_3d(models["traffic"].detect(frame_bgr, object_results), depth_map)
-        sign_results    = models["signs"].detect(frame_bgr, object_results)
-
+        sign_results = models["signs"].detect(frame_bgr, object_results)
+        
         _SPECIALIZED = {"traffic_light", "stop_sign"}
         object_results = [d for d in object_results if d.label not in _SPECIALIZED]
+
+        vehicle_results = [d for d in object_results if d.label in vehicle_labels]
+        orientation_estimates = models["orientation"].annotate_detections(frame_bgr, vehicle_results)
 
         if isinstance(lane_output, dict) and "lanes" in lane_output:
             lane_results = lane_output["lanes"]
@@ -267,7 +293,7 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
         save_detection_json(frame_dict, out_dir / f"frame_{frame_idx:06d}.json")
 
         if debug:
-            annotated = draw_detections(frame_bgr, object_results)
+            annotated = draw_detections(frame_bgr, object_results, proj_matrix=debug_proj_matrix)
             annotated_traffic = draw_traffic_lights(annotated, traffic_results)
             annotated_signs = draw_signs(annotated_traffic, sign_results)
             annotated_non_coco = draw_non_coco_objects(annotated_signs, non_coco_results)
@@ -287,7 +313,8 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
                 raw_count = len(lane_raw["scores"])
             print(
                 f"  [{scene_name}/{camera}] {i+1} frames processed | "
-                f"lanes={len(lane_results)} raw_dets={raw_count}"
+                f"lanes={len(lane_results)} raw_dets={raw_count} "
+                f"vehicles={len(vehicle_results)} oriented={len(orientation_estimates)}"
             )
 
     print(f"[{scene_name}] Done. JSONs saved to {out_dir}")
@@ -320,7 +347,13 @@ def main():
     # process the sequences
     for scene in scenes:
         for camera in cameras:  # this might break at the time to do for all the cameras
-            process_sequence(scene, camera, cfg, models, debug=args.debug)
+            process_sequence(
+                scene,
+                camera,
+                cfg,
+                models,
+                debug=args.debug,
+            )
 
     print("\n[done] All sequences processed.")
     return

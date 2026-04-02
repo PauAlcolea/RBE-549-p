@@ -128,8 +128,12 @@ class AssetLibrary:
         obj.location = bpos
         obj.scale = (0.02, 0.02, 0.02)
 
-        direction = vehicle.get("direction", "unknown")
-        obj.rotation_euler[2] = self._vehicle_yaw_from_direction(direction)
+        heading_rad = vehicle.get("heading_rad")
+        if heading_rad is not None:
+            obj.rotation_euler[2] = -(float(heading_rad) - math.pi / 2)
+        # else:
+        #     direction = vehicle.get("direction", "unknown")
+        #     obj.rotation_euler[2] = self._vehicle_yaw_from_direction(direction)
         self._align_object_to_ground(obj, ground_z=0.0, clearance=self.ground_clearance_m)
 
         self._frame_objects.append(obj)

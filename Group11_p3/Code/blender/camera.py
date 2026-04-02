@@ -15,6 +15,37 @@ Calibration workflow (one-time, done before running the pipeline):
   3. Update config.yaml blender.camera section with these values.
 """
 
+def _pixel_aspect_from_intrinsics(fx: float, fy: float) -> tuple[float, float]:
+    """
+    Encode fx/fy mismatch using Blender's pixel aspect settings.
+
+    Blender's camera lens models one focal length directly; the other axis can
+    be matched by adjusting the render pixel aspect ratio.
+    """
+    pixel_aspect_x = 1.0
+    pixel_aspect_y = 1.0
+
+    if fx > fy:
+        pixel_aspect_y = fx / fy
+    elif fy > fx:
+        pixel_aspect_x = fy / fx
+
+    return pixel_aspect_x, pixel_aspect_y
+
+
+def _view_fac_in_px(
+    sensor_fit: str,
+    res_x: int,
+    res_y: int,
+    pixel_aspect_x: float,
+    pixel_aspect_y: float,
+) -> float:
+    """Compute Blender's effective sensor view size in pixels."""
+    pixel_aspect_ratio = pixel_aspect_y / pixel_aspect_x
+    if sensor_fit == "VERTICAL":
+        return pixel_aspect_ratio * res_y
+    return float(res_x)
+
 
 def setup_camera(cfg: dict):
     """
@@ -45,15 +76,39 @@ def setup_camera(cfg: dict):
     cx = cfg["blender"]["camera"]["cx"]
     cy = cfg["blender"]["camera"]["cy"]
 
-    cam_data.shift_x = (cx - res_x/2) / res_x
-    cam_data.shift_y = (cy - res_y/2) / res_y
-    
-    # Blender uses sensor width + focal_length to compute FOV.
-    # Easiest approach: use sensor_fit="HORIZONTAL" and compute lens from fx.
-    sensor_w = 36.0  # mm, standard 35mm equivalent
-    cam_data.sensor_fit    = "HORIZONTAL"
-    cam_data.sensor_width  = sensor_w
-    cam_data.lens = (fx / res_x) * sensor_w
+    scene = bpy.context.scene
+    pixel_aspect_x, pixel_aspect_y = _pixel_aspect_from_intrinsics(fx, fy)
+    scene.render.pixel_aspect_x = pixel_aspect_x
+    scene.render.pixel_aspect_y = pixel_aspect_y
+
+    sensor_w = 36.0
+    sensor_h = 24.0
+    cam_data.sensor_width = sensor_w
+    cam_data.sensor_height = sensor_h
+
+    # Match the effective image plane that Blender sees after pixel-aspect scaling.
+    if pixel_aspect_x * res_x >= pixel_aspect_y * res_y:
+        cam_data.sensor_fit = "HORIZONTAL"
+        sensor_size_mm = sensor_w
+    else:
+        cam_data.sensor_fit = "VERTICAL"
+        sensor_size_mm = sensor_h
+
+    view_fac_px = _view_fac_in_px(
+        cam_data.sensor_fit,
+        res_x,
+        res_y,
+        pixel_aspect_x,
+        pixel_aspect_y,
+    )
+    pixel_aspect_ratio = pixel_aspect_y / pixel_aspect_x
+
+    cam_data.lens = fx * sensor_size_mm / view_fac_px
+
+    # Blender's principal-point offsets use a slightly different sign convention
+    # than OpenCV, so we convert from image coordinates explicitly.
+    cam_data.shift_x = -(cx - (res_x - 1) / 2.0) / view_fac_px
+    cam_data.shift_y = ((cy - (res_y - 1) / 2.0) / view_fac_px) * pixel_aspect_ratio
     
     # Place camera at ego-vehicle position
     h = cfg["blender"]["camera"]["height_m"]
@@ -61,28 +116,3 @@ def setup_camera(cfg: dict):
     cam_obj.rotation_euler = (math.pi/2, 0, 0)  # looking forward (+Y)
     
     return cam_obj
-
-
-def camera_from_calibration_video(video_path: str, out_config_path: str):
-    """
-    Helper (run once outside Blender) to calibrate the camera from the
-    provided calibration video using a checkerboard pattern.
-
-    Writes the resulting fx, fy, cx, cy into config.yaml.
-
-    Usage
-    -----
-    python -c "from blender.camera import camera_from_calibration_video; \
-               camera_from_calibration_video('../Data/Calib/calib.mp4', 'config.yaml')"
-    """
-    # TODO: implement
-    # import cv2, yaml, numpy as np
-    # CHECKERBOARD = (9, 6)  # adjust to your actual checkerboard
-    # objp = np.zeros((CHECKERBOARD[0]*CHECKERBOARD[1], 3), np.float32)
-    # objp[:, :2] = np.mgrid[0:CHECKERBOARD[0], 0:CHECKERBOARD[1]].T.reshape(-1,2)
-    # ... collect corners from video frames ...
-    # ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(...)
-    # fx, fy = mtx[0,0], mtx[1,1]
-    # cx, cy = mtx[0,2], mtx[1,2]
-    # ... write to config.yaml ...
-    raise NotImplementedError("camera_from_calibration_video not yet implemented")

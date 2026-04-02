@@ -18,6 +18,7 @@ Usage example:
 import numpy as np
 import cv2
 from pathlib import Path
+from typing import Optional
 
 
 
@@ -30,12 +31,149 @@ _COLOR_TL_RED    = ( 50,  50, 220)
 _COLOR_TL_YELLOW = ( 30, 210, 255)
 _COLOR_TL_GREEN  = ( 60, 220,  60)
 _COLOR_SIGN  = ( 50,  50, 220)   # red
+_COLOR_3D_BOX = (60, 220, 60)
+_COLOR_3D_FRONT = (255, 120, 40)
 _COLOR_CONE  = (  0, 140, 255)   # orange
 _COLOR_NON_COCO = (180, 120, 255)
 
 
+def _rotation_matrix_y(yaw_rad: float) -> np.ndarray:
+    c = float(np.cos(yaw_rad))
+    s = float(np.sin(yaw_rad))
+    return np.array(
+        [
+            [c, 0.0, s],
+            [0.0, 1.0, 0.0],
+            [-s, 0.0, c],
+        ],
+        dtype=np.float32,
+    )
 
-def draw_detections(frame_bgr: np.ndarray, detections: list) -> np.ndarray:
+
+def _create_3d_box_corners(dimensions_3d, center_3d, yaw_rad: float) -> np.ndarray:
+    """
+    Build the 8 corners of the oriented 3D bounding box in camera coordinates.
+
+    Dimensions follow the forked repo convention: [height, width, length].
+    """
+    h, w, l = [float(v) for v in dimensions_3d]
+    dx = l / 2.0
+    dy = h / 2.0
+    dz = w / 2.0
+
+    corners = np.array(
+        [
+            [ dx,  dy,  dz],
+            [ dx,  dy, -dz],
+            [ dx, -dy,  dz],
+            [ dx, -dy, -dz],
+            [-dx,  dy,  dz],
+            [-dx,  dy, -dz],
+            [-dx, -dy,  dz],
+            [-dx, -dy, -dz],
+        ],
+        dtype=np.float32,
+    )
+
+    rotated = corners @ _rotation_matrix_y(yaw_rad).T
+    return rotated + np.asarray(center_3d, dtype=np.float32)
+
+
+def _project_points(points_3d: np.ndarray, proj_matrix: np.ndarray) -> Optional[np.ndarray]:
+    points_h = np.concatenate(
+        [points_3d.astype(np.float32), np.ones((points_3d.shape[0], 1), dtype=np.float32)],
+        axis=1,
+    )
+    projected = points_h @ proj_matrix.T
+    z = projected[:, 2]
+
+    if np.any(z <= 1e-3):
+        return None
+
+    uv = projected[:, :2] / z[:, None]
+    if not np.all(np.isfinite(uv)):
+        return None
+
+    return np.round(uv).astype(np.int32)
+
+
+def _draw_projected_3d_box(frame_bgr: np.ndarray, det, proj_matrix: np.ndarray) -> None:
+    dimensions_3d = getattr(det, "dimensions_3d", None)
+    center_3d = getattr(det, "bbox_3d_location", None)
+    heading_rad = getattr(det, "heading_rad", None)
+
+    if dimensions_3d is None or center_3d is None or heading_rad is None:
+        return
+
+    try:
+        corners_3d = _create_3d_box_corners(dimensions_3d, center_3d, float(heading_rad))
+        box_2d = _project_points(corners_3d, proj_matrix)
+    except Exception:
+        return
+
+    if box_2d is None:
+        return
+
+    edges = [
+        (0, 2), (4, 6), (0, 4), (2, 6),
+        (1, 3), (1, 5), (7, 3), (7, 5),
+        (0, 1), (2, 3), (4, 5), (6, 7),
+    ]
+    for start_idx, end_idx in edges:
+        p1 = tuple(box_2d[start_idx])
+        p2 = tuple(box_2d[end_idx])
+        cv2.line(frame_bgr, p1, p2, _COLOR_3D_BOX, 1, lineType=cv2.LINE_AA)
+
+    front_mark = [tuple(box_2d[i]) for i in range(4)]
+    cv2.line(frame_bgr, front_mark[0], front_mark[3], _COLOR_3D_FRONT, 1, lineType=cv2.LINE_AA)
+    cv2.line(frame_bgr, front_mark[1], front_mark[2], _COLOR_3D_FRONT, 1, lineType=cv2.LINE_AA)
+
+
+def _draw_heading_arrow(frame_bgr: np.ndarray, det, proj_matrix: np.ndarray) -> None:
+    center_3d = getattr(det, "bbox_3d_location", None)
+    heading_rad = getattr(det, "heading_rad", None)
+    dimensions_3d = getattr(det, "dimensions_3d", None)
+
+    if center_3d is None or heading_rad is None or dimensions_3d is None:
+        return
+
+    try:
+        corners_3d = _create_3d_box_corners(dimensions_3d, center_3d, float(heading_rad))
+        start = np.asarray(center_3d, dtype=np.float32)
+
+        # Use the same "front" face that the 3D box renderer highlights so the
+        # arrow and wireframe always agree on which way the vehicle faces.
+        front_face_center = corners_3d[:4].mean(axis=0)
+        direction = front_face_center - start
+        norm = float(np.linalg.norm(direction))
+        if norm <= 1e-6:
+            return
+
+        extension = max(float(dimensions_3d[2]) * 0.35, 0.5)
+        end = front_face_center + (direction / norm) * extension
+        projected = _project_points(np.stack([start, end], axis=0), proj_matrix)
+    except Exception:
+        return
+
+    if projected is None:
+        return
+
+    cv2.arrowedLine(
+        frame_bgr,
+        tuple(projected[0]),
+        tuple(projected[1]),
+        _COLOR_3D_FRONT,
+        2,
+        line_type=cv2.LINE_AA,
+        tipLength=0.25,
+    )
+
+
+def draw_detections(
+    frame_bgr: np.ndarray,
+    detections: list,
+    proj_matrix: np.ndarray = None,
+) -> np.ndarray:
     """
     Draw bounding boxes for all detections on a copy of the frame.
 
@@ -43,6 +181,8 @@ def draw_detections(frame_bgr: np.ndarray, detections: list) -> np.ndarray:
     ----------
     frame_bgr  : original BGR image
     detections : list[Detection] — mix of vehicles and pedestrians
+    proj_matrix: optional 3x4 camera projection matrix. If provided and a
+                 detection has orientation metadata, a projected 3D box is drawn.
 
     Returns
     -------
@@ -51,6 +191,10 @@ def draw_detections(frame_bgr: np.ndarray, detections: list) -> np.ndarray:
     out = frame_bgr.copy()
 
     for det in detections:
+        if proj_matrix is not None and det.label != "person":
+            _draw_projected_3d_box(out, det, proj_matrix)
+            _draw_heading_arrow(out, det, proj_matrix)
+
         x1, y1, x2, y2 = [int(v) for v in det.bbox]
         color = _COLOR_PED if det.label == "person" else _COLOR_CAR
 
@@ -62,8 +206,9 @@ def draw_detections(frame_bgr: np.ndarray, detections: list) -> np.ndarray:
         else:
             text = f"{det.label} {det.confidence:.2f}"
 
-        if getattr(det, "direction", "unknown") != "unknown":
-            text = f"{text} {det.direction}"
+        heading_rad = getattr(det, "heading_rad", None)
+        if heading_rad is not None and det.label != "person":
+            text = f"{text} yaw={np.degrees(float(heading_rad)):.0f}deg"
 
         # Draw a filled background behind the text so it's readable on any frame
         (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
