@@ -12,7 +12,13 @@ possible JSON schema (one file per frame):
     {"points": [[x,y],...], "color": "white"|"yellow", "style": "solid"|"dashed"}
   ],
   "vehicles": [
-    {"bbox": [x1,y1,x2,y2], "class": "car", "depth_m": float, "position_3d": [x,y,z]}
+    {
+      "bbox": [x1,y1,x2,y2],
+      "class": "car",
+      "depth_m": float,
+      "position_3d": [x,y,z],
+      "heading_rad": float  // optional, added when vehicle orientation is available
+    }
   ],
   "pedestrians": [
     {"bbox": [x1,y1,x2,y2], "depth_m": float, "position_3d": [x,y,z]}
@@ -66,6 +72,22 @@ def _serialize_lane(lane) -> dict:
         lane_out["confidence"] = float(confidence)
 
     return lane_out
+
+
+def _serialize_vehicle(det) -> dict:
+    """normalize vehicles and add the radian heading if it has one"""
+    vehicle = {
+        "bbox": [round(v, 2) for v in det.bbox],
+        "class": det.label,
+        "depth_m": round(det.depth_m, 3),
+        "position_3d": [round(v, 3) for v in det.position_3d],
+    }
+
+    heading_rad = getattr(det, "heading_rad", None)
+    if heading_rad is not None:
+        vehicle["heading_rad"] = round(float(heading_rad), 4)
+
+    return vehicle
 
 def build_frame_dict(
     frame_idx: int,
@@ -131,14 +153,7 @@ def build_frame_dict(
         "lanes": lanes_out,
 
         "vehicles": [
-            {
-                "bbox":        [round(v, 2) for v in det.bbox],
-                "class":       det.label,
-                "direction":   det.direction,
-                "depth_m":     round(det.depth_m, 3),
-                "position_3d": [round(v, 3) for v in det.position_3d],
-                # "heading_rad": round(det.heading_rad, 4),
-            }
+            _serialize_vehicle(det)
             for det in vehicles
         ],
 

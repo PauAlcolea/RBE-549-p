@@ -41,10 +41,11 @@ paths:
 
 # ── Model weights (download separately, place in Code/../Weights/) ─────────────
 weights:
-  yolo:       ../Weights/yolov9c.pt
-  rtdetr:     ../Weights/rtdetr-x.pt      # download: ultralytics rtdetr-x (COCO pretrained)
-  depth:      ../Weights/depth_anything_v2_metric_vkitti_vitb.pth
-  lanes:      ../Weights/sam3.pt
+  yolo:         ../Weights/yolov9c.pt
+  rtdetr:       ../Weights/rtdetr-x.pt      # download: ultralytics rtdetr-x (COCO pretrained)
+  depth:        ../Weights/depth_anything_v2_metric_vkitti_vitb.pth
+  lanes:        ../Weights/sam3.pt
+  orientation:  ../Weights/boundingbox.pkl
 
 # ── Perception settings ────────────────────────────────────────────────────
 perception:
@@ -193,18 +194,18 @@ perception:
 blender:
   executable: blender   # path to blender binary, or just 'blender' if on PATH
   fps: 30
-  resolution: [1920, 1080]
+  resolution: [1280, 960]
   render_engine: CYCLES  # CYCLES | EEVEE
   samples: 32            # lower = faster; 32 is a reasonable Phase 1 default
   output_format: PNG
   ground_clearance_m: 0.03
 
   camera:
-    # Intrinsics from calibration — update after running calibration
-    fx: 2059.0
-    fy: 2059.0   # square pixels, so fy ≈ fx
-    cx: 960.0
-    cy: 540.0
+    # Intrinsics from calibration -- automatically updated with calibration
+    fx: 1402.939107
+    fy: 1178.218632 
+    cx: 448.030821
+    cy: 306.365558
     height_m: 1.2
 
   # Visual style for Tesla-like overlay
