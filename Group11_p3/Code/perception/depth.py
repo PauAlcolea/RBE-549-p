@@ -23,7 +23,7 @@ from .Depth_Anything_v2.metric_depth.depth_anything_v2.dpt import DepthAnythingV
 import torch
 from utils.io_utils import download_file_if_missing
 
-_GROUND_CONTACT_LABELS = {"bicycle", "car", "motorcycle", "bus", "truck", "person"}
+_GROUND_CONTACT_LABELS = {"bicycle", "car", "motorcycle", "bus", "truck", "person", "sedan", "hatchback", "suv", "pickuptruck", "pickup_truck"}
 
 
 class DepthEstimator:
