@@ -168,6 +168,12 @@ perception:
     weight_sv_energy: 0.55
     weight_contrast: 0.35
     weight_color_prior: 0.01
+    reject_if_hsv_comparable: true  # emit unknown when all 3 ROIs have similar HSV statistics
+    comparable_hue_range_max: 12.0  # OpenCV hue units in [0, 179]
+    comparable_sat_range_max: 30.0
+    comparable_val_range_max: 35.0
+    hue_compare_min_s: 35.0          # ignore near-gray pixels for hue mean
+    hue_compare_min_v: 35.0          # ignore very dark pixels for hue mean
 
   stop_sign:
     min_contour_area: 800       # fallback: ignore red shapes smaller than this (px²)

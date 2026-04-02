@@ -58,6 +58,12 @@ class TrafficLightDetector:
         self.min_on_s = float(tl_cfg.get("min_on_s", 50.0))
         self.unknown_score_epsilon = float(tl_cfg.get("unknown_score_epsilon", 0.02))
         self.degenerate_score_epsilon = float(tl_cfg.get("degenerate_score_epsilon", 1e-5))
+        self.reject_if_hsv_comparable = bool(tl_cfg.get("reject_if_hsv_comparable", True))
+        self.comparable_hue_range_max = float(tl_cfg.get("comparable_hue_range_max", 12.0))
+        self.comparable_sat_range_max = float(tl_cfg.get("comparable_sat_range_max", 30.0))
+        self.comparable_val_range_max = float(tl_cfg.get("comparable_val_range_max", 35.0))
+        self.hue_compare_min_s = float(tl_cfg.get("hue_compare_min_s", 35.0))
+        self.hue_compare_min_v = float(tl_cfg.get("hue_compare_min_v", 35.0))
 
         self.score_weights = {
             "bright_ratio": float(tl_cfg.get("weight_bright_ratio", 0.45)),
@@ -93,15 +99,15 @@ class TrafficLightDetector:
             ],
         }
 
-    def detect(self, frame_bgr: np.ndarray, object_detections: list) -> List[TrafficLight]:
+    def detect(self, frame_bgr: np.ndarray, traffic_detections: list) -> List[TrafficLight]:
         """
         Detect traffic lights in one BGR frame and classify their color.
 
         Parameters
         ----------
         frame_bgr : np.ndarray
-        object_detections : list[Detection]
-            Detections from the object detector; only traffic_light entries are used.
+        traffic_detections : list
+            Traffic-light detections, each with at least bbox/confidence fields.
 
         Returns
         -------
@@ -110,21 +116,26 @@ class TrafficLightDetector:
         lights = []
         self.last_debug_info = []
 
-        for det in object_detections:
-            if det.label != "traffic_light":
+        for det in traffic_detections:
+            det_label = getattr(det, "label", "traffic_light")
+            if det_label != "traffic_light":
                 continue
 
-            color, dbg = self._classify_color_region_on_debug(frame_bgr, det.bbox)
-            dbg["bbox"] = [float(v) for v in det.bbox]
+            det_bbox = getattr(det, "bbox", None)
+            if det_bbox is None:
+                continue
+
+            color, dbg = self._classify_color_region_on_debug(frame_bgr, det_bbox)
+            dbg["bbox"] = [float(v) for v in det_bbox]
             dbg["predicted_color"] = color
             self.last_debug_info.append(dbg)
 
             lights.append(TrafficLight(
-                bbox=det.bbox,
+                bbox=det_bbox,
                 color=color,
-                confidence=det.confidence,
-                depth_m=det.depth_m,
-                label=det.label
+                confidence=float(getattr(det, "confidence", 0.0)),
+                depth_m=float(getattr(det, "depth_m", 0.0)),
+                label=det_label
             ))
 
         return lights
@@ -160,6 +171,9 @@ class TrafficLightDetector:
             "band_lines_y": [],
             "roi_circles": [],
             "selection_metric": "score",
+            "hsv_comparable_reject": False,
+            "hsv_spreads": {},
+            "hue_means": [],
             "saturation_means": [],
             "value_means": [],
         }
@@ -186,8 +200,20 @@ class TrafficLightDetector:
             [x1 + int(cx), y1 + int(cy), int(r), int(region_idx)]
             for (cx, cy, r, region_idx) in geom.get("roi_circles", [])
         ]
+        debug_info["hue_means"] = [float(v) for v in geom.get("hue_means", [])]
         debug_info["saturation_means"] = [float(v) for v in geom.get("saturation_means", [])]
         debug_info["value_means"] = [float(v) for v in geom.get("value_means", [])]
+
+        comparable, spreads = self._is_hsv_comparable(
+            debug_info["hue_means"],
+            debug_info["saturation_means"],
+            debug_info["value_means"],
+        )
+        debug_info["hsv_spreads"] = spreads
+        if self.reject_if_hsv_comparable and comparable:
+            debug_info["hsv_comparable_reject"] = True
+            debug_info["selection_metric"] = "hsv_comparable_reject"
+            return "unknown", debug_info
 
         if self.night_mode:
             sat_means = debug_info["saturation_means"]
@@ -275,6 +301,7 @@ class TrafficLightDetector:
             [inner_x0 + int(cx), inner_y0 + int(cy), int(r), int(region_idx)]
             for (cx, cy, r, region_idx) in roi_geom.get("roi_circles", [])
         ]
+        geom["hue_means"] = [float(v) for v in roi_geom.get("hue_means", [])]
         geom["saturation_means"] = [float(v) for v in roi_geom.get("saturation_means", [])]
         geom["value_means"] = [float(v) for v in roi_geom.get("value_means", [])]
         return scores, geom
@@ -292,6 +319,7 @@ class TrafficLightDetector:
 
         sat = hsv_crop[:, :, 1].astype(np.float32)
         val = hsv_crop[:, :, 2].astype(np.float32)
+        hue = hsv_crop[:, :, 0].astype(np.float32)
         on_global = (val >= global_v_thr) & (sat >= self.min_on_s)
 
         band_h = h / 3.0
@@ -301,6 +329,7 @@ class TrafficLightDetector:
         yy, xx = np.ogrid[:h, :w]
         scores: List[float] = []
         circles: List[List[int]] = []
+        hue_means: List[float] = []
         sat_means: List[float] = []
         val_means: List[float] = []
 
@@ -321,12 +350,66 @@ class TrafficLightDetector:
             scores.append(self._score_single_region(hsv_crop, color_name, roi, on_global))
             roi_pixels = np.count_nonzero(roi)
             if roi_pixels > 0:
+                hue_mask = roi & (sat >= self.hue_compare_min_s) & (val >= self.hue_compare_min_v)
+                if np.any(hue_mask):
+                    hue_means.append(float(np.mean(hue[hue_mask])))
+                else:
+                    hue_means.append(float("nan"))
                 sat_means.append(float(np.mean(sat[roi])))
                 val_means.append(float(np.mean(val[roi])))
             else:
+                hue_means.append(float("nan"))
                 sat_means.append(255.0)
                 val_means.append(0.0)
-        return scores, {"roi_circles": circles, "saturation_means": sat_means, "value_means": val_means}
+        return scores, {
+            "roi_circles": circles,
+            "hue_means": hue_means,
+            "saturation_means": sat_means,
+            "value_means": val_means,
+        }
+
+    def _hue_circular_spread(self, hue_values: List[float]) -> float:
+        """Return circular spread for OpenCV hue values in [0, 179]. Lower means more similar."""
+        vals = np.array(hue_values, dtype=np.float32)
+        vals = np.mod(vals, 180.0)
+        if vals.size < 2:
+            return 0.0
+
+        vals = np.sort(vals)
+        wrap_gap = (vals[0] + 180.0) - vals[-1]
+        gaps = np.diff(vals)
+        max_gap = max(float(wrap_gap), float(np.max(gaps)) if gaps.size > 0 else 0.0)
+        return float(180.0 - max_gap)
+
+    def _is_hsv_comparable(
+        self,
+        hue_means: List[float],
+        sat_means: List[float],
+        val_means: List[float],
+    ) -> Tuple[bool, Dict[str, float]]:
+        """Check whether ROI HSV statistics are too similar to confidently pick a light color."""
+        spreads = {"hue": float("inf"), "sat": float("inf"), "val": float("inf")}
+        if len(hue_means) != 3 or len(sat_means) != 3 or len(val_means) != 3:
+            return False, spreads
+
+        hue_arr = np.array(hue_means, dtype=np.float32)
+        sat_arr = np.array(sat_means, dtype=np.float32)
+        val_arr = np.array(val_means, dtype=np.float32)
+        if not np.all(np.isfinite(hue_arr)):
+            return False, spreads
+        if not np.all(np.isfinite(sat_arr)) or not np.all(np.isfinite(val_arr)):
+            return False, spreads
+
+        spreads["hue"] = self._hue_circular_spread(hue_means)
+        spreads["sat"] = float(np.max(sat_arr) - np.min(sat_arr))
+        spreads["val"] = float(np.max(val_arr) - np.min(val_arr))
+
+        comparable = (
+            spreads["hue"] <= self.comparable_hue_range_max
+            and spreads["sat"] <= self.comparable_sat_range_max
+            and spreads["val"] <= self.comparable_val_range_max
+        )
+        return comparable, spreads
 
     def _score_single_region(
         self,
