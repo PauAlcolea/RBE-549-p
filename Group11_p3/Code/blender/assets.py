@@ -50,13 +50,18 @@ class AssetLibrary:
 
     def _load_templates(self):
         asset_files = {
-            "car":           self.assets_dir / "Vehicles/SedanAndHatchback.blend",
-            "pedestrian":    self.assets_dir / "Pedestrain.blend",
-            "stop_sign":     self.assets_dir / "StopSign.blend",
-            "traffic_light": self.assets_dir / "TrafficSignal.blend",
-            "traffic_cone":  self.assets_dir / "TrafficConeAndCylinder.blend",
-            "trash_can":     self.assets_dir / "Dustbin.blend",
-            "traffic_pole":  self.assets_dir / "TrafficAssets.blend", # iron pole
+            "sedanandhatchbacks":   self.assets_dir / "Vehicles/SedanAndHatchback.blend",
+            "bicycle":              self.assets_dir / "Vehicles/Bicycle.blend",
+            "motorcycle":           self.assets_dir / "Vehicles/Motorcycle.blend",
+            "truck":                self.assets_dir / "Vehicles/Truck.blend",
+            "pickuptruck":          self.assets_dir / "Vehicles/PickupTruck.blend",
+            "suv":                  self.assets_dir / "Vehicles/SUV.blend",
+            "pedestrian":           self.assets_dir / "Pedestrain.blend",
+            "stop_sign":            self.assets_dir / "StopSign.blend",
+            "traffic_light":        self.assets_dir / "TrafficSignal.blend",
+            "traffic_cone":         self.assets_dir / "TrafficConeAndCylinder.blend",
+            "trash_can":            self.assets_dir / "Dustbin.blend",
+            "traffic_pole":         self.assets_dir / "TrafficAssets.blend", # iron pole
         }
 
         for name, path in asset_files.items():
@@ -117,27 +122,30 @@ class AssetLibrary:
 
     def place_vehicle(self, vehicle: dict):
         """
-        Instantiate the car asset at the vehicle's 3D position.
+        Instantiate the detected vehicle asset at the vehicle's 3D position.
 
         Parameters
         ----------
         vehicle : dict with keys "position_3d", "depth_m"
         """
-        obj = self._instance("car")
+        vehicle_class = str(vehicle.get("class", "car")).lower()
+        asset_name = self._vehicle_asset_name(vehicle_class)
+        obj = self._instance(asset_name)
         bpos = self._json_to_blender(vehicle["position_3d"])
         obj.location = bpos
-        obj.scale = (0.02, 0.02, 0.02)
+        vehicle_scale = self._vehicle_scale(vehicle_class)
+        obj.scale = vehicle_scale
 
         heading_rad = vehicle.get("heading_rad")
         if heading_rad is not None:
             obj.rotation_euler[2] = -(float(heading_rad) - math.pi / 2)
-        # else:
-        #     direction = vehicle.get("direction", "unknown")
-        #     obj.rotation_euler[2] = self._vehicle_yaw_from_direction(direction)
         self._align_object_to_ground(obj, ground_z=0.0, clearance=self.ground_clearance_m)
 
         self._frame_objects.append(obj)
-        print(f"[assets] vehicle: json_pos={vehicle['position_3d']}  →  blender_pos={bpos}  depth={vehicle['depth_m']:.1f}m")
+        print(
+            f"[assets] vehicle: class={vehicle_class} asset={asset_name} scale={tuple(vehicle_scale)} "
+            f"json_pos={vehicle['position_3d']}  →  blender_pos={bpos}  depth={vehicle['depth_m']:.1f}m"
+        )
 
     def place_pedestrian(self, ped: dict):
         """Instantiate the pedestrian asset."""
@@ -495,6 +503,46 @@ class AssetLibrary:
             "unknown": 0.0,
         }
         return yaw_map.get(direction, 0.0)
+
+    @staticmethod
+    def _vehicle_asset_name(vehicle_class: str) -> str:
+        """
+        Map detected vehicle classes to available Blender asset keys.
+
+        For now, all car-like classes share the sedan/hatchback asset.
+        """
+        asset_map = {
+            "car": "sedanandhatchbacks",
+            "sedan": "sedanandhatchbacks",
+            "sedanandhatchbacks": "sedanandhatchbacks",
+            "hatchback": "sedanandhatchbacks",
+            "suv": "sedanandhatchbacks",
+            "pickuptruck": "sedanandhatchbacks",
+            "pickup_truck": "sedanandhatchbacks",
+            "bicycle": "bicycle",
+            "motorcycle": "motorcycle",
+            "truck": "truck",
+            "bus": "truck",
+        }
+        return asset_map.get(vehicle_class, "sedanandhatchbacks")
+
+    @staticmethod
+    def _vehicle_scale(vehicle_class: str) -> tuple:
+        """Map detected vehicle classes to per-asset Blender scales."""
+        scale_map = {
+            "car": (0.02, 0.02, 0.02),
+            "sedan": (0.02, 0.02, 0.02),
+            "sedanandhatchbacks": (0.02, 0.02, 0.02),
+            "hatchback": (0.02, 0.02, 0.02),
+            "suv": (0.02, 0.02, 0.02),
+            "pickuptruck": (0.02, 0.02, 0.02),
+            "pickup_truck": (0.02, 0.02, 0.02),
+            "truck": (0.01, 0.01, 0.01),
+            "bus": (0.01, 0.01, 0.01),
+            "bicycle": (0.118, 0.118, 0.118),
+            "motorcycle": (0.006, 0.006, 0.006),
+        }
+        return scale_map.get(vehicle_class, (0.02, 0.02, 0.02))
 
     @staticmethod
     def _json_to_blender(pos: list) -> tuple:
