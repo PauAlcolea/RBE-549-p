@@ -14,9 +14,6 @@ Usage
   # Override device
   python run_perception.py --seq Seq1 --device cpu
 
-  # Vehicle orientation smoke test only
-  python run_perception.py --scene scene1 --cam front --orientation-only --max-frames 1
-
 Output
 ------
   Writes per-frame JSON files to:
@@ -87,37 +84,21 @@ def parse_args():
         action="store_true",
         help="Write debug overlay images alongside JSONs"
     )
-    parser.add_argument(
-        "--max-frames",
-        type=int,
-        default=None,
-        help="Optional limit on processed frames per scene/camera for quick smoke tests"
-    )
-    parser.add_argument(
-        "--orientation-only",
-        action="store_true",
-        help="Load only vehicle object detection plus 3D-box orientation estimation"
-    )
 
-    
-    
     return parser.parse_args()
 
 
-def load_models(cfg, device, orientation_only: bool = False):
+def load_models(cfg, device):
     """Instantiate all detectors once — expensive, do it outside the frame loop."""
     print("[init] Loading models...")
     models = {
         "objects":     ObjectDetector(cfg, device),
         "orientation": OrientationEstimator(cfg, device, strict=True),
-    }
-    if not orientation_only:
-        models.update({
-            "lanes":   LaneDetector(cfg, device),
-            "depth":   DepthEstimator(cfg, device),
-            "traffic": TrafficLightDetector(cfg),
-            "signs":   SignDetector(cfg),
-        })
+        "lanes":   LaneDetector(cfg, device),
+        "depth":   DepthEstimator(cfg, device),
+        "traffic": TrafficLightDetector(cfg),
+        "signs":   SignDetector(cfg),
+        }
     print("[init] All models loaded in the process of instantializing detectors.")
     return models
 
@@ -248,8 +229,6 @@ def process_sequence(
     cfg: dict,
     models: dict,
     debug: bool = False,
-    max_frames: int = None,
-    orientation_only: bool = False,
 ):
     """Run every active detector on every frame of one sequence and write JSONs."""
     vehicle_labels = {"bicycle", "car", "motorcycle", "bus", "truck"}
@@ -270,7 +249,7 @@ def process_sequence(
     # Use the generator so we never load all frames into RAM at once
     for i, (frame_idx, frame_bgr) in enumerate(
         frame_generator(scene_dir, camera=camera, frame_skip=cfg["perception"]["frame_skip"])
-    ):
+):
         # --- Run detectors ---
         object_results = models["objects"].detect(frame_bgr)
         lane_results = []
@@ -278,33 +257,28 @@ def process_sequence(
         traffic_results = []
         sign_results = []
 
-        if not orientation_only:
-            lane_output = models["lanes"].detect(frame_bgr)
-            depth_map = models["depth"].estimate(frame_bgr)
-            object_results = models["depth"].lift_to_3d(object_results, depth_map)
-            traffic_results = models["depth"].lift_to_3d(
-                models["traffic"].detect(frame_bgr, object_results),
-                depth_map,
-            )
-            sign_results = models["signs"].detect(frame_bgr, object_results)
+        lane_output = models["lanes"].detect(frame_bgr)
+        depth_map = models["depth"].estimate(frame_bgr)
+        object_results = models["depth"].lift_to_3d(object_results, depth_map)
+        traffic_results = models["depth"].lift_to_3d(
+            models["traffic"].detect(frame_bgr, object_results),
+            depth_map,
+        )
+        sign_results = models["signs"].detect(frame_bgr, object_results)
 
         _SPECIALIZED = {"traffic_light", "stop_sign"}
         object_results = [d for d in object_results if d.label not in _SPECIALIZED]
 
-        if orientation_only:
-            object_results = [d for d in object_results if d.label in vehicle_labels]
-
         vehicle_results = [d for d in object_results if d.label in vehicle_labels]
         orientation_estimates = models["orientation"].annotate_detections(frame_bgr, vehicle_results)
 
-        if not orientation_only:
-            if isinstance(lane_output, dict) and "lanes" in lane_output:
-                lane_results = lane_output["lanes"]
-                lane_raw = lane_output.get("raw")
-            else:
-                # Backward compatibility if detect returns a plain list.
-                lane_results = lane_output
-                lane_raw = None
+        if isinstance(lane_output, dict) and "lanes" in lane_output:
+            lane_results = lane_output["lanes"]
+            lane_raw = lane_output.get("raw")
+        else:
+            # Backward compatibility if detect returns a plain list.
+            lane_results = lane_output
+            lane_raw = None
 
         # --- Build and save JSON ---
         frame_dict = build_frame_dict(
@@ -340,10 +314,6 @@ def process_sequence(
                 f"vehicles={len(vehicle_results)} oriented={len(orientation_estimates)}"
             )
 
-        if max_frames is not None and (i + 1) >= max_frames:
-            print(f"[{scene_name}] Reached max frame limit ({max_frames}) for {camera}.")
-            break
-
     print(f"[{scene_name}] Done. JSONs saved to {out_dir}")
     if debug:
         print(f"[{scene_name}] Debug overlays saved to {debug_dir}")
@@ -369,7 +339,7 @@ def main():
     cameras = cfg["cameras"] if args.allcam else [args.cam]
 
     # instantiate all of the detectors
-    models = load_models(cfg, device, orientation_only=args.orientation_only)
+    models = load_models(cfg, device)
 
     # process the sequences
     for scene in scenes:
@@ -380,8 +350,6 @@ def main():
                 cfg,
                 models,
                 debug=args.debug,
-                max_frames=args.max_frames,
-                orientation_only=args.orientation_only,
             )
 
     print("\n[done] All sequences processed.")
