@@ -104,6 +104,46 @@
         255
       ]
     },
+    "non_coco_dart": {
+      "enabled": true,
+      "model": "DART",
+      "object_list": [
+        "traffic_cones",
+        "trash_cans",
+        "traffic_poles"
+      ],
+      "classes": [
+        {
+          "prompt": "traffic cone",
+          "label": "traffic_cone",
+          "export_bucket": "traffic_cones"
+        },
+        {
+          "prompt": "garbage can",
+          "label": "trash_can",
+          "export_bucket": "trash_cans"
+        },
+        {
+          "prompt": "traffic pole",
+          "label": "traffic_pole",
+          "export_bucket": "traffic_poles"
+        }
+      ],
+      "default_export_bucket": "non_coco_objects",
+      "confidence": 0.35,
+      "nms": 0.4,
+      "imgsz": 1008,
+      "runtime": "auto",
+      "compile_mode": "max-autotune",
+      "use_masks": true,
+      "trt_max_classes": 4,
+      "trt_backbone": "perception/DART/hf_backbone_fp16.engine",
+      "trt_enc_dec": "perception/DART/enc_dec_fp16.engine",
+      "text_cache": null,
+      "min_width_px": 8,
+      "min_height_px": 8,
+      "max_instances": 30
+    },
     "depth": {
       "model": {
         "encoder": "vitb",
@@ -121,7 +161,10 @@
         "car": 1.5,
         "person": 1.75,
         "stop_sign": 0.75,
-        "traffic_light": 5
+        "traffic_light": 5,
+        "traffic_cone": 0.7,
+        "trash_can": 1.0,
+        "traffic_pole": 3.0
       }
     },
     "traffic_light": {

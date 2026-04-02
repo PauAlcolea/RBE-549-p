@@ -44,6 +44,7 @@ class AssetLibrary:
         self.ground_clearance_m = cfg["blender"].get("ground_clearance_m", 0.03)
         self._frame_objects = []     # track objects placed this frame for cleanup
         self._templates: Dict[str, object] = {}  # cache of linked template objects
+        self._template_groups: Dict[str, list] = {}  # cache of linked grouped templates
         self._load_templates()
         self.Materials = MaterialLibrary(cfg)
 
@@ -53,6 +54,9 @@ class AssetLibrary:
             "pedestrian":    self.assets_dir / "Pedestrain.blend",
             "stop_sign":     self.assets_dir / "StopSign.blend",
             "traffic_light": self.assets_dir / "TrafficSignal.blend",
+            "traffic_cone":  self.assets_dir / "TrafficConeAndCylinder.blend",
+            "trash_can":     self.assets_dir / "Dustbin.blend",
+            "traffic_pole":  self.assets_dir / "TrafficAssets.blend", # iron pole
         }
 
         for name, path in asset_files.items():
@@ -60,24 +64,55 @@ class AssetLibrary:
                 # Load ALL objects from the file so we can pick the right one
                 data_to.objects = list(data_from.objects)
 
-            # Find the first MESH object (skip lights, cameras, empties)
-            mesh_obj = None
-            for obj in data_to.objects:
-                if obj is not None and obj.type == "MESH":
-                    mesh_obj = obj
-                    break
-
-            if mesh_obj is None:
+            meshes = [obj for obj in data_to.objects if obj is not None and obj.type == "MESH"]
+            if not meshes:
                 print(f"[assets] WARNING: no MESH object found in {path}, objects: {[o.name for o in data_to.objects if o]}")
                 continue
 
-            # Hide all loaded objects, keep only the mesh template
-            for obj in data_to.objects:
-                if obj is not None and obj is not mesh_obj:
+            mesh_obj = meshes[0]
+            keep_meshes = [mesh_obj]
+
+            def norm(obj_name: str) -> str:
+                return obj_name.lower().replace(" ", "_")
+
+            # Dustbin.blend contains multiple meshes (bin/lid/wheels).
+            # Keep the full set and instance as one grouped object.
+            if name == "trash_can":
+                preferred_parts = ("bin_mesh", "lid_mesh", "wheels_mesh")
+                by_name = {norm(m.name): m for m in meshes}
+                selected = [by_name[p] for p in preferred_parts if p in by_name]
+
+                # If exact names are not present, include all mesh objects.
+                keep_meshes = selected if selected else list(meshes)
+
+                # Stable order for consistent transforms/material behavior.
+                keep_meshes = sorted(keep_meshes, key=lambda m: norm(m.name))
+                self._template_groups[name] = keep_meshes
+                mesh_obj = keep_meshes[0]
+
+                if len(meshes) > 1:
+                    mesh_names = [m.name for m in meshes]
+                    chosen_names = [m.name for m in keep_meshes]
+                    print(f"[assets] trash_can mesh group: all={mesh_names} chosen={chosen_names}")
+
+            if name == "traffic_pole":
+                iron_poles = [m for m in meshes if norm(m.name) == "iron_pole" or "iron_pole" in norm(m.name)]
+                if iron_poles:
+                    mesh_obj = iron_poles[0]
+                    keep_meshes = [mesh_obj]
+                if len(meshes) > 1:
+                    mesh_names = [m.name for m in meshes]
+                    print(f"[assets] traffic_pole mesh selection: chose '{mesh_obj.name}' from {mesh_names}")
+
+            # Hide all loaded objects, keep only selected mesh(es).
+            for obj in list(data_to.objects):
+                if obj is not None and obj not in keep_meshes:
                     bpy.data.objects.remove(obj, do_unlink=True)
 
-            mesh_obj.hide_render = True
-            mesh_obj.hide_viewport = True
+            for obj in keep_meshes:
+                obj.hide_render = True
+                obj.hide_viewport = True
+
             self._templates[name] = mesh_obj
 
     def place_vehicle(self, vehicle: dict):
@@ -142,6 +177,12 @@ class AssetLibrary:
         obj.scale = (0.5, 0.5, 0.5)
         obj.rotation_euler[2] = -math.pi / 2  # rotate to face the camera
 
+        # Color the traffic-light body/housing yellow (bulbs are separate).
+        body_mat = self.Materials.get_traffic_light_body_material()
+        if body_mat is not None:
+            obj.data.materials.clear()
+            obj.data.materials.append(body_mat)
+
         # Choose state color from detection if available; default to red.
         tl_color = light.get("color", "red")
         if tl_color not in {"red", "yellow", "green"}:
@@ -152,6 +193,58 @@ class AssetLibrary:
 
         self._frame_objects.append(obj)
         print(f"[assets] traffic light: json_pos={light['position_3d']}  →  blender_pos={obj.location}  state={tl_color}")
+
+    
+    def place_traffic_cone(self, cone: dict):
+        """Instantiate a traffic cone asset."""
+        obj = self._instance("traffic_cone")
+        obj.location = self._json_to_blender(cone["position_3d"])
+        obj.scale = (1.0, 1.0, 1.0)  # adjust if the cone model is not already at the right size
+
+        cone_mat = self.Materials.get_traffic_cone_material()
+        if cone_mat is not None:
+            obj.data.materials.clear()
+            obj.data.materials.append(cone_mat)
+
+        self._align_object_to_ground(obj, ground_z=0.0, clearance=self.ground_clearance_m)
+        self._frame_objects.append(obj)
+        print(f"[assets] traffic cone: json_pos={cone['position_3d']}  →  blender_pos={obj.location}")
+
+
+    def place_trash_can(self, can: dict):
+        """Instantiate a trash can asset."""
+        obj, children = self._instance_group("trash_can")
+        obj.location = self._json_to_blender(can["position_3d"])
+
+        part_scales = {
+            "bin_mesh": 1.0,
+            "lid_mesh": 10,
+            "wheels_mesh": 10,
+        }
+        self._scale_group_children(children, part_scales)
+
+        part_materials = {
+            "bin_mesh": self.Materials.get_trash_can_bin_material(),
+            "lid_mesh": self.Materials.get_trash_can_lid_material(),
+            "wheels_mesh": self.Materials.get_trash_can_wheels_material(),
+        }
+        self._apply_group_child_materials(children, part_materials)
+
+        obj.scale = (0.2, 0.2, 0.2)
+        obj.rotation_euler[2] = -math.pi / 2
+        self._align_group_to_ground(obj, children, ground_z=0.0, clearance=self.ground_clearance_m)
+        self._frame_objects.append(obj)
+        self._frame_objects.extend(children)
+        print(f"[assets] trash can: json_pos={can['position_3d']}  →  blender_pos={obj.location}")
+
+    def place_traffic_pole(self, pole: dict):
+        obj = self._instance("traffic_pole")
+        obj.location = self._json_to_blender(pole["position_3d"])
+        obj.scale = (0.1, 0.1, 0.4)
+        self._align_object_to_ground(obj, ground_z=0.0, clearance=self.ground_clearance_m)
+        self._frame_objects.append(obj)
+        print(f"[assets] traffic pole: json_pos={pole['position_3d']}  →  blender_pos={obj.location}")
+
 
     def clear_frame_objects(self):
         """Delete all objects placed during the previous frame."""
@@ -174,6 +267,49 @@ class AssetLibrary:
         new_obj.hide_viewport = False
         bpy.context.collection.objects.link(new_obj)
         return new_obj
+
+    def _instance_group(self, name: str):
+        """Duplicate a grouped template and return (root, children)."""
+        templates = self._template_groups[name]
+        root = bpy.data.objects.new(f"{name}_group", None)
+        root.empty_display_type = "PLAIN_AXES"
+        bpy.context.collection.objects.link(root)
+
+        children = []
+        for template in templates:
+            child = template.copy()
+            child.data = template.data.copy()
+            child.hide_render = False
+            child.hide_viewport = False
+            bpy.context.collection.objects.link(child)
+            child.parent = root
+            child.matrix_parent_inverse = root.matrix_world.inverted()
+            children.append(child)
+
+        return root, children
+
+    @staticmethod
+    def _scale_group_children(objects, part_scales: dict):
+        """Apply per-part scale multipliers to grouped meshes by name token."""
+        for obj in objects:
+            obj_name = obj.name.lower()
+            factor = 1.0
+            for token, multiplier in part_scales.items():
+                if token in obj_name:
+                    factor = float(multiplier)
+                    break
+            obj.scale = (obj.scale.x * factor, obj.scale.y * factor, obj.scale.z * factor)
+
+    @staticmethod
+    def _apply_group_child_materials(objects, part_materials: dict):
+        """Assign materials to grouped meshes by child-name token."""
+        for obj in objects:
+            obj_name = obj.name.lower()
+            for token, mat in part_materials.items():
+                if token in obj_name and mat is not None:
+                    obj.data.materials.clear()
+                    obj.data.materials.append(mat)
+                    break
 
     def _add_traffic_light_bulbs(self, obj, active_color: str = "red"):
         """Create three emissive sphere bulbs near the traffic light.
@@ -326,6 +462,15 @@ class AssetLibrary:
         bpy.context.view_layer.update()
         min_z = min((obj.matrix_world @ Vector(corner)).z for corner in obj.bound_box)
         obj.location.z += (ground_z + clearance) - min_z
+
+    @staticmethod
+    def _align_group_to_ground(parent_obj, objects, ground_z: float = 0.0, clearance: float = 0.0):
+        """Lift a grouped object so the group's lowest world-space point sits on ground."""
+        from mathutils import Vector
+
+        bpy.context.view_layer.update()
+        min_z = min((obj.matrix_world @ Vector(corner)).z for obj in objects for corner in obj.bound_box)
+        parent_obj.location.z += (ground_z + clearance) - min_z
 
     @staticmethod
     def _vehicle_yaw_from_direction(direction: str) -> float:

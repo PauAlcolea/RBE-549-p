@@ -39,6 +39,26 @@ class MaterialLibrary:
         """Return flat emissive material for pedestrian silhouettes."""
         return self._get_or_create("pedestrian", self.style["ped_color"])
 
+    def get_traffic_cone_material(self):
+        """Return orange material for traffic-cone meshes."""
+        return self._get_or_create_matte("traffic_cone_body", [1.0, 0.45, 0.0])
+
+    def get_traffic_light_body_material(self):
+        """Return yellow material for traffic-light housing/body."""
+        return self._get_or_create_matte("traffic_light_body", [1.0, 0.9, 0.1])
+
+    def get_trash_can_bin_material(self):
+        """Return matte green material for trash-can bin body (#027c49)."""
+        return self._get_or_create_matte("trash_can_bin", [2 / 255, 124 / 255, 73 / 255])
+
+    def get_trash_can_lid_material(self):
+        """Return matte black material for trash-can lid."""
+        return self._get_or_create_matte("trash_can_lid", [0.03, 0.03, 0.03])
+
+    def get_trash_can_wheels_material(self):
+        """Return matte black material for trash-can wheels."""
+        return self._get_or_create_matte("trash_can_wheels", [0.03, 0.03, 0.03])
+
     def get_lane_material(self, color: str, style: str):
         """
         Return material for a lane stripe.
@@ -224,6 +244,38 @@ class MaterialLibrary:
         )
         if strength_inp is not None:
             strength_inp.default_value = 1.5
+
+        self._cache[key] = mat
+        return mat
+
+    def _get_or_create_matte(self, key: str, rgb: list):
+        """Return a cached non-emissive material for realistic object surfaces."""
+        if key in self._cache:
+            return self._cache[key]
+
+        mat = bpy.data.materials.new(name=key)
+        mat.use_nodes = True
+        nodes = mat.node_tree.nodes
+        links = mat.node_tree.links
+
+        for n in list(nodes):
+            nodes.remove(n)
+
+        bsdf = nodes.new("ShaderNodeBsdfPrincipled")
+        bsdf.location = (0, 0)
+        bsdf.inputs["Base Color"].default_value = (*rgb, 1.0)
+
+        rough_inp = next((inp for inp in bsdf.inputs if inp.name == "Roughness"), None)
+        if rough_inp is not None:
+            rough_inp.default_value = 0.9
+
+        spec_inp = next((inp for inp in bsdf.inputs if inp.name == "Specular"), None)
+        if spec_inp is not None:
+            spec_inp.default_value = 0.1
+
+        out_node = nodes.new("ShaderNodeOutputMaterial")
+        out_node.location = (220, 0)
+        links.new(bsdf.outputs["BSDF"], out_node.inputs["Surface"])
 
         self._cache[key] = mat
         return mat
