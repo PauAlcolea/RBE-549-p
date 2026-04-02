@@ -118,6 +118,11 @@
           "export_bucket": "traffic_cones"
         },
         {
+          "prompt": "traffic cylinder",
+          "label": "traffic_cone",
+          "export_bucket": "traffic_cones"
+        },
+        {
           "prompt": "garbage can",
           "label": "trash_can",
           "export_bucket": "trash_cans"
@@ -167,6 +172,7 @@
       }
     },
     "traffic_light": {
+      "force_best_guess": true,
       "hsv_red_low": [
         0,
         120,
@@ -207,7 +213,18 @@
         255,
         255
       ],
-      "min_color_pixels": 30
+      "region_margin_ratio": 0.08,
+      "center_focus_ratio": 0.6,
+      "bulb_roi_radius_ratio": 0.33,
+      "on_v_percentile": 60.0,
+      "min_on_v": 100.0,
+      "min_on_s": 45.0,
+      "unknown_score_epsilon": 0.02,
+      "degenerate_score_epsilon": 1e-05,
+      "weight_bright_ratio": 0.35,
+      "weight_sv_energy": 0.55,
+      "weight_contrast": 0.35,
+      "weight_color_prior": 0.01
     },
     "stop_sign": {
       "min_contour_area": 800,

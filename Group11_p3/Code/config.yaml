@@ -144,6 +144,7 @@ perception:
       traffic_pole: 3.0
 
   traffic_light:
+    force_best_guess: true        # if true, return top-scoring state unless score is degenerate
     # HSV ranges for color classification (H in [0,179] for OpenCV)
     hsv_red_low:    [0,   120, 70]
     hsv_red_high:   [10,  255, 255]
@@ -153,7 +154,20 @@ perception:
     hsv_yellow_high: [35,  255, 255]
     hsv_green_low:  [40,  120, 70]
     hsv_green_high: [90,  255, 255]
-    min_color_pixels: 30            # min pixel count to declare a color (vs "unknown")
+
+    # region_on classifier tuning
+    region_margin_ratio: 0.08       # ignore border pixels in bbox crop
+    center_focus_ratio: 0.6         # keep only center columns (suppresses side glare/clutter)
+    bulb_roi_radius_ratio: 0.33     # ROI radius as fraction of one-third light height
+    on_v_percentile: 60.0           # adaptive value threshold percentile per region
+    min_on_v: 100.0                 # lower bound for "bright enough"
+    min_on_s: 45.0                  # lower bound for "colored enough"
+    unknown_score_epsilon: 0.02     # used only when force_best_guess is false
+    degenerate_score_epsilon: 0.00001  # always unknown when all region scores are tiny
+    weight_bright_ratio: 0.35
+    weight_sv_energy: 0.55
+    weight_contrast: 0.35
+    weight_color_prior: 0.01
 
   stop_sign:
     min_contour_area: 800       # fallback: ignore red shapes smaller than this (px²)
