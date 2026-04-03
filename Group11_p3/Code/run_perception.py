@@ -87,10 +87,18 @@ def parse_args():
         help="Write debug overlay images alongside JSONs"
     )
 
+    parser.add_argument(
+        "--night",
+        action="store_true",
+        help="Enable night traffic-light mode (pick lowest-saturation ROI)."
+    )
+
+    
+    
     return parser.parse_args()
 
 
-def load_models(cfg, device):
+def load_models(cfg, device, night_mode: bool = False):
     """Instantiate all detectors once — expensive, do it outside the frame loop."""
     print("[init] Loading models...")
     perception_cfg = cfg.get("perception", {})
@@ -108,6 +116,7 @@ def load_models(cfg, device):
         "non_coco": NonCocoDartDetector(cfg, device) if non_coco_enabled else None,
         "vehicle_subtypes": VehicleSubtypeClassifier(cfg, device) if vehicle_subtypes_enabled else None,
     }
+    models["traffic"].set_night_mode(night_mode)
     print("[init] All models loaded in the process of instantializing detectors.")
     return models
 
@@ -215,7 +224,137 @@ def draw_lane_debug_overlay(frame_bgr, lane_results, lane_raw=None):
 
     return vis
 
+def draw_traffic_algorithm_overlay(frame_bgr, traffic_debug):
+    """Overlay traffic-light region geometry and scores on the full frame."""
+    vis = frame_bgr.copy()
+    region_colors = [(0, 0, 255), (0, 220, 255), (0, 255, 0)]  # red, yellow, green
 
+    for tl in traffic_debug:
+        bbox = tl.get("bbox")
+        if not bbox or len(bbox) != 4:
+            continue
+
+        x1, y1, x2, y2 = [int(round(v)) for v in bbox]
+        cv2.rectangle(vis, (x1, y1), (x2, y2), (255, 255, 0), 2)
+
+        focus = tl.get("focus_rect")
+        if focus and len(focus) == 4:
+            fx1, fy1, fx2, fy2 = [int(v) for v in focus]
+            cv2.rectangle(vis, (fx1, fy1), (fx2, fy2), (255, 200, 0), 1)
+
+            for yline in tl.get("band_lines_y", []):
+                y = int(yline)
+                cv2.line(vis, (fx1, y), (fx2, y), (200, 200, 200), 1, lineType=cv2.LINE_AA)
+
+        circles = tl.get("roi_circles", [])
+        for idx, c in enumerate(circles):
+            if len(c) not in (3, 4):
+                continue
+            cx, cy, r = int(c[0]), int(c[1]), int(c[2])
+            region_idx = int(c[3]) if len(c) == 4 else idx
+            color = region_colors[region_idx] if region_idx < len(region_colors) else (255, 255, 255)
+            cv2.circle(vis, (cx, cy), r, color, 1, lineType=cv2.LINE_AA)
+
+        scores = tl.get("region_scores", [])
+        if len(scores) == 3:
+            pred = tl.get("predicted_color", "unknown")
+            win = tl.get("winner_idx")
+            metric = str(tl.get("selection_metric", "score"))
+            if metric == "lowest_sat_high_val":
+                sat = tl.get("saturation_means", [0.0, 0.0, 0.0])
+                val = tl.get("value_means", [0.0, 0.0, 0.0])
+                score_text = (
+                    f"M R:{scores[0]:.2f} Y:{scores[1]:.2f} G:{scores[2]:.2f} "
+                    f"S/V R:{sat[0]:.1f}/{val[0]:.1f} "
+                    f"Y:{sat[1]:.1f}/{val[1]:.1f} "
+                    f"G:{sat[2]:.1f}/{val[2]:.1f} -> {pred}"
+                )
+            else:
+                score_text = f"R:{scores[0]:.3f} Y:{scores[1]:.3f} G:{scores[2]:.3f} -> {pred}"
+            if win is not None:
+                score_text += f" (win={int(win)})"
+
+            cv2.putText(
+                vis,
+                score_text,
+                (x1, max(y1 - 8, 14)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.42,
+                (255, 255, 255),
+                1,
+                lineType=cv2.LINE_AA,
+            )
+
+    return vis
+
+
+def save_traffic_detail_panels(frame_bgr, traffic_debug, frame_idx, out_dir: Path):
+    """Save one crop-level debug image per traffic light with local geometry and scores."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    region_colors = [(0, 0, 255), (0, 220, 255), (0, 255, 0)]
+
+    for tl_idx, tl in enumerate(traffic_debug):
+        crop_rect = tl.get("crop_rect")
+        if not crop_rect or len(crop_rect) != 4:
+            continue
+
+        x1, y1, x2, y2 = [int(v) for v in crop_rect]
+        if x2 <= x1 or y2 <= y1:
+            continue
+
+        crop = frame_bgr[y1:y2, x1:x2].copy()
+        if crop.size == 0:
+            continue
+
+        focus = tl.get("focus_rect")
+        if focus and len(focus) == 4:
+            fx1, fy1, fx2, fy2 = [int(v) for v in focus]
+            cv2.rectangle(crop, (fx1 - x1, fy1 - y1), (fx2 - x1, fy2 - y1), (255, 200, 0), 1)
+
+            for yline in tl.get("band_lines_y", []):
+                y = int(yline) - y1
+                cv2.line(crop, (max(fx1 - x1, 0), y), (min(fx2 - x1, crop.shape[1] - 1), y), (200, 200, 200), 1)
+
+        for idx, c in enumerate(tl.get("roi_circles", [])):
+            if len(c) not in (3, 4):
+                continue
+            cx, cy, r = int(c[0]) - x1, int(c[1]) - y1, int(c[2])
+            if 0 <= cx < crop.shape[1] and 0 <= cy < crop.shape[0]:
+                region_idx = int(c[3]) if len(c) == 4 else idx
+                color = region_colors[region_idx] if region_idx < len(region_colors) else (255, 255, 255)
+                cv2.circle(crop, (cx, cy), r, color, 1, lineType=cv2.LINE_AA)
+
+        scores = tl.get("region_scores", [])
+        pred = tl.get("predicted_color", "unknown")
+        v_thr = tl.get("global_v_thr")
+        metric = str(tl.get("selection_metric", "score"))
+        text_lines = [f"pred: {pred}", f"metric: {metric}", f"v_thr: {0.0 if v_thr is None else float(v_thr):.1f}"]
+        if len(scores) == 3:
+            if metric == "lowest_sat_high_val":
+                sat = tl.get("saturation_means", [0.0, 0.0, 0.0])
+                val = tl.get("value_means", [0.0, 0.0, 0.0])
+                text_lines.append(f"M R={scores[0]:.2f} Y={scores[1]:.2f} G={scores[2]:.2f}")
+                text_lines.append(f"S R={sat[0]:.1f} Y={sat[1]:.1f} G={sat[2]:.1f}")
+                text_lines.append(f"V R={val[0]:.1f} Y={val[1]:.1f} G={val[2]:.1f}")
+            else:
+                text_lines.append(f"R={scores[0]:.3f} Y={scores[1]:.3f} G={scores[2]:.3f}")
+
+        panel = cv2.copyMakeBorder(crop, 0, 42, 0, 0, cv2.BORDER_CONSTANT, value=(25, 25, 25))
+        for i, line in enumerate(text_lines):
+            cv2.putText(
+                panel,
+                line,
+                (4, crop.shape[0] + 14 + (i * 13)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.37,
+                (240, 240, 240),
+                1,
+                lineType=cv2.LINE_AA,
+            )
+
+        cv2.imwrite(str(out_dir / f"frame_{frame_idx:06d}_tl_{tl_idx:02d}.png"), panel)
+
+        
 def _camera_projection_matrix(cfg: dict) -> np.ndarray:
     cam = cfg["blender"]["camera"]
     return np.array(
@@ -227,14 +366,7 @@ def _camera_projection_matrix(cfg: dict) -> np.ndarray:
         dtype=np.float32,
     )
 
-
-def process_sequence(
-    scene_name: str,
-    camera: str,
-    cfg: dict,
-    models: dict,
-    debug: bool = False,
-):
+def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debug: bool = False):
     """Run every active detector on every frame of one sequence and write JSONs."""
     vehicle_labels = {"bicycle", "car", "motorcycle", "bus", "truck", "sedan", "hatchback", "suv", "pickuptruck", "pickup_truck"}
 
@@ -245,11 +377,13 @@ def process_sequence(
     out_dir = Path(cfg["paths"]["detections_dir"]) / scene_name / camera
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    debug_dir = out_dir
-    lane_debug_dir = Path(cfg["paths"]["detections_dir"]) / scene_name / camera / "debug"
+    debug_dir = out_dir / "../debug" 
+    lane_debug_dir = Path(cfg["paths"]["detections_dir"]) / scene_name / camera / "lane_debug"
+    traffic_algo_dir = out_dir / "../traffic_algo"
     if debug:
         debug_dir.mkdir(parents=True, exist_ok=True)
         lane_debug_dir.mkdir(parents=True, exist_ok=True)
+        traffic_algo_dir.mkdir(parents=True, exist_ok=True)
     debug_proj_matrix = _camera_projection_matrix(cfg) if debug else None
 
     print(f"[{scene_name}] Camera: {camera}")
@@ -315,6 +449,17 @@ def process_sequence(
             debug_path = lane_debug_dir / f"frame_{frame_idx:06d}.jpg"
             cv2.imwrite(str(debug_path), overlay)
 
+            traffic_debug = models["traffic"].last_debug_info
+            if traffic_debug:
+                traffic_overlay = draw_traffic_algorithm_overlay(frame_bgr, traffic_debug)
+                cv2.imwrite(str(traffic_algo_dir / f"frame_{frame_idx:06d}.png"), traffic_overlay)
+                save_traffic_detail_panels(
+                    frame_bgr,
+                    traffic_debug,
+                    frame_idx,
+                    traffic_algo_dir / "detail",
+                )
+
         if (i + 1) % 50 == 0:
             raw_count = 0
             if isinstance(lane_raw, dict) and "scores" in lane_raw:
@@ -329,6 +474,7 @@ def process_sequence(
     if debug:
         print(f"[{scene_name}] Debug overlays saved to {debug_dir}")
         print(f"[{scene_name}] Lane overlays saved to {lane_debug_dir}")
+        print(f"[{scene_name}] Traffic algorithm figures saved to {traffic_algo_dir}")
     return
 
 
@@ -351,7 +497,9 @@ def main():
     cameras = cfg["cameras"] if args.allcam else [args.cam]
 
     # instantiate all of the detectors
-    models = load_models(cfg, device)
+    models = load_models(cfg, device, night_mode=args.night)
+    if args.night:
+        print("[init] Night traffic-light mode enabled (--night).")
 
     # process the sequences
     for scene in scenes:
