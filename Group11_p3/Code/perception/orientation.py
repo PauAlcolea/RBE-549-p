@@ -14,7 +14,12 @@ if not hasattr(np, "float"):
 
 _DEFAULT_CLASS_MAP = {
     "car": "car",
+    "sedan": "car",
+    "hatchback": "car",
+    "suv": "car",
     "truck": "truck",
+    "pickuptruck": "truck",
+    "pickup_truck": "truck",
     "bus": "truck",
     "bicycle": "cyclist",
     "motorcycle": "cyclist",

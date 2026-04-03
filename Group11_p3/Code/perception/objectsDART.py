@@ -50,9 +50,10 @@ def _compute_iou(a: List[float], b: List[float]) -> float:
 class NonCocoDartDetector:
 	"""Wraps DART/SAM3 for prompt-based non-COCO object detection."""
 
-	def __init__(self, cfg: dict, device: str = "cuda"):
+	def __init__(self, cfg: dict, device: str = "cuda", log_prefix: str = "non-coco-dart"):
 		self.cfg = cfg
 		self.device = self._normalize_device(device)
+		self.log_prefix = str(log_prefix).strip() or "non-coco-dart"
 
 		self.code_dir = Path(__file__).resolve().parents[1]
 		self.dart_dir = Path(__file__).resolve().parent / "DART"
@@ -229,7 +230,7 @@ class NonCocoDartDetector:
 			use_trt_enc_dec = False
 
 		print(
-			"[non-coco-dart] runtime="
+			f"[{self.log_prefix}] runtime="
 			f"{self.active_runtime}, device={self.device}, "
 			f"trt_backbone={use_trt_backbone}, trt_enc_dec={use_trt_enc_dec}, "
 			f"compile_mode={compile_mode}, use_masks={self.use_masks}"

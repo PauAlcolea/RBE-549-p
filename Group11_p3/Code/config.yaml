@@ -128,6 +128,38 @@ perception:
     min_height_px: 8
     max_instances: 30
 
+  vehicle_subtypes_dart:
+    enabled: true
+    model: DART
+    target_labels: ["car", "truck"]
+    allowed_matches:
+      car: ["suv", "pickuptruck", "sedan", "hatchback"]
+      truck: ["pickuptruck"]
+    classes:
+    - prompt: "sport utility vehicle"
+      label: "suv"
+    - prompt: "pickup truck"
+      label: "pickuptruck"
+    - prompt: "sedan"
+      label: "sedan"
+    - prompt: "hatchback"
+      label: "hatchback"
+    default_export_bucket: "vehicle_subtypes"
+    confidence: 0.60  #this number is higher so that trucks don't get classified as pickups so easily
+    nms: 0.40
+    imgsz: 1008
+    runtime: auto
+    compile_mode: max-autotune
+    use_masks: false
+    trt_max_classes: 4
+    trt_backbone: perception/DART/hf_backbone_fp16.engine
+    trt_enc_dec: perception/DART/enc_dec_fp16.engine
+    text_cache: null
+    min_width_px: 16
+    min_height_px: 16
+    max_instances: 40
+    match_iou: 0.50
+
   depth:
     model:
       encoder: vitb        # vits | vitb | vitl
@@ -139,6 +171,11 @@ perception:
     # Scale normalization: use known real-world heights (meters)
     known_heights:
       car: 1.5
+      sedan: 1.45
+      hatchback: 1.5
+      suv: 1.75
+      pickuptruck: 1.8
+      pickup_truck: 1.8
       person: 1.75
       stop_sign: 0.75
       traffic_light: 5
