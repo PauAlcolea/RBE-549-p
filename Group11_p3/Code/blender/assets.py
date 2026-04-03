@@ -133,9 +133,6 @@ class AssetLibrary:
         heading_rad = vehicle.get("heading_rad")
         if heading_rad is not None:
             obj.rotation_euler[2] = -(float(heading_rad) - math.pi / 2)
-        # else:
-        #     direction = vehicle.get("direction", "unknown")
-        #     obj.rotation_euler[2] = self._vehicle_yaw_from_direction(direction)
         self._align_object_to_ground(obj, ground_z=0.0, clearance=self.ground_clearance_m)
 
         self._frame_objects.append(obj)
@@ -627,69 +624,6 @@ class AssetLibrary:
         bpy.context.collection.objects.link(obj)
         return obj
 
-    def _create_stop_sign_decal(self, stop_obj):
-        """Create a textured octagon decal in front of the stop-sign head.
-
-        The decal has clean UVs and is independent of the imported asset's
-        material slots/UV layout, which avoids clipped edges and texture bleed.
-        """
-        bpy.context.view_layer.update()
-
-        world_corners = [stop_obj.matrix_world @ Vector(corner) for corner in stop_obj.bound_box]
-        min_x = min(c.x for c in world_corners)
-        max_x = max(c.x for c in world_corners)
-        max_z = max(c.z for c in world_corners)
-
-        width = max(max_x - min_x, 1e-4)
-        # Slightly oversize so the decal fully covers the white sign face.
-        radius = max(0.18, 0.56 * width)
-
-        center = Vector(((min_x + max_x) * 0.5, stop_obj.location.y, max_z - 1.05 * radius))
-
-        mesh = bpy.data.meshes.new("StopSignDecal_Mesh")
-
-        # Build an octagon in local XZ plane (normal +Y) so the sign shape
-        # comes from geometry even if the texture has an opaque black border.
-        verts = []
-        for i in range(8):
-            ang = math.radians(22.5 + 45.0 * i)
-            verts.append((radius * math.cos(ang), 0.0, radius * math.sin(ang)))
-        faces = [tuple(range(8))]
-        mesh.from_pydata(verts, [], faces)
-        mesh.update()
-
-        # UV mapping from octagon local XZ to [0,1], with U flipped so
-        # STOP reads correctly.
-        uv_layer = mesh.uv_layers.new(name="UVMap")
-        for loop_idx in mesh.polygons[0].loop_indices:
-            v_idx = mesh.loops[loop_idx].vertex_index
-            vx, _, vz = mesh.vertices[v_idx].co
-            u = 1.0 - ((vx / (2.0 * radius)) + 0.5)
-            v = (vz / (2.0 * radius)) + 0.5
-            uv_layer.data[loop_idx].uv = (u, v)
-
-        decal_obj = bpy.data.objects.new("StopSignDecal", mesh)
-
-        # Keep decal parallel to sign face so no triangular cut appears from
-        # plane intersection. Force face normal toward camera when possible.
-        sign_normal = stop_obj.matrix_world.to_quaternion() @ Vector((0.0, 1.0, 0.0))
-        if sign_normal.length <= 1e-6:
-            sign_normal = Vector((0.0, 1.0, 0.0))
-        else:
-            sign_normal.normalize()
-
-        cam = bpy.context.scene.camera
-        if cam is not None:
-            to_cam = cam.location - center
-            if to_cam.length > 1e-6 and sign_normal.dot(to_cam) < 0.0:
-                sign_normal = -sign_normal
-
-        decal_obj.rotation_euler = sign_normal.to_track_quat("Y", "Z").to_euler()
-        decal_obj.location = center + sign_normal * 0.02
-
-        bpy.context.collection.objects.link(decal_obj)
-        return decal_obj
-
     @staticmethod
     def _align_object_to_ground(obj, ground_z: float = 0.0, clearance: float = 0.0):
         """
@@ -712,30 +646,6 @@ class AssetLibrary:
         bpy.context.view_layer.update()
         min_z = min((obj.matrix_world @ Vector(corner)).z for obj in objects for corner in obj.bound_box)
         parent_obj.location.z += (ground_z + clearance) - min_z
-
-    @staticmethod
-    def _vehicle_yaw_from_direction(direction: str) -> float:
-        """
-        Map coarse motion labels to a plausible vehicle yaw in Blender.
-
-        Convention:
-          - 0 rad      : facing away from camera / forward in scene
-          - pi rad     : facing toward camera
-          - +/- pi/2   : side-facing left/right
-        """
-        yaw_map = {
-            "right": -math.pi / 2,
-            "left": math.pi / 2,
-            "approaching_right": -math.pi / 4,
-            "approaching_left": math.pi / 4,
-            "receding_right": -3 * math.pi / 4,
-            "receding_left": 3 * math.pi / 4,
-            "approaching": 0.0,
-            "receding": math.pi,
-            "stationary": 0.0,
-            "unknown": 0.0,
-        }
-        return yaw_map.get(direction, 0.0)
 
     @staticmethod
     def _json_to_blender(pos: list) -> tuple:

@@ -29,14 +29,12 @@ class MaterialLibrary:
     -----
     mats = MaterialLibrary(cfg)
     mats.apply_texture(stop_sign_obj, texture_path)
-    mats.set_traffic_light_color("red")
     """
 
     def __init__(self, cfg: dict):
         self.cfg = cfg
         self.style = cfg["blender"]["style"]
         self._cache = {}  # key → bpy.types.Material
-        self._traffic_light_mat = None  # reference for fast color swap
         self._speed_limit_cache_dir = None
         self._speed_limit_template_png = None
 
@@ -260,21 +258,6 @@ class MaterialLibrary:
         """Return whether PIL text overlay is available in Blender Python."""
         return Image is not None and ImageDraw is not None and ImageFont is not None
 
-    def set_traffic_light_color(self, color: str):
-        """
-        Legacy helper to update the traffic light material color.
-
-        In the current implementation this simply ensures that a colored
-        emission material for the given state exists via
-        get_traffic_light_material().
-        color: "red" | "yellow" | "green" | "unknown"
-
-        Called once per frame after placing traffic light assets.
-        """
-        # Ensure the correct emission material exists; actual assignment to
-        # the object is handled in AssetLibrary.place_traffic_light().
-        self.get_traffic_light_material(color)
-
     def get_traffic_light_material(self, color: str):
         """Return a material for a traffic light with the given state color.
 
@@ -316,7 +299,6 @@ class MaterialLibrary:
 
             links.new(emit.outputs["Emission"], out_node.inputs["Surface"])
 
-        self._traffic_light_mat = mat
         return mat
 
     # ── Helpers ───────────────────────────────────────────────────────────
