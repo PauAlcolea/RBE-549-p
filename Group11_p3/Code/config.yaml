@@ -143,7 +143,7 @@ perception:
     - prompt: "hatchback"
       label: "hatchback"
     default_export_bucket: "vehicle_subtypes"
-    confidence: 0.30
+    confidence: 0.60  #this number is higher so that trucks don't get classified as pickups so easily
     nms: 0.40
     imgsz: 1008
     runtime: auto
@@ -156,7 +156,7 @@ perception:
     min_width_px: 16
     min_height_px: 16
     max_instances: 40
-    match_iou: 0.40
+    match_iou: 0.50
 
   depth:
     model:

@@ -186,7 +186,7 @@
         }
       ],
       "default_export_bucket": "vehicle_subtypes",
-      "confidence": 0.3,
+      "confidence": 0.6,
       "nms": 0.4,
       "imgsz": 1008,
       "runtime": "auto",
@@ -199,7 +199,7 @@
       "min_width_px": 16,
       "min_height_px": 16,
       "max_instances": 40,
-      "match_iou": 0.4
+      "match_iou": 0.5
     },
     "depth": {
       "model": {
