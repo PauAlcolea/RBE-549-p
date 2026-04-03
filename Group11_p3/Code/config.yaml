@@ -211,7 +211,6 @@ blender:
   # Visual style for Tesla-like overlay
   style:
     lane_solid_white:  [1.0, 1.0, 1.0]   # RGB 0-1
-    lane_dashed_white: [1.0, 1.0, 1.0]
     lane_solid_yellow: [1.0, 0.85, 0.0]
     lane_width: 0.15          # meters (rendered lane stripe width)
     car_color:   [0.2, 0.6, 1.0]
