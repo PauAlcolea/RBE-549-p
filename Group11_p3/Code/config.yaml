@@ -235,3 +235,15 @@ blender:
     light_red:   [1.0, 0.15, 0.1]
     light_yellow: [1.0, 0.85, 0.0]
     light_green: [0.1, 0.9, 0.2]
+
+    speed_limit_uv:
+      u_offset: 0.0
+      v_offset: 0.0
+      rotation_deg: 0.0
+      u_scale: 1.0
+      v_scale: 1.0
+
+    speed_limit_text:
+      font_scale: 0.28   # relative to min(image width, image height)
+      y_ratio: 0.63      # vertical position of numeric speed text
+      text_color: [0, 0, 0]

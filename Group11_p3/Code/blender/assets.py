@@ -170,17 +170,24 @@ class AssetLibrary:
 
     def _apply_stop_sign_texture_head_only(self, obj, texture_path: Path):
         """Apply stop-sign texture to sign head only, keeping pole untextured."""
-        # Preserve original non-textured material (usually used by the pole).
+        self._apply_sign_texture_head_only(obj, texture_path, z_cut_ratio=0.55)
+
+    def _apply_sign_texture_head_only(
+        self,
+        obj,
+        texture_path: Path,
+        z_cut_ratio=0.55,
+        uv_projector=None,
+        min_head_area_ratio=None,
+    ):
+        """Apply a sign texture to upper faces only, preserving lower pole material."""
         base_mat = obj.data.materials[0] if len(obj.data.materials) > 0 else None
 
-        # Build/retrieve texture material and apply to object once.
         self.Materials.apply_texture(obj, texture_path)
-        tex_mat_name = f"tex_{texture_path.stem}"
-        tex_mat = bpy.data.materials.get(tex_mat_name)
+        tex_mat = bpy.data.materials.get(f"tex_{texture_path.stem}")
         if tex_mat is None:
             return
 
-        # Ensure both textured and base materials are present on the object.
         tex_idx = None
         base_idx = None
         for idx, mat in enumerate(obj.data.materials):
@@ -200,19 +207,66 @@ class AssetLibrary:
             else:
                 base_idx = tex_idx
 
-        # Split faces by WORLD Z so head gets texture and lower pole keeps base.
-        # World-space makes this robust to local-axis conventions in the asset.
         world_z = [(obj.matrix_world @ v.co).z for v in obj.data.vertices]
         min_wz = min(world_z)
         max_wz = max(world_z)
-        z_cut = min_wz + 0.55 * (max_wz - min_wz)
+        z_cut = min_wz + float(z_cut_ratio) * (max_wz - min_wz)
 
+        candidate_polys = []
         for poly in obj.data.polygons:
             poly_wz = (obj.matrix_world @ poly.center).z
             if poly_wz >= z_cut:
+                candidate_polys.append(poly)
+
+        if min_head_area_ratio is not None and candidate_polys:
+            area_cut = max(poly.area for poly in candidate_polys) * float(min_head_area_ratio)
+            head_poly_ids = {poly.index for poly in candidate_polys if poly.area >= area_cut}
+            if not head_poly_ids:
+                head_poly_ids = {poly.index for poly in candidate_polys}
+        else:
+            head_poly_ids = {poly.index for poly in candidate_polys}
+
+        for poly in obj.data.polygons:
+            if poly.index in head_poly_ids:
                 poly.material_index = tex_idx
             else:
                 poly.material_index = base_idx
+
+        if uv_projector is not None and head_poly_ids:
+            uv_projector(obj, head_poly_ids)
+
+    @staticmethod
+    def _project_speed_sign_head_uv(obj, head_poly_ids):
+        """Project speed-sign UVs on local X/Z to keep text upright and stable."""
+        mesh = obj.data
+        uv_layer = mesh.uv_layers.active
+        if uv_layer is None:
+            uv_layer = mesh.uv_layers.new(name="UVMap")
+
+        head_vert_ids = set()
+        for poly in mesh.polygons:
+            if poly.index in head_poly_ids:
+                head_vert_ids.update(poly.vertices)
+        if not head_vert_ids:
+            return
+
+        coords = [mesh.vertices[i].co for i in head_vert_ids]
+        x_min = min(c.x for c in coords)
+        x_max = max(c.x for c in coords)
+        z_min = min(c.z for c in coords)
+        z_max = max(c.z for c in coords)
+        dx = max(x_max - x_min, 1e-6)
+        dz = max(z_max - z_min, 1e-6)
+
+        for poly in mesh.polygons:
+            if poly.index not in head_poly_ids:
+                continue
+            for loop_idx in poly.loop_indices:
+                vid = mesh.loops[loop_idx].vertex_index
+                co = mesh.vertices[vid].co
+                u = (co.x - x_min) / dx
+                v = (co.z - z_min) / dz
+                uv_layer.data[loop_idx].uv = (u, v)
 
     def place_traffic_light(self, light: dict):
         """
@@ -297,8 +351,86 @@ class AssetLibrary:
         obj.location = self._json_to_blender(sign["position_3d"])
         obj.scale = (1.0, 1.0, 1.0)
         self._align_object_to_ground(obj, ground_z=0.0, clearance=self.ground_clearance_m)
+
+        speed_value = sign.get("speed_value")
+        texture_path = self.Materials.get_speed_limit_texture(speed_value)
+        if texture_path is not None:
+            self._apply_speed_limit_texture_head_only(obj, texture_path)
+
+        if speed_value is not None and not self.Materials.pillow_available():
+            text_obj = self._add_speed_limit_value_text(obj, speed_value)
+            if text_obj is not None:
+                self._frame_objects.append(text_obj)
+
         self._frame_objects.append(obj)
-        print(f"[assets] speed limit sign: json_pos={sign['position_3d']}  →  blender_pos={obj.location}")
+        print(
+            f"[assets] speed limit sign: json_pos={sign['position_3d']}  "
+            f"→  blender_pos={obj.location}  speed_value={speed_value}"
+        )
+
+    def _apply_speed_limit_texture_head_only(self, obj, texture_path: Path):
+        """Apply speed-limit texture to sign head while preserving pole material."""
+        self._apply_sign_texture_head_only(
+            obj,
+            texture_path,
+            z_cut_ratio=0.62,
+            uv_projector=self._project_speed_sign_head_uv,
+            min_head_area_ratio=0.60,
+        )
+
+    @staticmethod
+    def _add_speed_limit_value_text(sign_obj, speed_value):
+        """Fallback: render speed value as Blender text on sign face."""
+        try:
+            value = int(float(speed_value))
+            if value <= 0:
+                return None
+        except Exception:
+            return None
+
+        bpy.context.view_layer.update()
+        bbox = [sign_obj.matrix_world @ Vector(corner) for corner in sign_obj.bound_box]
+        min_z = min(p.z for p in bbox)
+        max_z = max(p.z for p in bbox)
+        cx = sum(p.x for p in bbox) / len(bbox)
+        cy = sum(p.y for p in bbox) / len(bbox)
+        cz = min_z + 0.63 * (max_z - min_z)
+
+        normal = sign_obj.matrix_world.to_quaternion() @ Vector((0.0, 1.0, 0.0))
+        if normal.length <= 1e-6:
+            normal = Vector((0.0, 1.0, 0.0))
+        else:
+            normal.normalize()
+
+        text_curve = bpy.data.curves.new(name="SpeedLimitTextCurve", type="FONT")
+        text_curve.body = str(value)
+        text_curve.align_x = "CENTER"
+        text_curve.align_y = "CENTER"
+        text_curve.extrude = 0.003
+
+        text_obj = bpy.data.objects.new(name="SpeedLimitText", object_data=text_curve)
+        bpy.context.collection.objects.link(text_obj)
+        text_obj.location = Vector((cx, cy, cz)) + normal * 0.02
+        text_obj.rotation_euler = normal.to_track_quat("Z", "Y").to_euler()
+
+        height = max(max_z - min_z, 0.1)
+        s = max(0.06, 0.14 * height)
+        text_obj.scale = (s, s, s)
+
+        mat = bpy.data.materials.get("speed_limit_text_black")
+        if mat is None:
+            mat = bpy.data.materials.new(name="speed_limit_text_black")
+            mat.use_nodes = True
+            bsdf = mat.node_tree.nodes.get("Principled BSDF")
+            if bsdf is not None:
+                bsdf.inputs["Base Color"].default_value = (0.02, 0.02, 0.02, 1.0)
+                rough_inp = next((inp for inp in bsdf.inputs if inp.name == "Roughness"), None)
+                if rough_inp is not None:
+                    rough_inp.default_value = 0.9
+
+        text_obj.data.materials.clear()
+        text_obj.data.materials.append(mat)
+        return text_obj
 
 
     def clear_frame_objects(self):

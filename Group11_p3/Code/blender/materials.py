@@ -14,6 +14,12 @@ from pathlib import Path
 import math
 import bpy
 
+try:
+    from PIL import Image, ImageDraw, ImageFont
+except Exception:
+    Image = None
+    ImageDraw = None
+    ImageFont = None
 
 class MaterialLibrary:
     """
@@ -31,6 +37,8 @@ class MaterialLibrary:
         self.style = cfg["blender"]["style"]
         self._cache = {}  # key → bpy.types.Material
         self._traffic_light_mat = None  # reference for fast color swap
+        self._speed_limit_cache_dir = None
+        self._speed_limit_template_png = None
 
     def get_vehicle_material(self):
         """Return flat emissive material for car silhouettes."""
@@ -122,12 +130,24 @@ class MaterialLibrary:
             .get("style", {})
             .get("stop_sign_uv", {})
         )
-        if texture_path.stem.lower() == "stopsignimage":
+        stem = texture_path.stem.lower()
+        if stem == "stopsignimage":
             u_offset = float(uv_cfg.get("u_offset", 0.0))
             v_offset = float(uv_cfg.get("v_offset", 0.0))
             rot_deg = float(uv_cfg.get("rotation_deg", 0.0))
             u_scale = float(uv_cfg.get("u_scale", 1.0))
             v_scale = float(uv_cfg.get("v_scale", 0.92))
+        elif stem.startswith("speed_limit_"):
+            speed_uv_cfg = (
+                self.cfg.get("blender", {})
+                .get("style", {})
+                .get("speed_limit_uv", {})
+            )
+            u_offset = float(speed_uv_cfg.get("u_offset", 0.0))
+            v_offset = float(speed_uv_cfg.get("v_offset", 0.0))
+            rot_deg = float(speed_uv_cfg.get("rotation_deg", 0.0))
+            u_scale = float(speed_uv_cfg.get("u_scale", 1.0))
+            v_scale = float(speed_uv_cfg.get("v_scale", 1.0))
         else:
             u_offset, v_offset = 0.0, 0.0
             rot_deg = 0.0
@@ -171,6 +191,64 @@ class MaterialLibrary:
             obj.data.materials[target_slot] = mat
         else:
             obj.data.materials.append(mat)
+
+    def get_speed_limit_texture(self, speed_value=None):
+        """Return a PNG texture path for a speed-limit sign.
+
+        Uses Data/Assets/Speed_Limit_blank_sign.png as the template and
+        overlays centered speed_value text when provided.
+        """
+        template_path = self._resolve_speed_limit_template_png()
+        if template_path is None:
+            return None
+
+        speed_num = self._coerce_speed_value(speed_value)
+        if speed_num is None:
+            return template_path
+
+        if Image is None or ImageDraw is None or ImageFont is None:
+            return template_path
+
+        cache_dir = self._get_speed_limit_cache_dir()
+        out_path = cache_dir / f"speed_limit_{speed_num}.png"
+        if out_path.exists():
+            return out_path
+
+        try:
+            img = Image.open(template_path).convert("RGBA")
+            draw = ImageDraw.Draw(img)
+
+            txt_cfg = (
+                self.cfg.get("blender", {})
+                .get("style", {})
+                .get("speed_limit_text", {})
+            )
+
+            text = str(speed_num)
+            font_scale = float(txt_cfg.get("font_scale", 0.28))
+            y_ratio = float(txt_cfg.get("y_ratio", 0.63))
+            text_color = tuple(int(c) for c in txt_cfg.get("text_color", [0, 0, 0]))
+
+            target_size = max(24, int(min(img.width, img.height) * font_scale))
+            font = self._load_speed_limit_font(target_size)
+
+            bbox = draw.textbbox((0, 0), text, font=font)
+            text_w = bbox[2] - bbox[0]
+            text_h = bbox[3] - bbox[1]
+            text_x = (img.width - text_w) * 0.5
+            text_y = img.height * y_ratio - (text_h * 0.5)
+
+            draw.text((text_x, text_y), text, fill=(*text_color, 255), font=font)
+            img.save(out_path)
+            return out_path
+        except Exception as exc:
+            print(f"[materials] WARNING: failed to generate speed sign texture: {exc}")
+            return template_path
+
+    @staticmethod
+    def pillow_available():
+        """Return whether PIL text overlay is available in Blender Python."""
+        return Image is not None and ImageDraw is not None and ImageFont is not None
 
     def set_traffic_light_color(self, color: str):
         """
@@ -274,6 +352,63 @@ class MaterialLibrary:
 
         self._cache[key] = mat
         return mat
+
+    def _get_speed_limit_cache_dir(self):
+        """Return writable cache folder for generated speed-sign textures."""
+        if self._speed_limit_cache_dir is not None:
+            return self._speed_limit_cache_dir
+
+        frames_dir = Path(self.cfg.get("paths", {}).get("frames_dir", "../Outputs/Frames"))
+        cache_dir = frames_dir.parent / "etc" / "speed_limit_textures"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        self._speed_limit_cache_dir = cache_dir
+        return cache_dir
+
+    def _resolve_speed_limit_template_png(self):
+        """Resolve Speed_Limit_blank_sign.png from the assets directory."""
+        if self._speed_limit_template_png is not None and self._speed_limit_template_png.exists():
+            return self._speed_limit_template_png
+
+        assets_dir = Path(self.cfg.get("paths", {}).get("assets_dir", "../Data/Assets"))
+        png_path = assets_dir / "Speed_Limit_blank_sign.png"
+
+        if png_path.exists():
+            self._speed_limit_template_png = png_path
+            return png_path
+
+        print(f"[materials] WARNING: missing speed-limit template: {png_path}")
+        return None
+
+    @staticmethod
+    def _coerce_speed_value(speed_value):
+        if speed_value is None:
+            return None
+        try:
+            value = int(float(speed_value))
+        except Exception:
+            return None
+        if value <= 0:
+            return None
+        return value
+
+    @staticmethod
+    def _load_speed_limit_font(size: int):
+        if ImageFont is None:
+            return None
+
+        candidates = [
+            "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+            "/System/Library/Fonts/Supplemental/Helvetica.ttc",
+            "/System/Library/Fonts/Supplemental/Impact.ttf",
+        ]
+
+        for font_path in candidates:
+            try:
+                return ImageFont.truetype(font_path, size=size)
+            except Exception:
+                continue
+
+        return ImageFont.load_default()
 
     def _get_or_create_matte(self, key: str, rgb: list):
         """Return a cached non-emissive material for realistic object surfaces."""
