@@ -44,6 +44,8 @@ possible JSON schema (one file per frame):
 }
 """
 
+_VEHICLE_LABELS = {"bicycle", "car", "motorcycle", "bus", "truck", "sedan", "hatchback", "suv", "pickuptruck", "pickup_truck"}
+
 
 def _serialize_lane(lane) -> dict:
     """Normalize lane objects/dicts to the JSON lane schema."""
@@ -114,7 +116,7 @@ def build_frame_dict(
     -------
     dict matching the schema above.
     """
-    vehicles        = [d for d in objects if d.label in {"bicycle", "car", "motorcycle", "bus", "truck"}]
+    vehicles        = [d for d in objects if d.label in _VEHICLE_LABELS]
     pedestrians     = [d for d in objects if d.label == "person"]
     non_coco_records = []
     bucket_map = {}

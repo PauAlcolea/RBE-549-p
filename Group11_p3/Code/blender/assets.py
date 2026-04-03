@@ -51,13 +51,18 @@ class AssetLibrary:
 
     def _load_templates(self):
         asset_files = {
-            "car":           self.assets_dir / "Vehicles/SedanAndHatchback.blend",
-            "pedestrian":    self.assets_dir / "Pedestrain.blend",
-            "stop_sign":     self.assets_dir / "StopSign.blend",
-            "traffic_light": self.assets_dir / "TrafficSignal.blend",
-            "traffic_cone":  self.assets_dir / "TrafficConeAndCylinder.blend",
-            "trash_can":     self.assets_dir / "Dustbin.blend",
-            "traffic_pole":  self.assets_dir / "TrafficAssets.blend",
+            "sedanandhatchbacks":   self.assets_dir / "Vehicles/SedanAndHatchback.blend",
+            "bicycle":              self.assets_dir / "Vehicles/Bicycle.blend",
+            "motorcycle":           self.assets_dir / "Vehicles/Motorcycle.blend",
+            "truck":                self.assets_dir / "Vehicles/Truck.blend",
+            "pickuptruck":          self.assets_dir / "Vehicles/PickupTruck.blend",
+            "suv":                  self.assets_dir / "Vehicles/SUV.blend",
+            "pedestrian":           self.assets_dir / "Pedestrain.blend",
+            "stop_sign":            self.assets_dir / "StopSign.blend",
+            "traffic_light":        self.assets_dir / "TrafficSignal.blend",
+            "traffic_cone":         self.assets_dir / "TrafficConeAndCylinder.blend",
+            "trash_can":            self.assets_dir / "Dustbin.blend",
+            "traffic_pole":         self.assets_dir / "TrafficAssets.blend",
             "speed_limit_sign": self.assets_dir / "SpeedLimitSign.blend",
         }
 
@@ -119,24 +124,33 @@ class AssetLibrary:
 
     def place_vehicle(self, vehicle: dict):
         """
-        Instantiate the car asset at the vehicle's 3D position.
+        Instantiate the detected vehicle asset at the vehicle's 3D position.
 
         Parameters
         ----------
         vehicle : dict with keys "position_3d", "depth_m"
         """
-        obj = self._instance("car")
+        vehicle_class = str(vehicle.get("class", "car")).lower()
+        asset_name = self._vehicle_asset_name(vehicle_class)
+        obj = self._instance(asset_name)
         bpos = self._json_to_blender(vehicle["position_3d"])
         obj.location = bpos
-        obj.scale = (0.02, 0.02, 0.02)
+        vehicle_scale = self._vehicle_scale(vehicle_class)
+        obj.scale = vehicle_scale
 
         heading_rad = vehicle.get("heading_rad")
         if heading_rad is not None:
-            obj.rotation_euler[2] = -(float(heading_rad) - math.pi / 2)
+            obj.rotation_euler[2] = (
+                -(float(heading_rad) - math.pi / 2)
+                + self._vehicle_yaw_offset(vehicle_class)
+            )
         self._align_object_to_ground(obj, ground_z=0.0, clearance=self.ground_clearance_m)
 
         self._frame_objects.append(obj)
-        print(f"[assets] vehicle: json_pos={vehicle['position_3d']}  →  blender_pos={bpos}  depth={vehicle['depth_m']:.1f}m")
+        print(
+            f"[assets] vehicle: class={vehicle_class} asset={asset_name} scale={tuple(vehicle_scale)} "
+            f"json_pos={vehicle['position_3d']}  →  blender_pos={bpos}  depth={vehicle['depth_m']:.1f}m"
+        )
 
     def place_pedestrian(self, ped: dict):
         """Instantiate the pedestrian asset."""
@@ -646,6 +660,82 @@ class AssetLibrary:
         bpy.context.view_layer.update()
         min_z = min((obj.matrix_world @ Vector(corner)).z for obj in objects for corner in obj.bound_box)
         parent_obj.location.z += (ground_z + clearance) - min_z
+
+    @staticmethod
+    def _vehicle_yaw_from_direction(direction: str) -> float:
+        """
+        Map coarse motion labels to a plausible vehicle yaw in Blender.
+
+        Convention:
+          - 0 rad      : facing away from camera / forward in scene
+          - pi rad     : facing toward camera
+          - +/- pi/2   : side-facing left/right
+        """
+        yaw_map = {
+            "right": -math.pi / 2,
+            "left": math.pi / 2,
+            "approaching_right": -math.pi / 4,
+            "approaching_left": math.pi / 4,
+            "receding_right": -3 * math.pi / 4,
+            "receding_left": 3 * math.pi / 4,
+            "approaching": 0.0,
+            "receding": math.pi,
+            "stationary": 0.0,
+            "unknown": 0.0,
+        }
+        return yaw_map.get(direction, 0.0)
+
+    @staticmethod
+    def _vehicle_asset_name(vehicle_class: str) -> str:
+        """
+        Map detected vehicle classes to available Blender asset keys.
+
+        For now, all car-like classes share the sedan/hatchback asset.
+        """
+        asset_map = {
+            "car": "sedanandhatchbacks",
+            "sedan": "sedanandhatchbacks",
+            "sedanandhatchbacks": "sedanandhatchbacks",
+            "hatchback": "sedanandhatchbacks",
+            "suv": "suv",
+            "pickuptruck": "pickuptruck",
+            "pickup_truck": "pickuptruck",
+            "bicycle": "bicycle",
+            "motorcycle": "motorcycle",
+            "truck": "truck",
+            "bus": "truck",
+        }
+        return asset_map.get(vehicle_class, "sedanandhatchbacks")
+
+    @staticmethod
+    def _vehicle_scale(vehicle_class: str) -> tuple:
+        """Map detected vehicle classes to per-asset Blender scales."""
+        scale_map = {
+            "car": (0.02, 0.02, 0.02),
+            "sedan": (0.02, 0.02, 0.02),
+            "sedanandhatchbacks": (0.02, 0.02, 0.02),
+            "hatchback": (0.02, 0.02, 0.02),
+            "suv": (3.354, 3.354, 3.354),
+            "pickuptruck": (0.5, 0.5, 0.5),
+            "pickup_truck": (0.5, 0.5, 0.5),
+            "truck": (0.001, 0.001, 0.001),
+            "bus": (0.001, 0.001, 0.001),
+            "bicycle": (0.118, 0.118, 0.118),
+            "motorcycle": (0.006, 0.006, 0.006),
+        }
+        return scale_map.get(vehicle_class, (0.02, 0.02, 0.02))
+
+    @staticmethod
+    def _vehicle_yaw_offset(vehicle_class: str) -> float:
+        """
+        Per-asset yaw correction for meshes whose local forward axis differs
+        from the rest of the vehicle library.
+        """
+        yaw_offset_map = {
+            "truck": math.pi,
+            "bus": math.pi,
+        }
+        return yaw_offset_map.get(vehicle_class, 0.0)
 
     @staticmethod
     def _json_to_blender(pos: list) -> tuple:

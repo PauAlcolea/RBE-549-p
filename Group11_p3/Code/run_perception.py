@@ -43,6 +43,7 @@ from perception.signs import SignDetector
 from perception.orientation import OrientationEstimator
 from perception.speed_limit_ocr import SpeedLimitOcr
 from perception.export import build_frame_dict
+from perception.vehicle_subtypes import VehicleSubtypeClassifier
 
 
 def parse_args():
@@ -104,6 +105,8 @@ def load_models(cfg, device, night_mode: bool = False):
     perception_cfg = cfg.get("perception", {})
     non_coco_cfg = perception_cfg.get("non_coco_dart") or perception_cfg.get("cones", {})
     non_coco_enabled = bool(non_coco_cfg.get("enabled", False))
+    vehicle_subtype_cfg = perception_cfg.get("vehicle_subtypes_dart", {})
+    vehicle_subtypes_enabled = bool(vehicle_subtype_cfg.get("enabled", False))
     speed_ocr = SpeedLimitOcr(cfg, device=device)
     models = {
         "objects":     ObjectDetector(cfg, device),
@@ -113,6 +116,7 @@ def load_models(cfg, device, night_mode: bool = False):
         "traffic": TrafficLightDetector(cfg),
         "signs":   SignDetector(cfg),
         "non_coco": NonCocoDartDetector(cfg, device) if non_coco_enabled else None,
+        "vehicle_subtypes": VehicleSubtypeClassifier(cfg, device) if vehicle_subtypes_enabled else None,
         "speed_limit_ocr": speed_ocr,
     }
     models["traffic"].set_night_mode(night_mode)
@@ -352,7 +356,7 @@ def _camera_projection_matrix(cfg: dict) -> np.ndarray:
 
 def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debug: bool = False):
     """Run every active detector on every frame of one sequence and write JSONs."""
-    vehicle_labels = {"bicycle", "car", "motorcycle", "bus", "truck"}
+    vehicle_labels = {"bicycle", "car", "motorcycle", "bus", "truck", "sedan", "hatchback", "suv", "pickuptruck", "pickup_truck"}
 
     # scene_dir is the root of this sequence, e.g. Data/Sequences/scene1/
     scene_dir = Path(cfg["paths"]["sequences_dir"]) / scene_name
@@ -361,11 +365,13 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
     out_dir = Path(cfg["paths"]["detections_dir"]) / scene_name / camera
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    debug_dir = out_dir / "../debug"
+    debug_dir = out_dir / "../debug" 
+    lane_debug_dir = Path(cfg["paths"]["detections_dir"]) / scene_name / "lane_debug"
     traffic_algo_dir = out_dir / "../traffic_algo"
     ocr_debug_dir = out_dir / "../ocr_debug"
     if debug:
         debug_dir.mkdir(parents=True, exist_ok=True)
+        lane_debug_dir.mkdir(parents=True, exist_ok=True)
         traffic_algo_dir.mkdir(parents=True, exist_ok=True)
         ocr_debug_dir.mkdir(parents=True, exist_ok=True)
     debug_proj_matrix = _camera_projection_matrix(cfg) if debug else None
@@ -377,6 +383,8 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
 ):
         # --- Run detectors ---
         object_results = models["objects"].detect(frame_bgr)
+        if models.get("vehicle_subtypes") is not None:
+            object_results = models["vehicle_subtypes"].refine_detections(frame_bgr, object_results)
         lane_results = []
         lane_raw = None
         traffic_results = []
@@ -435,7 +443,7 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
                 save_path=str(debug_dir / f"debug_frame_{frame_idx:06d}.png")
             )
             overlay = draw_lane_debug_overlay(frame_bgr, lane_results, lane_raw)
-            debug_path = debug_dir / f"frame_{frame_idx:06d}.jpg"
+            debug_path = lane_debug_dir / f"frame_{frame_idx:06d}.jpg"
             cv2.imwrite(str(debug_path), overlay)
 
             traffic_debug = models["traffic"].last_debug_info
@@ -462,6 +470,7 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
     print(f"[{scene_name}] Done. JSONs saved to {out_dir}")
     if debug:
         print(f"[{scene_name}] Debug overlays saved to {debug_dir}")
+        print(f"[{scene_name}] Lane overlays saved to {lane_debug_dir}")
         print(f"[{scene_name}] Traffic algorithm figures saved to {traffic_algo_dir}")
     return
 
