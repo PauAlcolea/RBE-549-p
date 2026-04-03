@@ -262,19 +262,14 @@
     "output_format": "PNG",
     "ground_clearance_m": 0.03,
     "camera": {
-      "fx": 1402.939107,
-      "fy": 1178.218632,
-      "cx": 448.030821,
-      "cy": 306.365558,
+      "fx": 1600.327787,
+      "fy": 1613.801735,
+      "cx": 637.482852,
+      "cy": 424.546778,
       "height_m": 1.2
     },
     "style": {
       "lane_solid_white": [
-        1.0,
-        1.0,
-        1.0
-      ],
-      "lane_dashed_white": [
         1.0,
         1.0,
         1.0

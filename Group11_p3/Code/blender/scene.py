@@ -73,8 +73,8 @@ def setup_scene(cfg: dict):
  
     scene = bpy.context.scene
     scene.render.engine       = cfg["blender"]["render_engine"]        # "CYCLES" or "EEVEE"
-    scene.render.resolution_x = cfg["blender"]["resolution"][0]        # 1920
-    scene.render.resolution_y = cfg["blender"]["resolution"][1]        # 1080
+    scene.render.resolution_x = cfg["blender"]["resolution"][0]        # 1280
+    scene.render.resolution_y = cfg["blender"]["resolution"][1]        # 960
 
     # make a light
     lamp_data = bpy.data.lights.new(name="TestSun", type="SUN")

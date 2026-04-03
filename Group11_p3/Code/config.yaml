@@ -202,10 +202,10 @@ blender:
 
   camera:
     # Intrinsics from calibration -- automatically updated with calibration
-    fx: 1402.939107
-    fy: 1178.218632 
-    cx: 448.030821
-    cy: 306.365558
+    fx: 1600.327787
+    fy: 1613.801735 
+    cx: 637.482852
+    cy: 424.546778
     height_m: 1.2
 
   # Visual style for Tesla-like overlay
