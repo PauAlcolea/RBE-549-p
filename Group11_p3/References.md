@@ -12,3 +12,6 @@
 
 3. [Depth-Anything-V2](https://github.com/DepthAnything/Depth-Anything-V2/tree/main)
     We used Depth Anything V2 to estimate the depth of the scenes.
+
+4. [EasyOCR](https://github.com/JaidedAI/EasyOCR)
+    We used Easy OCR to read speed limit signs

@@ -41,6 +41,7 @@ from perception.depth import DepthEstimator
 from perception.traffic import TrafficLightDetector
 from perception.signs import SignDetector
 from perception.orientation import OrientationEstimator
+from perception.speed_limit_ocr import SpeedLimitOcr
 from perception.export import build_frame_dict
 
 
@@ -103,6 +104,7 @@ def load_models(cfg, device, night_mode: bool = False):
     perception_cfg = cfg.get("perception", {})
     non_coco_cfg = perception_cfg.get("non_coco_dart") or perception_cfg.get("cones", {})
     non_coco_enabled = bool(non_coco_cfg.get("enabled", False))
+    speed_ocr = SpeedLimitOcr(cfg, device=device)
     models = {
         "objects":     ObjectDetector(cfg, device),
         "orientation": OrientationEstimator(cfg, device, strict=True),
@@ -111,10 +113,35 @@ def load_models(cfg, device, night_mode: bool = False):
         "traffic": TrafficLightDetector(cfg),
         "signs":   SignDetector(cfg),
         "non_coco": NonCocoDartDetector(cfg, device) if non_coco_enabled else None,
+        "speed_limit_ocr": speed_ocr,
     }
     models["traffic"].set_night_mode(night_mode)
     print("[init] All models loaded in the process of instantializing detectors.")
     return models
+
+
+def _run_speed_limit_ocr(frame_bgr, non_coco_results, speed_ocr, frame_idx=None, debug_dir=None):
+    if speed_ocr is None or not speed_ocr.is_active():
+        return
+
+    for det in non_coco_results:
+        if getattr(det, "label", "") != "speed_limit_sign":
+            continue
+
+        ocr_debug_path = None
+        if debug_dir is not None and frame_idx is not None:
+            x1, y1, _, _ = [int(round(v)) for v in det.bbox]
+            ocr_debug_path = Path(debug_dir) / f"frame_{frame_idx:06d}_x{x1}_y{y1}.png"
+
+        try:
+            ocr_result = speed_ocr.infer(frame_bgr, det.bbox, debug_path=ocr_debug_path)
+        except Exception as exc:
+            print(f"[warn] speed-limit OCR failed for one detection: {exc}")
+            speed_ocr.enabled = False
+            return
+
+        det.speed_value = ocr_result.speed_value
+        det.ocr_confidence = float(ocr_result.ocr_confidence)
 
 
 def _lane_color_bgr(color_name: str):
@@ -122,45 +149,6 @@ def _lane_color_bgr(color_name: str):
     if name == "yellow":
         return (0, 220, 255)
     return (255, 255, 255)
-
-
-def _draw_dashed_polyline(img, points, color, thickness=2, dash_len=14, gap_len=8):
-    if len(points) < 2:
-        return
-
-    draw_segment = True
-    phase = 0.0
-    on_off = float(dash_len)
-
-    for i in range(len(points) - 1):
-        p1 = points[i]
-        p2 = points[i + 1]
-        seg_vec = (p2[0] - p1[0], p2[1] - p1[1])
-        seg_len = (seg_vec[0] ** 2 + seg_vec[1] ** 2) ** 0.5
-        if seg_len < 1e-6:
-            continue
-
-        ux, uy = seg_vec[0] / seg_len, seg_vec[1] / seg_len
-        progress = 0.0
-        while progress < seg_len:
-            step = min(on_off - phase, seg_len - progress)
-            if draw_segment and step > 0:
-                s = (
-                    int(round(p1[0] + ux * progress)),
-                    int(round(p1[1] + uy * progress)),
-                )
-                e = (
-                    int(round(p1[0] + ux * (progress + step))),
-                    int(round(p1[1] + uy * (progress + step))),
-                )
-                cv2.line(img, s, e, color, thickness, lineType=cv2.LINE_AA)
-
-            progress += step
-            phase += step
-            if phase >= on_off - 1e-6:
-                phase = 0.0
-                draw_segment = not draw_segment
-                on_off = float(dash_len if draw_segment else gap_len)
 
 
 def draw_lane_debug_overlay(frame_bgr, lane_results, lane_raw=None):
@@ -375,9 +363,11 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
 
     debug_dir = out_dir / "../debug"
     traffic_algo_dir = out_dir / "../traffic_algo"
+    ocr_debug_dir = out_dir / "../ocr_debug"
     if debug:
         debug_dir.mkdir(parents=True, exist_ok=True)
         traffic_algo_dir.mkdir(parents=True, exist_ok=True)
+        ocr_debug_dir.mkdir(parents=True, exist_ok=True)
     debug_proj_matrix = _camera_projection_matrix(cfg) if debug else None
 
     print(f"[{scene_name}] Camera: {camera}")
@@ -394,6 +384,13 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
 
         lane_output = models["lanes"].detect(frame_bgr)
         non_coco_results = models["non_coco"].detect(frame_bgr) if models.get("non_coco") is not None else []
+        _run_speed_limit_ocr(
+            frame_bgr,
+            non_coco_results,
+            models.get("speed_limit_ocr"),
+            frame_idx=frame_idx,
+            debug_dir=ocr_debug_dir if debug else None,
+        )
         depth_map = models["depth"].estimate(frame_bgr)
         object_results = models["depth"].lift_to_3d(object_results, depth_map)
         non_coco_results = models["depth"].lift_to_3d(non_coco_results, depth_map)

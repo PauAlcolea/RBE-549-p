@@ -131,13 +131,18 @@ def build_frame_dict(
         bucket = getattr(det, "export_bucket", "non_coco_objects")
         if bucket not in bucket_map:
             bucket_map[bucket] = []
-        bucket_map[bucket].append(
-            {
-                "bbox": entry["bbox"],
-                "depth_m": entry["depth_m"],
-                "position_3d": entry["position_3d"],
-            }
-        )
+        bucket_entry = {
+            "bbox": entry["bbox"],
+            "depth_m": entry["depth_m"],
+            "position_3d": entry["position_3d"],
+        }
+        if bucket == "speed_limit_signs":
+            speed_value = getattr(det, "speed_value", None)
+            bucket_entry["speed_value"] = int(speed_value) if speed_value is not None else None
+            bucket_entry["ocr_confidence"] = round(float(getattr(det, "ocr_confidence", 0.0)), 4)
+            bucket_entry["ocr_raw_text"] = str(getattr(det, "ocr_raw_text", ""))
+
+        bucket_map[bucket].append(bucket_entry)
 
     lanes_out = []
     for lane in lanes:

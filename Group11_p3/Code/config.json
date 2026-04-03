@@ -159,6 +159,21 @@
       "min_height_px": 8,
       "max_instances": 30
     },
+    "speed_limit_ocr": {
+      "enabled": true,
+      "lang_list": [
+        "en"
+      ],
+      "min_confidence": 0.5,
+      "min_speed_mph": 25,
+      "max_speed_mph": 120,
+      "allowlist": "0123456789",
+      "gpu": true,
+      "padding_ratio": 0.05,
+      "min_crop_size": 24,
+      "debug_save": true,
+      "download_enabled": true
+    },
     "depth": {
       "model": {
         "encoder": "vitb",
@@ -179,7 +194,8 @@
         "traffic_light": 5,
         "traffic_cone": 0.7,
         "trash_can": 1.0,
-        "traffic_pole": 3.0
+        "traffic_pole": 3.0,
+        "speed_limit_sign": 0.6
       }
     },
     "traffic_light": {
