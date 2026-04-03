@@ -138,7 +138,10 @@ class AssetLibrary:
 
         heading_rad = vehicle.get("heading_rad")
         if heading_rad is not None:
-            obj.rotation_euler[2] = -(float(heading_rad) - math.pi / 2)
+            obj.rotation_euler[2] = (
+                -(float(heading_rad) - math.pi / 2)
+                + self._vehicle_yaw_offset(vehicle_class)
+            )
         self._align_object_to_ground(obj, ground_z=0.0, clearance=self.ground_clearance_m)
 
         self._frame_objects.append(obj)
@@ -543,6 +546,18 @@ class AssetLibrary:
             "motorcycle": (0.006, 0.006, 0.006),
         }
         return scale_map.get(vehicle_class, (0.02, 0.02, 0.02))
+
+    @staticmethod
+    def _vehicle_yaw_offset(vehicle_class: str) -> float:
+        """
+        Per-asset yaw correction for meshes whose local forward axis differs
+        from the rest of the vehicle library.
+        """
+        yaw_offset_map = {
+            "truck": math.pi,
+            "bus": math.pi,
+        }
+        return yaw_offset_map.get(vehicle_class, 0.0)
 
     @staticmethod
     def _json_to_blender(pos: list) -> tuple:
