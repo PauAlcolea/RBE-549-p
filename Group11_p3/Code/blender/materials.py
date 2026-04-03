@@ -225,9 +225,11 @@ class MaterialLibrary:
             )
 
             text = str(speed_num)
-            font_scale = float(txt_cfg.get("font_scale", 0.28))
-            y_ratio = float(txt_cfg.get("y_ratio", 0.63))
+            font_scale = float(txt_cfg.get("font_scale", 0.40))
+            y_ratio = float(txt_cfg.get("y_ratio", 0.69))
             text_color = tuple(int(c) for c in txt_cfg.get("text_color", [0, 0, 0]))
+            stroke_width = int(txt_cfg.get("stroke_width", 4))
+            stroke_color = tuple(int(c) for c in txt_cfg.get("stroke_color", [255, 255, 255]))
 
             target_size = max(24, int(min(img.width, img.height) * font_scale))
             font = self._load_speed_limit_font(target_size)
@@ -238,7 +240,14 @@ class MaterialLibrary:
             text_x = (img.width - text_w) * 0.5
             text_y = img.height * y_ratio - (text_h * 0.5)
 
-            draw.text((text_x, text_y), text, fill=(*text_color, 255), font=font)
+            draw.text(
+                (text_x, text_y),
+                text,
+                fill=(*text_color, 255),
+                font=font,
+                stroke_width=max(0, stroke_width),
+                stroke_fill=(*stroke_color, 255),
+            )
             img.save(out_path)
             return out_path
         except Exception as exc:

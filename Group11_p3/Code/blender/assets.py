@@ -17,6 +17,7 @@ Coordinate system note:
 """
 
 import math
+import re
 from pathlib import Path
 from typing import Dict
 import bpy
@@ -352,7 +353,7 @@ class AssetLibrary:
         obj.scale = (1.0, 1.0, 1.0)
         self._align_object_to_ground(obj, ground_z=0.0, clearance=self.ground_clearance_m)
 
-        speed_value = sign.get("speed_value")
+        speed_value = self._resolve_speed_value(sign)
         texture_path = self.Materials.get_speed_limit_texture(speed_value)
         if texture_path is not None:
             self._apply_speed_limit_texture_head_only(obj, texture_path)
@@ -367,6 +368,44 @@ class AssetLibrary:
             f"[assets] speed limit sign: json_pos={sign['position_3d']}  "
             f"→  blender_pos={obj.location}  speed_value={speed_value}"
         )
+
+    def _resolve_speed_value(self, sign: dict):
+        """Resolve numeric speed from structured value first, OCR text second."""
+        val = sign.get("speed_value")
+        coerced = self._coerce_positive_int(val)
+        if coerced is not None:
+            return coerced
+
+        raw_text = sign.get("ocr_raw_text")
+        if not raw_text:
+            return None
+
+        digits = re.findall(r"\d+", str(raw_text))
+        if not digits:
+            return None
+
+        # Prefer the longest token (e.g., "50" over split noise like "5" and "0").
+        candidates = sorted(digits, key=lambda d: (-len(d), d))
+        for token in candidates:
+            parsed = self._coerce_positive_int(token)
+            if parsed is None:
+                continue
+
+            ocr_cfg = self.cfg.get("perception", {}).get("speed_limit_ocr", {})
+            min_v = self._coerce_positive_int(ocr_cfg.get("min_speed_mph")) or 1
+            max_v = self._coerce_positive_int(ocr_cfg.get("max_speed_mph")) or 999
+            if min_v <= parsed <= max_v:
+                return parsed
+
+        return None
+
+    @staticmethod
+    def _coerce_positive_int(value):
+        try:
+            out = int(float(value))
+        except Exception:
+            return None
+        return out if out > 0 else None
 
     def _apply_speed_limit_texture_head_only(self, obj, texture_path: Path):
         """Apply speed-limit texture to sign head while preserving pole material."""
@@ -392,15 +431,38 @@ class AssetLibrary:
         bbox = [sign_obj.matrix_world @ Vector(corner) for corner in sign_obj.bound_box]
         min_z = min(p.z for p in bbox)
         max_z = max(p.z for p in bbox)
-        cx = sum(p.x for p in bbox) / len(bbox)
-        cy = sum(p.y for p in bbox) / len(bbox)
-        cz = min_z + 0.63 * (max_z - min_z)
+
+        # The object bbox includes the pole, so estimate the sign head from upper vertices.
+        mesh_world_verts = [sign_obj.matrix_world @ v.co for v in sign_obj.data.vertices]
+        if mesh_world_verts:
+            z_cut = min_z + 0.62 * (max_z - min_z)
+            head_pts = [p for p in mesh_world_verts if p.z >= z_cut]
+        else:
+            head_pts = []
+
+        if len(head_pts) < 8:
+            head_pts = bbox
+
+        head_min_z = min(p.z for p in head_pts)
+        head_max_z = max(p.z for p in head_pts)
+        cx = sum(p.x for p in head_pts) / len(head_pts)
+        cy = sum(p.y for p in head_pts) / len(head_pts)
+        # Keep numbers in the lower panel of the sign head.
+        cz = head_min_z + 0.30 * (head_max_z - head_min_z)
 
         normal = sign_obj.matrix_world.to_quaternion() @ Vector((0.0, 1.0, 0.0))
         if normal.length <= 1e-6:
             normal = Vector((0.0, 1.0, 0.0))
         else:
             normal.normalize()
+
+        # Keep the text on the camera-facing side of the sign.
+        cam = bpy.context.scene.camera
+        center = Vector((cx, cy, cz))
+        if cam is not None:
+            to_cam = cam.location - center
+            if to_cam.length > 1e-6 and normal.dot(to_cam.normalized()) < 0.0:
+                normal = -normal
 
         text_curve = bpy.data.curves.new(name="SpeedLimitTextCurve", type="FONT")
         text_curve.body = str(value)
@@ -410,10 +472,10 @@ class AssetLibrary:
 
         text_obj = bpy.data.objects.new(name="SpeedLimitText", object_data=text_curve)
         bpy.context.collection.objects.link(text_obj)
-        text_obj.location = Vector((cx, cy, cz)) + normal * 0.02
+        text_obj.location = center + normal * 0.01
         text_obj.rotation_euler = normal.to_track_quat("Z", "Y").to_euler()
 
-        height = max(max_z - min_z, 0.1)
+        height = max(head_max_z - head_min_z, 0.1)
         s = max(0.06, 0.14 * height)
         text_obj.scale = (s, s, s)
 
