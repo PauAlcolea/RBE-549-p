@@ -56,7 +56,8 @@ class AssetLibrary:
             "traffic_light": self.assets_dir / "TrafficSignal.blend",
             "traffic_cone":  self.assets_dir / "TrafficConeAndCylinder.blend",
             "trash_can":     self.assets_dir / "Dustbin.blend",
-            "traffic_pole":  self.assets_dir / "TrafficAssets.blend", # iron pole
+            "traffic_pole":  self.assets_dir / "TrafficAssets.blend",
+            "speed_limit_sign": self.assets_dir / "SpeedLimitSign.blend",
         }
 
         for name, path in asset_files.items():
@@ -290,6 +291,14 @@ class AssetLibrary:
         self._align_object_to_ground(obj, ground_z=0.0, clearance=self.ground_clearance_m)
         self._frame_objects.append(obj)
         print(f"[assets] traffic pole: json_pos={pole['position_3d']}  →  blender_pos={obj.location}")
+
+    def place_speed_limit_sign(self, sign: dict):
+        obj = self._instance("speed_limit_sign")
+        obj.location = self._json_to_blender(sign["position_3d"])
+        obj.scale = (1.0, 1.0, 1.0)
+        self._align_object_to_ground(obj, ground_z=0.0, clearance=self.ground_clearance_m)
+        self._frame_objects.append(obj)
+        print(f"[assets] speed limit sign: json_pos={sign['position_3d']}  →  blender_pos={obj.location}")
 
 
     def clear_frame_objects(self):

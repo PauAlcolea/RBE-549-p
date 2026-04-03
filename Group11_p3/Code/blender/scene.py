@@ -146,6 +146,7 @@ def render_sequence(scene_name: str, camera: str, cfg: dict, debug: bool = False
         "traffic_cones": "place_traffic_cone",
         "trash_cans": "place_trash_can",
         "traffic_poles": "place_traffic_pole",
+        "speed_limit_signs": "place_speed_limit_sign",
     }
 
     # Lane renderer: persists across frames, geometry cleared per frame
