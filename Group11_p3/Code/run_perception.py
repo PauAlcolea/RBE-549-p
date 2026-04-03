@@ -378,7 +378,7 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
     out_dir.mkdir(parents=True, exist_ok=True)
 
     debug_dir = out_dir / "../debug" 
-    lane_debug_dir = Path(cfg["paths"]["detections_dir"]) / scene_name / camera / "lane_debug"
+    lane_debug_dir = Path(cfg["paths"]["detections_dir"]) / scene_name / "lane_debug"
     traffic_algo_dir = out_dir / "../traffic_algo"
     if debug:
         debug_dir.mkdir(parents=True, exist_ok=True)
