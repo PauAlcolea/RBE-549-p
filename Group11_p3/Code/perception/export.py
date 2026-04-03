@@ -188,5 +188,6 @@ def build_frame_dict(
         "traffic_cones": bucket_map.get("traffic_cones", []),
         "trash_cans": bucket_map.get("trash_cans", []),
         "traffic_poles": bucket_map.get("traffic_poles", []),
+        "speed_limit_signs": bucket_map.get("speed_limit_signs", []),
         "non_coco_objects": non_coco_records,
     }

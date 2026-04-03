@@ -110,7 +110,8 @@
       "object_list": [
         "traffic_cones",
         "trash_cans",
-        "traffic_poles"
+        "traffic_poles",
+        "speed_limit_signs"
       ],
       "classes": [
         {
@@ -135,6 +136,11 @@
           "exclude_labels": [
             "traffic_cone"
           ]
+        },
+        {
+          "prompt": "speed limit sign",
+          "label": "speed_limit_sign",
+          "export_bucket": "speed_limit_signs"
         }
       ],
       "default_export_bucket": "non_coco_objects",
