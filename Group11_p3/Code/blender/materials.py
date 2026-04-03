@@ -232,6 +232,7 @@ class MaterialLibrary:
             stroke_color = tuple(int(c) for c in txt_cfg.get("stroke_color", [255, 255, 255]))
 
             target_size = max(24, int(min(img.width, img.height) * font_scale))
+            print(f"[materials] Generating speed limit texture for {speed_num} mph with font size {target_size}px")
             font = self._load_speed_limit_font(target_size)
 
             bbox = draw.textbbox((0, 0), text, font=font)

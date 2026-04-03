@@ -244,6 +244,8 @@ blender:
       v_scale: 1.0
 
     speed_limit_text:
-      font_scale: 0.28   # relative to min(image width, image height)
-      y_ratio: 0.63      # vertical position of numeric speed text
+      font_scale: 0.40   # larger digits for readability at distance
+      y_ratio: 0.69      # place text in the blank lower panel of sign face
       text_color: [0, 0, 0]
+      stroke_width: 4
+      stroke_color: [255, 255, 255]
