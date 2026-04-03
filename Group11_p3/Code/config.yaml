@@ -108,10 +108,12 @@ perception:
     - prompt: "garbage can"
       label: "trash_can"
       export_bucket: "trash_cans"
-    - prompt: "traffic pole"
+    - prompt: "bollard"
       label: "traffic_pole"
       export_bucket: "traffic_poles"
+      exclude_labels: ["traffic_cone"]
     default_export_bucket: "non_coco_objects"
+    negative_overlap_iou: 0.35   # suppress a class if it overlaps an excluded class at/above this IoU
     confidence: 0.35
     nms: 0.40
     imgsz: 1008
@@ -145,6 +147,7 @@ perception:
       traffic_pole: 3.0
 
   traffic_light:
+    force_best_guess: true        # if true, return top-scoring state unless score is degenerate
     # HSV ranges for color classification (H in [0,179] for OpenCV)
     hsv_red_low:    [0,   120, 70]
     hsv_red_high:   [10,  255, 255]
@@ -154,7 +157,26 @@ perception:
     hsv_yellow_high: [35,  255, 255]
     hsv_green_low:  [40,  120, 70]
     hsv_green_high: [90,  255, 255]
-    min_color_pixels: 30            # min pixel count to declare a color (vs "unknown")
+
+    # region_on classifier tuning
+    region_margin_ratio: 0.08       # ignore border pixels in bbox crop
+    center_focus_ratio: 0.6         # keep only center columns (suppresses side glare/clutter)
+    bulb_roi_radius_ratio: 0.33     # ROI radius as fraction of one-third light height
+    on_v_percentile: 60.0           # adaptive value threshold percentile per region
+    min_on_v: 100.0                 # lower bound for "bright enough"
+    min_on_s: 45.0                  # lower bound for "colored enough"
+    unknown_score_epsilon: 0.02     # used only when force_best_guess is false
+    degenerate_score_epsilon: 0.00001  # always unknown when all region scores are tiny
+    weight_bright_ratio: 0.35
+    weight_sv_energy: 0.55
+    weight_contrast: 0.35
+    weight_color_prior: 0.01
+    reject_if_hsv_comparable: true  # emit unknown when all 3 ROIs have similar HSV statistics
+    comparable_hue_range_max: 12.0  # OpenCV hue units in [0, 179]
+    comparable_sat_range_max: 30.0
+    comparable_val_range_max: 35.0
+    hue_compare_min_s: 35.0          # ignore near-gray pixels for hue mean
+    hue_compare_min_v: 35.0          # ignore very dark pixels for hue mean
 
   stop_sign:
     min_contour_area: 800       # fallback: ignore red shapes smaller than this (px²)
