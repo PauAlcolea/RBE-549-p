@@ -199,7 +199,7 @@
       "min_width_px": 16,
       "min_height_px": 16,
       "max_instances": 40,
-      "match_iou": 0.25
+      "match_iou": 0.4
     },
     "depth": {
       "model": {
