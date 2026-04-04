@@ -178,12 +178,26 @@ def _bbox_iou(a, b) -> float:
     return inter / denom
 
 
-def _as_traffic_candidate(det):
+def _bbox_intersection(a, b) -> float:
+    """Intersection area for [x1, y1, x2, y2] boxes."""
+    ix1 = max(float(a[0]), float(b[0]))
+    iy1 = max(float(a[1]), float(b[1]))
+    ix2 = min(float(a[2]), float(b[2]))
+    iy2 = min(float(a[3]), float(b[3]))
+    return max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+
+
+def _bbox_area(a) -> float:
+    return max(0.0, float(a[2]) - float(a[0])) * max(0.0, float(a[3]) - float(a[1]))
+
+
+def _as_traffic_candidate(det, source: str = "unknown"):
     """Normalize a detection-like record to traffic detector candidate shape."""
     return SimpleNamespace(
         label="traffic_light",
         bbox=[float(v) for v in getattr(det, "bbox", [0.0, 0.0, 0.0, 0.0])],
         confidence=float(getattr(det, "confidence", 0.0)),
+        source=str(source),
     )
 
 
@@ -204,26 +218,136 @@ def _dedupe_traffic_candidates(candidates: list, iou_thr: float) -> list:
     return kept
 
 
+def _suppress_arrow_signal_overlaps(candidates: list, iou_thr: float, ioa_thr: float) -> list:
+    """Resolve overlaps between DART arrow-signal boxes and other traffic-light boxes."""
+    if len(candidates) <= 1:
+        return candidates
+
+    arrow_idxs = [
+        i for i, c in enumerate(candidates)
+        if str(getattr(c, "source", "")) == "traffic_light_arrow_signal"
+    ]
+    if not arrow_idxs:
+        return candidates
+
+    drop = set()
+    for i in arrow_idxs:
+        if i in drop:
+            continue
+        a = candidates[i]
+        a_bbox = getattr(a, "bbox", None)
+        if a_bbox is None:
+            continue
+
+        for j, b in enumerate(candidates):
+            if i == j or j in drop:
+                continue
+            if str(getattr(b, "source", "")) == "traffic_light_arrow_signal":
+                continue
+
+            b_bbox = getattr(b, "bbox", None)
+            if b_bbox is None:
+                continue
+
+            iou = _bbox_iou(a_bbox, b_bbox)
+            inter = _bbox_intersection(a_bbox, b_bbox)
+            a_area = _bbox_area(a_bbox)
+            b_area = _bbox_area(b_bbox)
+            min_area = max(min(a_area, b_area), 1e-6)
+            ioa_small = inter / min_area
+
+            # Handle both near-equal overlap (IoU) and containment (IoA of smaller box).
+            if (iou < iou_thr) and (ioa_small < ioa_thr):
+                continue
+
+            a_conf = float(getattr(a, "confidence", 0.0))
+            b_conf = float(getattr(b, "confidence", 0.0))
+            # Remove one: keep the higher-confidence candidate on overlap.
+            if a_conf >= b_conf:
+                drop.add(j)
+            else:
+                drop.add(i)
+                break
+
+    return [c for idx, c in enumerate(candidates) if idx not in drop]
+
+
+def _suppress_contained_candidates(candidates: list, ioa_thr: float) -> list:
+    """Drop one candidate when one bbox is largely contained inside another."""
+    if len(candidates) <= 1:
+        return candidates
+
+    drop = set()
+    for i, a in enumerate(candidates):
+        if i in drop:
+            continue
+        a_bbox = getattr(a, "bbox", None)
+        if a_bbox is None:
+            continue
+
+        for j in range(i + 1, len(candidates)):
+            if j in drop:
+                continue
+            b = candidates[j]
+            b_bbox = getattr(b, "bbox", None)
+            if b_bbox is None:
+                continue
+
+            inter = _bbox_intersection(a_bbox, b_bbox)
+            if inter <= 0.0:
+                continue
+
+            a_area = max(_bbox_area(a_bbox), 1e-6)
+            b_area = max(_bbox_area(b_bbox), 1e-6)
+            ioa_small = inter / min(a_area, b_area)
+            if ioa_small < ioa_thr:
+                continue
+
+            a_conf = float(getattr(a, "confidence", 0.0))
+            b_conf = float(getattr(b, "confidence", 0.0))
+            if a_conf >= b_conf:
+                drop.add(j)
+            else:
+                drop.add(i)
+                break
+
+    return [c for idx, c in enumerate(candidates) if idx not in drop]
+
+
 def _build_traffic_candidates(object_results: list, non_coco_results: list, cfg: dict, scene_name: str):
     """OR YOLO traffic lights with DART lane-control lights, then dedupe."""
     traffic_cfg = cfg.get("perception", {}).get("traffic_light", {})
     dart_lane_control_enabled = bool(traffic_cfg.get("dart_lane_control_enabled", True))
     dart_lane_control_min_conf = float(traffic_cfg.get("dart_lane_control_min_confidence", 0.30))
     dedupe_iou = float(traffic_cfg.get("dart_lane_control_dedupe_iou", 0.45))
+    arrow_overlap_iou = float(traffic_cfg.get("arrow_overlap_iou", 0.35))
+    arrow_overlap_ioa = float(traffic_cfg.get("arrow_overlap_ioa", 0.65))
+    nested_overlap_ioa = float(traffic_cfg.get("nested_overlap_ioa", 0.80))
     square_aspect_min = float(traffic_cfg.get("square_arrow_aspect_min", 0.75))
     square_aspect_max = float(traffic_cfg.get("square_arrow_aspect_max", 1.35))
+    dart_arrow_aspect_min = float(traffic_cfg.get("dart_arrow_signal_aspect_min", 0.70))
+    dart_arrow_aspect_max = float(traffic_cfg.get("dart_arrow_signal_aspect_max", 1.35))
     max_lane_control_side_px = 90.0
-    lane_control_scene_enabled = str(scene_name).strip().lower() == "scene2"
+    scene_name_norm = str(scene_name).strip().lower()
+    lane_control_scene_enabled = scene_name_norm == "scene2"
+    arrow_signal_scene_enabled = scene_name_norm == "scene6"
+    dart_traffic_aux_labels = {"lane_control_light", "traffic_light_arrow_signal"}
 
-    yolo_candidates = [d for d in object_results if getattr(d, "label", "") == "traffic_light"]
-    if (not dart_lane_control_enabled) or (not lane_control_scene_enabled):
-        non_coco_filtered = [d for d in non_coco_results if getattr(d, "label", "") != "lane_control_light"]
+    yolo_candidates = [
+        _as_traffic_candidate(d, source="yolo_traffic_light")
+        for d in object_results
+        if getattr(d, "label", "") == "traffic_light"
+    ]
+
+    if not dart_lane_control_enabled:
+        non_coco_filtered = [d for d in non_coco_results if getattr(d, "label", "") not in dart_traffic_aux_labels]
         return _dedupe_traffic_candidates(yolo_candidates, iou_thr=dedupe_iou), non_coco_filtered
 
-    lane_control_candidates = []
+    dart_traffic_candidates = []
     non_coco_filtered = []
     for det in non_coco_results:
-        if getattr(det, "label", "") != "lane_control_light":
+        det_label = getattr(det, "label", "")
+        if det_label not in dart_traffic_aux_labels:
             non_coco_filtered.append(det)
             continue
 
@@ -238,17 +362,33 @@ def _build_traffic_candidates(object_results: list, non_coco_results: list, cfg:
         height = max(0.0, float(bbox[3]) - float(bbox[1]))
         if height <= 1e-6:
             continue
-        if width > max_lane_control_side_px or height > max_lane_control_side_px:
+
+        if det_label == "lane_control_light":
+            if not lane_control_scene_enabled:
+                continue
+            if width > max_lane_control_side_px or height > max_lane_control_side_px:
+                continue
+
+            aspect = width / height
+            if not (square_aspect_min <= aspect <= square_aspect_max):
+                continue
+
+            dart_traffic_candidates.append(_as_traffic_candidate(det, source=det_label))
             continue
 
-        aspect = width / height
-        if not (square_aspect_min <= aspect <= square_aspect_max):
+        if det_label == "traffic_light_arrow_signal":
+            if not arrow_signal_scene_enabled:
+                continue
+            aspect = width / height
+            if not (dart_arrow_aspect_min <= aspect <= dart_arrow_aspect_max):
+                continue
+            dart_traffic_candidates.append(_as_traffic_candidate(det, source=det_label))
             continue
-
-        lane_control_candidates.append(_as_traffic_candidate(det))
 
     merged = list(yolo_candidates)
-    merged.extend(lane_control_candidates)
+    merged.extend(dart_traffic_candidates)
+    merged = _suppress_arrow_signal_overlaps(merged, iou_thr=arrow_overlap_iou, ioa_thr=arrow_overlap_ioa)
+    merged = _suppress_contained_candidates(merged, ioa_thr=nested_overlap_ioa)
     deduped = _dedupe_traffic_candidates(merged, iou_thr=dedupe_iou)
     return deduped, non_coco_filtered
 
@@ -497,7 +637,12 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
 
         lane_output = models["lanes"].detect(frame_bgr)
         non_coco_results = models["non_coco"].detect(frame_bgr) if models.get("non_coco") is not None else []
-        traffic_candidates, non_coco_results = _build_traffic_candidates(object_results, non_coco_results, cfg, scene_name)
+        traffic_candidates, non_coco_results = _build_traffic_candidates(
+            object_results,
+            non_coco_results,
+            cfg,
+            scene_name,
+        )
         _run_speed_limit_ocr(
             frame_bgr,
             non_coco_results,
