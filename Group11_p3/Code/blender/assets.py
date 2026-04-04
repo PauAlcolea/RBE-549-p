@@ -43,11 +43,18 @@ class AssetLibrary:
         self.cfg = cfg
         self.assets_dir = Path(cfg["paths"]["assets_dir"])
         self.ground_clearance_m = cfg["blender"].get("ground_clearance_m", 0.03)
+        self._scene_name = None
+        self._camera_name = None
         self._frame_objects = []     # track objects placed this frame for cleanup
         self._templates: Dict[str, object] = {}  # cache of linked template objects
         self._template_groups: Dict[str, list] = {}  # cache of linked grouped templates
         self._load_templates()
         self.Materials = MaterialLibrary(cfg)
+
+    def set_render_context(self, scene_name: str = None, camera_name: str = None):
+        """Store active scene/camera so style overrides can be scene-specific."""
+        self._scene_name = str(scene_name) if scene_name is not None else None
+        self._camera_name = str(camera_name) if camera_name is not None else None
 
     def _load_templates(self):
         asset_files = {
@@ -301,10 +308,24 @@ class AssetLibrary:
 
         tl_style = light.get("traffic_light_style", "standard_vertical")
 
+        # Scene prior: in scene6, all traffic lights should use the normal
+        # housing with an up-arrow glyph in the bottom (green) lens slot.
+        force_scene6_up_arrow = (self._scene_name == "scene6")
+        blender_pos = self._json_to_blender(light["position_3d"])
+
+        # Guardrail for scene6: traffic lights should be overhead, not near
+        # ground level. Skip obvious false positives that touch the road.
+        if force_scene6_up_arrow and blender_pos[2] <= 1.0:
+            print(
+                f"[assets] skip low traffic light in scene6: "
+                f"json_pos={light['position_3d']} blender_z={blender_pos[2]:.3f}"
+            )
+            return
+
         # Special style: render standalone lane-control symbol only.
-        if tl_style == "square_arrow_signal_candidate":
+        if tl_style == "square_arrow_signal_candidate" and not force_scene6_up_arrow:
             self._add_square_signal_symbol(
-                base_location=Vector(self._json_to_blender(light["position_3d"])),
+                base_location=Vector(blender_pos),
                 active_color=tl_color,
             )
             print(
@@ -314,7 +335,7 @@ class AssetLibrary:
             return
 
         obj = self._instance("traffic_light")
-        obj.location = self._json_to_blender(light["position_3d"])
+        obj.location = blender_pos
         obj.scale = (1.0, 1.0, 1.0)
         obj.rotation_euler[2] = -math.pi / 2  # rotate to face the camera
 
@@ -327,12 +348,20 @@ class AssetLibrary:
         render_green_as_arrow = (
             tl_style == "wide_green_arrow_candidate" and tl_color == "green"
         )
+        arrow_direction = "right"
+        if force_scene6_up_arrow:
+            render_green_as_arrow = True
+            arrow_direction = "up"
+
+        # Scene6 rule: red/yellow bulbs stay off; only the green arrow is lit.
+        active_color_for_render = "green" if force_scene6_up_arrow else tl_color
 
         # Add three emissive bulbs, with optional green-arrow replacement.
         self._add_traffic_light_bulbs(
             obj,
-            active_color=tl_color,
+            active_color=active_color_for_render,
             render_green_as_arrow=render_green_as_arrow,
+            arrow_direction=arrow_direction,
         )
 
         self._frame_objects.append(obj)
@@ -610,6 +639,7 @@ class AssetLibrary:
         obj,
         active_color: str = "red",
         render_green_as_arrow: bool = False,
+        arrow_direction: str = "right",
     ):
         """Create three emissive sphere bulbs near the traffic light.
 
@@ -670,8 +700,14 @@ class AssetLibrary:
                     cam_dir = cam.location - arrow_pos
                     if cam_dir.length > 1e-6:
                         bulb_obj.rotation_euler = cam_dir.normalized().to_track_quat("Y", "Z").to_euler()
+                        # Arrow mesh points along +X (right) in local symbol space.
+                        # Rotate around local Y to remap +X -> +Z for an up arrow.
+                        if arrow_direction == "up":
+                            bulb_obj.rotation_euler.rotate_axis("Y", math.radians(-90.0))
                 else:
                     bulb_obj.rotation_euler = obj.rotation_euler.copy()
+                    if arrow_direction == "up":
+                        bulb_obj.rotation_euler.rotate_axis("Y", math.radians(-90.0))
                 print(f"[assets] traffic light arrow enabled: pos={arrow_pos}")
             else:
                 bulb_obj = self._create_sphere_mesh_object(
