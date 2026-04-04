@@ -78,8 +78,7 @@ class LaneRenderer:
 			return
 
 		color = lane.get("color", "white")
-		style = lane.get("style", "solid")
-		mat = self._get_material(color, style)
+		mat = self._get_material(color)
 
 		# Attach material
 		if mat is not None:
@@ -226,15 +225,21 @@ class LaneRenderer:
 		bpy.context.collection.objects.link(obj)
 		return obj
 
-	def _get_material(self, color: str, style: str):
-		"""Return (or create) a Blender material for the given lane color and style."""
+	def _get_material(self, color: str):
+		"""Return (or create) a Blender material for the given lane color."""
 
 		try:
 			import bpy
 		except ImportError:
 			return None
 
-		key = f"lane_{color}_{style}"
+		color_in = str(color).lower().strip()
+		if "yellow" in color_in:
+			lane_color = "yellow"
+		else:
+			lane_color = "white"
+
+		key = f"lane_{lane_color}"
 
 		if key in self._mat_cache:
 			return self._mat_cache[key]
@@ -245,33 +250,47 @@ class LaneRenderer:
 			return mat
 
 		style_cfg = self.cfg["blender"]["style"]
-		rgb_key = f"lane_{style}_{color}"
+		rgb_key = f"lane_solid_{lane_color}"
 		rgb = style_cfg.get(rgb_key, style_cfg.get("lane_solid_white", [1.0, 1.0, 1.0]))
 		r, g, b = float(rgb[0]), float(rgb[1]), float(rgb[2])
 
 		mat = bpy.data.materials.new(name=key)
 		mat.use_nodes = True
 		nodes = mat.node_tree.nodes
-		bsdf = nodes.get("Principled BSDF")
-		if bsdf is None:
-			bsdf = nodes.new("ShaderNodeBsdfPrincipled")
+		links = mat.node_tree.links
 
+		for n in list(nodes):
+			nodes.remove(n)
+
+		bsdf = nodes.new("ShaderNodeBsdfPrincipled")
+		bsdf.location = (0, -80)
 		bsdf.inputs["Base Color"].default_value = (r, g, b, 1.0)
-		# Roughness exists across Blender versions; keep it high for a flat look.
+
 		rough_inp = next((inp for inp in bsdf.inputs if inp.name == "Roughness"), None)
 		if rough_inp is not None:
 			rough_inp.default_value = 1.0
-		# "Specular" was renamed in newer Blender versions; only set it if present.
+
 		spec_inp = next((inp for inp in bsdf.inputs if inp.name == "Specular"), None)
 		if spec_inp is not None:
 			spec_inp.default_value = 0.0
-		# Emission inputs may not exist on older Principled nodes; guard them.
-		emit_inp = next((inp for inp in bsdf.inputs if inp.name == "Emission"), None)
-		if emit_inp is not None:
-			emit_inp.default_value = (r, g, b, 1.0)
-		strength_inp = next((inp for inp in bsdf.inputs if inp.name in ("Emission Strength", "Emission Strength")), None)
-		if strength_inp is not None:
-			strength_inp.default_value = 2.0
+
+		emit = nodes.new("ShaderNodeEmission")
+		emit.location = (0, 120)
+		emit.inputs["Color"].default_value = (r, g, b, 1.0)
+		emit.inputs["Strength"].default_value = 4.0 #if lane_color == "yellow" else 2.0
+
+		out = nodes.new("ShaderNodeOutputMaterial")
+		out.location = (360, 30)
+
+		if lane_color == "yellow":
+			# Pure emission keeps yellow vivid and avoids white clipping from additive shading.
+			links.new(emit.outputs["Emission"], out.inputs["Surface"])
+		else:
+			add = nodes.new("ShaderNodeAddShader")
+			add.location = (190, 30)
+			links.new(bsdf.outputs["BSDF"], add.inputs[0])
+			links.new(emit.outputs["Emission"], add.inputs[1])
+			links.new(add.outputs["Shader"], out.inputs["Surface"])
 
 		self._mat_cache[key] = mat
 		return mat

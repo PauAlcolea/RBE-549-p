@@ -299,7 +299,7 @@ def calibrate_front_camera_intrinsics(
     file, which matches the current project layout.
     """
     if calib_dir is None:
-        calib_dir = Path(__file__).resolve().parents[2] / "Data" / "Calib" / "front" / "undistorted"
+        calib_dir = Path(__file__).resolve().parents[2] / "Data" / "Calib" / "front"
 
     result = calibrate_intrinsics_from_checkerboard(
         image_dir=calib_dir,

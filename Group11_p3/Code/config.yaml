@@ -239,16 +239,15 @@ blender:
 
   camera:
     # Intrinsics from calibration -- automatically updated with calibration
-    fx: 1402.939107
-    fy: 1178.218632 
-    cx: 448.030821
-    cy: 306.365558
+    fx: 1600.327787
+    fy: 1613.801735 
+    cx: 637.482852
+    cy: 424.546778
     height_m: 1.2
 
   # Visual style for Tesla-like overlay
   style:
     lane_solid_white:  [1.0, 1.0, 1.0]   # RGB 0-1
-    lane_dashed_white: [1.0, 1.0, 1.0]
     lane_solid_yellow: [1.0, 0.85, 0.0]
     lane_width: 0.15          # meters (rendered lane stripe width)
     car_color:   [0.2, 0.6, 1.0]

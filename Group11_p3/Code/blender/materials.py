@@ -11,6 +11,7 @@ Responsibilities:
 """
 
 from pathlib import Path
+import math
 import bpy
 
 
@@ -100,6 +101,9 @@ class MaterialLibrary:
         texcoord_node = nodes.new("ShaderNodeTexCoord")
         texcoord_node.location = (-220, 0)
 
+        mapping_node = nodes.new("ShaderNodeMapping")
+        mapping_node.location = (-90, 0)
+
         tex_node = nodes.new("ShaderNodeTexImage")
         tex_node.location = (0, 0)
         image = bpy.data.images.load(str(texture_path), check_existing=True)
@@ -111,8 +115,31 @@ class MaterialLibrary:
         # hard clipping at the border in those cases.
         tex_node.extension = "EXTEND"
 
+        # Optional UV alignment controls for stop-sign texture.
+        # Can be overridden in config under blender.style.stop_sign_uv.
+        uv_cfg = (
+            self.cfg.get("blender", {})
+            .get("style", {})
+            .get("stop_sign_uv", {})
+        )
+        if texture_path.stem.lower() == "stopsignimage":
+            u_offset = float(uv_cfg.get("u_offset", 0.0))
+            v_offset = float(uv_cfg.get("v_offset", 0.0))
+            rot_deg = float(uv_cfg.get("rotation_deg", 0.0))
+            u_scale = float(uv_cfg.get("u_scale", 1.0))
+            v_scale = float(uv_cfg.get("v_scale", 0.92))
+        else:
+            u_offset, v_offset = 0.0, 0.0
+            rot_deg = 0.0
+            u_scale, v_scale = 1.0, 1.0
+
+        mapping_node.inputs["Location"].default_value = (u_offset, v_offset, 0.0)
+        mapping_node.inputs["Rotation"].default_value = (0.0, 0.0, math.radians(rot_deg))
+        mapping_node.inputs["Scale"].default_value = (u_scale, v_scale, 1.0)
+
         # Sample by mesh UVs (not Generated coords) for stable mapping.
-        links.new(texcoord_node.outputs["UV"], tex_node.inputs["Vector"])
+        links.new(texcoord_node.outputs["UV"], mapping_node.inputs["Vector"])
+        links.new(mapping_node.outputs["Vector"], tex_node.inputs["Vector"])
 
         links.new(tex_node.outputs["Color"], bsdf.inputs["Base Color"])
         alpha_in = next((inp for inp in bsdf.inputs if inp.name == "Alpha"), None)
