@@ -69,7 +69,9 @@
       "keypoint_threshold": 0.2,
       "min_bbox_w": 20,
       "min_bbox_h": 40,
-      "crop_padding_ratio": 0.08
+      "crop_padding_ratio": 0.08,
+      "depth_patch_radius_px": 2,
+      "depth_mix_with_bbox": 0.35
     },
     "lanes": {
       "model": "DART",
@@ -364,6 +366,16 @@
         0.9,
         0.4
       ],
+      "pose_joint_color": [
+        1.0,
+        0.35,
+        0.75
+      ],
+      "pose_bone_color": [
+        1.0,
+        0.65,
+        0.85
+      ],
       "light_red": [
         1.0,
         0.15,
@@ -379,6 +391,12 @@
         0.9,
         0.2
       ]
+    },
+    "pedestrians": {
+      "render_mode": "skeleton",
+      "keypoint_score_threshold": 0.2,
+      "joint_radius_m": 0.045,
+      "bone_radius_m": 0.022
     }
   }
 }

@@ -39,6 +39,16 @@ class MaterialLibrary:
         """Return flat emissive material for pedestrian silhouettes."""
         return self._get_or_create("pedestrian", self.style["ped_color"])
 
+    def get_pose_joint_material(self):
+        """Return emissive material for pedestrian joints."""
+        rgb = self.style.get("pose_joint_color", self.style["ped_color"])
+        return self._get_or_create("pose_joint", rgb)
+
+    def get_pose_bone_material(self):
+        """Return emissive material for pedestrian skeleton links."""
+        rgb = self.style.get("pose_bone_color", self.style["ped_color"])
+        return self._get_or_create("pose_bone", rgb)
+
     def get_traffic_cone_material(self):
         """Return orange material for traffic-cone meshes."""
         return self._get_or_create_matte("traffic_cone_body", [1.0, 0.45, 0.0])

@@ -143,8 +143,74 @@ class DepthEstimator:
 
             det.depth_m = round(Z, 3)
             det.position_3d = [round(X, 3), round(Y, 3), round(Z, 3)]
+            self._lift_pose_keypoints_to_3d(det, depth_map, scale, fallback_depth=Z)
 
         return detections
+
+    def _lift_pose_keypoints_to_3d(
+        self,
+        det,
+        depth_map: np.ndarray,
+        scale: float,
+        fallback_depth: float,
+    ) -> None:
+        keypoints_2d = getattr(det, "keypoints_2d", None) or []
+        if not keypoints_2d:
+            det.keypoints_3d_camera = []
+            return
+
+        pose_cfg = self.cfg.get("perception", {}).get("pose", {})
+        min_score = float(pose_cfg.get("keypoint_threshold", 0.2))
+        patch_radius = int(pose_cfg.get("depth_patch_radius_px", 2))
+        depth_mix = float(pose_cfg.get("depth_mix_with_bbox", 0.35))
+        keypoint_scores = getattr(det, "keypoint_scores", None) or []
+        lifted = []
+
+        for idx, kp in enumerate(keypoints_2d):
+            if not isinstance(kp, (list, tuple)) or len(kp) < 2:
+                lifted.append(None)
+                continue
+
+            score = float(keypoint_scores[idx]) if idx < len(keypoint_scores) else 1.0
+            if score < min_score:
+                lifted.append(None)
+                continue
+
+            u = float(kp[0])
+            v = float(kp[1])
+            local_depth = self._sample_depth_patch(depth_map, u, v, patch_radius=patch_radius)
+            if local_depth is None:
+                Z = float(fallback_depth)
+            else:
+                Z = float(local_depth) * scale
+                # Blend toward the person's bbox depth to stabilize very noisy per-joint samples.
+                Z = (1.0 - depth_mix) * Z + depth_mix * float(fallback_depth)
+
+            Z = max(Z, 0.1)
+            X = (u - self.cx) / self.fx * Z
+            Y = (v - self.cy) / self.fy * Z
+            lifted.append([round(X, 3), round(Y, 3), round(Z, 3)])
+
+        det.keypoints_3d_camera = lifted
+
+    @staticmethod
+    def _sample_depth_patch(
+        depth_map: np.ndarray,
+        u: float,
+        v: float,
+        patch_radius: int = 2,
+    ) -> float:
+        h_map, w_map = depth_map.shape
+        x = int(round(u))
+        y = int(round(v))
+        x1 = max(0, min(x - patch_radius, w_map - 1))
+        x2 = max(x1 + 1, min(x + patch_radius + 1, w_map))
+        y1 = max(0, min(y - patch_radius, h_map - 1))
+        y2 = max(y1 + 1, min(y + patch_radius + 1, h_map))
+        roi = depth_map[y1:y2, x1:x2]
+        if roi.size == 0:
+            return None
+        return float(np.median(roi))
 
     def _estimate_scale(self, detections: list, depth_map: np.ndarray) -> float:
         """

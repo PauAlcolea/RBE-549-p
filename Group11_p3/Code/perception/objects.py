@@ -34,6 +34,7 @@ class Detection:
     heading_rad: Optional[float] = None
     keypoints_2d: List[List[float]] = field(default_factory=list)
     keypoint_scores: List[float] = field(default_factory=list)
+    keypoints_3d_camera: List[Optional[List[float]]] = field(default_factory=list)
     skeleton_links: List[List[int]] = field(default_factory=list)
     pose_format: Optional[str] = None
 

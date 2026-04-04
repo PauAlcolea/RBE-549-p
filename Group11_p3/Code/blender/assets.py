@@ -42,6 +42,11 @@ class AssetLibrary:
         self.cfg = cfg
         self.assets_dir = Path(cfg["paths"]["assets_dir"])
         self.ground_clearance_m = cfg["blender"].get("ground_clearance_m", 0.03)
+        pedestrian_cfg = cfg["blender"].get("pedestrians", {})
+        self.pedestrian_render_mode = str(pedestrian_cfg.get("render_mode", "skeleton")).lower()
+        self.pose_score_threshold = float(pedestrian_cfg.get("keypoint_score_threshold", 0.2))
+        self.pose_joint_radius_m = float(pedestrian_cfg.get("joint_radius_m", 0.045))
+        self.pose_bone_radius_m = float(pedestrian_cfg.get("bone_radius_m", 0.022))
         self._frame_objects = []     # track objects placed this frame for cleanup
         self._templates: Dict[str, object] = {}  # cache of linked template objects
         self._template_groups: Dict[str, list] = {}  # cache of linked grouped templates
@@ -151,13 +156,93 @@ class AssetLibrary:
         )
 
     def place_pedestrian(self, ped: dict):
-        """Instantiate the pedestrian asset."""
+        """Instantiate the pedestrian asset and/or render its lifted skeleton."""
+        mode = self.pedestrian_render_mode
+        has_skeleton = bool(ped.get("keypoints_3d_camera"))
+
+        if mode in {"mesh", "hybrid"} or (mode == "skeleton" and not has_skeleton):
+            self._place_pedestrian_mesh(ped)
+
+        if mode in {"skeleton", "hybrid"} and has_skeleton:
+            self._place_pedestrian_skeleton(ped)
+
+    def _place_pedestrian_mesh(self, ped: dict):
         obj = self._instance("pedestrian")
         obj.location = self._json_to_blender(ped["position_3d"])
         obj.scale = (0.009, 0.009, 0.009)
         self._align_object_to_ground(obj, ground_z=0.0, clearance=self.ground_clearance_m)
         self._frame_objects.append(obj)
-        print(f"[assets] pedestrian: json_pos={ped['position_3d']}  →  blender_pos={obj.location}")
+        print(f"[assets] pedestrian mesh: json_pos={ped['position_3d']}  →  blender_pos={obj.location}")
+
+    def _place_pedestrian_skeleton(self, ped: dict):
+        points_3d = ped.get("keypoints_3d_camera") or []
+        scores = ped.get("keypoint_scores") or []
+        skeleton_links = ped.get("skeleton_links") or []
+        if not points_3d:
+            return
+
+        valid_points = []
+        for idx, pt in enumerate(points_3d):
+            if pt is None or len(pt) < 3:
+                valid_points.append(None)
+                continue
+            score = float(scores[idx]) if idx < len(scores) else 1.0
+            if score < self.pose_score_threshold:
+                valid_points.append(None)
+                continue
+            valid_points.append(Vector(self._json_to_blender(pt)))
+
+        # The lifted keypoints are in raw camera space, so their vertical origin
+        # can sit below the synthetic ground plane. Align the full skeleton so
+        # its lowest valid joint sits on the same ground clearance used for mesh
+        # pedestrians, matching the fallback placement.
+        z_values = [point.z for point in valid_points if point is not None]
+        if z_values:
+            z_offset = (0.0 + self.ground_clearance_m) - min(z_values)
+            valid_points = [
+                (point + Vector((0.0, 0.0, z_offset))) if point is not None else None
+                for point in valid_points
+            ]
+
+        joint_mat = self.Materials.get_pose_joint_material()
+        bone_mat = self.Materials.get_pose_bone_material()
+
+        for idx, point in enumerate(valid_points):
+            if point is None:
+                continue
+            joint = self._create_sphere_mesh_object(
+                name=f"ped_pose_joint_{idx}",
+                location=point,
+                radius=self.pose_joint_radius_m,
+            )
+            if joint_mat is not None:
+                joint.data.materials.clear()
+                joint.data.materials.append(joint_mat)
+            self._frame_objects.append(joint)
+
+        for edge in skeleton_links:
+            if not isinstance(edge, (list, tuple)) or len(edge) != 2:
+                continue
+            a = int(edge[0])
+            b = int(edge[1])
+            if a >= len(valid_points) or b >= len(valid_points):
+                continue
+            pa = valid_points[a]
+            pb = valid_points[b]
+            if pa is None or pb is None:
+                continue
+            bone = self._create_cylinder_between_points(
+                name=f"ped_pose_bone_{a}_{b}",
+                point_a=pa,
+                point_b=pb,
+                radius=self.pose_bone_radius_m,
+            )
+            if bone_mat is not None:
+                bone.data.materials.clear()
+                bone.data.materials.append(bone_mat)
+            self._frame_objects.append(bone)
+
+        print(f"[assets] pedestrian skeleton: joints={sum(p is not None for p in valid_points)}")
 
     def place_stop_sign(self, sign: dict):
         """
@@ -386,6 +471,35 @@ class AssetLibrary:
 
         obj = bpy.data.objects.new(name, mesh)
         obj.location = location
+        bpy.context.collection.objects.link(obj)
+        return obj
+
+    @staticmethod
+    def _create_cylinder_between_points(name: str, point_a: Vector, point_b: Vector, radius: float):
+        """Create a cylinder connecting two 3D points."""
+        direction = point_b - point_a
+        length = direction.length
+        if length <= 1e-6:
+            return AssetLibrary._create_sphere_mesh_object(name, point_a, radius)
+
+        mesh = bpy.data.meshes.new(f"{name}_Mesh")
+        bm = bmesh.new()
+        bmesh.ops.create_cone(
+            bm,
+            cap_ends=True,
+            cap_tris=False,
+            segments=12,
+            radius1=radius,
+            radius2=radius,
+            depth=length,
+        )
+        bm.to_mesh(mesh)
+        bm.free()
+
+        obj = bpy.data.objects.new(name, mesh)
+        obj.location = (point_a + point_b) / 2.0
+        obj.rotation_mode = "QUATERNION"
+        obj.rotation_quaternion = Vector((0.0, 0.0, 1.0)).rotation_difference(direction.normalized())
         bpy.context.collection.objects.link(obj)
         return obj
 

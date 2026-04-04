@@ -21,7 +21,13 @@ possible JSON schema (one file per frame):
     }
   ],
   "pedestrians": [
-    {"bbox": [x1,y1,x2,y2], "depth_m": float, "position_3d": [x,y,z]}
+    {
+      "bbox": [x1,y1,x2,y2],
+      "depth_m": float,
+      "position_3d": [x,y,z],
+      "keypoints_2d": [[x,y], ...],
+      "keypoints_3d_camera": [[x,y,z] | null, ...]
+    }
   ],
   "traffic_lights": [
         {"bbox": [x1,y1,x2,y2], "color": "red"|"yellow"|"green", "depth_m": float, "position_3d": [x,y,z]}
@@ -166,6 +172,11 @@ def build_frame_dict(
                 "position_3d": [round(v, 3) for v in det.position_3d],
                 "keypoints_2d": [[round(pt[0], 2), round(pt[1], 2)] for pt in getattr(det, "keypoints_2d", [])],
                 "keypoint_scores": [round(v, 4) for v in getattr(det, "keypoint_scores", [])],
+                "keypoints_3d_camera": [
+                    [round(pt[0], 3), round(pt[1], 3), round(pt[2], 3)] if pt is not None else None
+                    for pt in getattr(det, "keypoints_3d_camera", [])
+                ],
+                "skeleton_links": getattr(det, "skeleton_links", []),
                 "pose_format": getattr(det, "pose_format", None),
             }
             for det in pedestrians

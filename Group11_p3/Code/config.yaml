@@ -79,6 +79,8 @@ perception:
     min_bbox_w: 20
     min_bbox_h: 40
     crop_padding_ratio: 0.08
+    depth_patch_radius_px: 2
+    depth_mix_with_bbox: 0.35
 
   lanes:
     model: DART
@@ -265,6 +267,14 @@ blender:
     lane_width: 0.15          # meters (rendered lane stripe width)
     car_color:   [0.2, 0.6, 1.0]
     ped_color:   [0.1, 0.9, 0.4]
+    pose_joint_color: [1.0, 0.35, 0.75]
+    pose_bone_color: [1.0, 0.65, 0.85]
     light_red:   [1.0, 0.15, 0.1]
     light_yellow: [1.0, 0.85, 0.0]
     light_green: [0.1, 0.9, 0.2]
+
+  pedestrians:
+    render_mode: hybrid      # mesh | skeleton | hybrid
+    keypoint_score_threshold: 0.2
+    joint_radius_m: 0.08
+    bone_radius_m: 0.06
