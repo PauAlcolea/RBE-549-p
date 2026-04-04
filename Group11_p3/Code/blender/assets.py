@@ -284,10 +284,16 @@ class AssetLibrary:
         """
         Instantiate the traffic light asset and set its state (red/yellow/green).
         Texture path: Data/Assets/traffic_light_texture.png (given by project).
+
+                light dict keys consumed:
+                    - position_3d: [x, y, z] in camera coordinates (required)
+                    - color: red|yellow|green (optional, defaults to red)
+                    - traffic_light_style: standard_vertical|wide_green_arrow_candidate
+                        (optional, defaults to standard_vertical)
         """
         obj = self._instance("traffic_light")
         obj.location = self._json_to_blender(light["position_3d"])
-        obj.scale = (0.5, 0.5, 0.5)
+        obj.scale = (1.0, 1.0, 1.0)
         obj.rotation_euler[2] = -math.pi / 2  # rotate to face the camera
 
         # Color the traffic-light body/housing yellow (bulbs are separate).
@@ -301,11 +307,23 @@ class AssetLibrary:
         if tl_color not in {"red", "yellow", "green"}:
             tl_color = "red"
 
+        tl_style = light.get("traffic_light_style", "standard_vertical")
+        render_green_as_arrow = (
+            tl_style == "wide_green_arrow_candidate" and tl_color == "green"
+        )
+
         # Add three emissive "bulb" disks near the traffic light position.
-        self._add_traffic_light_bulbs(obj, active_color=tl_color)
+        self._add_traffic_light_bulbs(
+            obj,
+            active_color=tl_color,
+            render_green_as_arrow=render_green_as_arrow,
+        )
 
         self._frame_objects.append(obj)
-        print(f"[assets] traffic light: json_pos={light['position_3d']}  →  blender_pos={obj.location}  state={tl_color}")
+        print(
+            f"[assets] traffic light: json_pos={light['position_3d']}  "
+            f"→  blender_pos={obj.location}  state={tl_color}  style={tl_style}"
+        )
 
     
     def place_traffic_cone(self, cone: dict):
@@ -571,11 +589,19 @@ class AssetLibrary:
                     obj.data.materials.append(mat)
                     break
 
-    def _add_traffic_light_bulbs(self, obj, active_color: str = "red"):
+    def _add_traffic_light_bulbs(
+        self,
+        obj,
+        active_color: str = "red",
+        render_green_as_arrow: bool = False,
+    ):
         """Create three emissive sphere bulbs near the traffic light.
 
         Spheres are used instead of flat disks so visibility is robust from
         different camera angles and independent of face orientation.
+
+        When render_green_as_arrow is True, the green slot is rendered as a
+        left arrow mesh for wide-format green-arrow traffic lights.
         """
 
         bpy.context.view_layer.update()
@@ -591,9 +617,17 @@ class AssetLibrary:
             if v.length > 1e-6:
                 to_cam = v.normalized()
 
-        toward_cam_offset = 0.35
-        vertical_spacing = 0.5
-        radius = 0.19
+        # Original bulb tuning was done for traffic-light scale 0.5.
+        # Scale offsets and primitive size with the actual light scale so
+        # increasing light size keeps bulbs/arrows in the correct place.
+        base_light_scale = 0.5
+        obj_scale = max(abs(obj.scale.x), abs(obj.scale.y), abs(obj.scale.z))
+        scale_factor = obj_scale / base_light_scale if base_light_scale > 1e-6 else 1.0
+
+        body_top_offset = 0.8 * scale_factor
+        toward_cam_offset = 0.35 * scale_factor
+        vertical_spacing = 0.5 * scale_factor
+        radius = 0.19 * scale_factor
 
         bulb_specs = [
             ("red", vertical_spacing),
@@ -602,12 +636,33 @@ class AssetLibrary:
         ]
 
         for color, z_off in bulb_specs:
-            pos = base + Vector((0.0, 0.0, 0.8)) + to_cam * toward_cam_offset + Vector((0.0, 0.0, z_off))
-            bulb_obj = self._create_sphere_mesh_object(
-                name=f"TL_Bulb_{color}",
-                location=pos,
-                radius=radius,
-            )
+            pos = base + Vector((0.0, 0.0, body_top_offset)) + to_cam * toward_cam_offset + Vector((0.0, 0.0, z_off))
+            if color == "green" and render_green_as_arrow:
+                # Pull arrow farther toward camera so it does not get hidden
+                # by the traffic-light housing at larger signal scales.
+                arrow_pos = pos + to_cam * (0.18 * scale_factor)
+                bulb_obj = self._create_left_arrow_mesh_object(
+                    name=f"TL_Arrow_{len(self._frame_objects)}",
+                    location=arrow_pos,
+                    width=radius * 2.6,
+                    height=radius * 1.8,
+                    depth=radius * 0.65,
+                )
+                # Billboard arrow to camera so the shape is readable and not
+                # seen edge-on at long distance.
+                if cam is not None:
+                    cam_dir = cam.location - arrow_pos
+                    if cam_dir.length > 1e-6:
+                        bulb_obj.rotation_euler = cam_dir.normalized().to_track_quat("Y", "Z").to_euler()
+                else:
+                    bulb_obj.rotation_euler = obj.rotation_euler.copy()
+                print(f"[assets] traffic light arrow enabled: pos={arrow_pos}")
+            else:
+                bulb_obj = self._create_sphere_mesh_object(
+                    name=f"TL_Bulb_{color}",
+                    location=pos,
+                    radius=radius,
+                )
 
             # Use the traffic-light color only for the active bulb;
             # others use the "unknown" grey for an "off" look.
@@ -618,6 +673,66 @@ class AssetLibrary:
                 bulb_obj.data.materials.append(mat)
 
             self._frame_objects.append(bulb_obj)
+
+    @staticmethod
+    def _create_left_arrow_mesh_object(
+        name: str,
+        location: Vector,
+        width: float,
+        height: float,
+        depth: float,
+    ):
+        """Create a small right-pointing arrow mesh without bpy.ops.
+
+        The arrow is centered at location and extruded in Y for thickness.
+        """
+        hw = width * 0.5
+        hh = height * 0.5
+        neck_x = hw * 0.15
+        head_x = hw
+        tail_x = -hw
+        body_h = hh * 0.30
+        hy = max(depth * 0.5, 1e-4)
+
+        front = [
+            Vector((head_x, 0.0, 0.0)),
+            Vector((neck_x, 0.0, hh)),
+            Vector((neck_x, 0.0, body_h)),
+            Vector((tail_x, 0.0, body_h)),
+            Vector((tail_x, 0.0, -body_h)),
+            Vector((neck_x, 0.0, -body_h)),
+            Vector((neck_x, 0.0, -hh)),
+        ]
+        back = [Vector((v.x, -hy * 2.0, v.z)) for v in front]
+
+        mesh = bpy.data.meshes.new(f"{name}_Mesh")
+        bm = bmesh.new()
+
+        verts_f = [bm.verts.new((v.x, hy, v.z)) for v in front]
+        verts_b = [bm.verts.new((v.x, -hy, v.z)) for v in back]
+        bm.verts.ensure_lookup_table()
+
+        bm.faces.new(verts_f)
+        bm.faces.new(list(reversed(verts_b)))
+
+        n = len(verts_f)
+        for i in range(n):
+            j = (i + 1) % n
+            bm.faces.new([
+                verts_f[i],
+                verts_f[j],
+                verts_b[j],
+                verts_b[i],
+            ])
+
+        bm.normal_update()
+        bm.to_mesh(mesh)
+        bm.free()
+
+        obj = bpy.data.objects.new(name, mesh)
+        obj.location = location
+        bpy.context.collection.objects.link(obj)
+        return obj
 
     @staticmethod
     def _create_sphere_mesh_object(name: str, location: Vector, radius: float):
