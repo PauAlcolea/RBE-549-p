@@ -144,6 +144,8 @@ class AssetLibrary:
                 -(float(heading_rad) - math.pi / 2)
                 + self._vehicle_yaw_offset(vehicle_class)
             )
+            if vehicle_class == "suv":
+                obj.rotation_euler[2] += math.pi
         self._align_object_to_ground(obj, ground_z=0.0, clearance=self.ground_clearance_m)
 
         self._frame_objects.append(obj)
