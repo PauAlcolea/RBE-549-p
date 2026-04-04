@@ -766,6 +766,28 @@ class AssetLibrary:
                 to_cam = v.normalized()
 
         center = base_location + Vector((0.0, 0.0, 1.8)) + to_cam * 1.0
+        face_rot = None
+        if cam is not None:
+            cam_dir = cam.location - center
+            if cam_dir.length > 1e-6:
+                face_rot = cam_dir.normalized().to_track_quat("Y", "Z").to_euler()
+
+        # Real lane-control signals are illuminated symbols on a black square face.
+        # Add a backplate slightly behind the symbol to avoid z-fighting.
+        backplate = self._create_bar_mesh_object(
+            name=f"TL_SquareBack_{len(self._frame_objects)}",
+            location=center - to_cam * 0.08,
+            length=3.4,
+            thickness=3.4,
+            depth=0.24,
+        )
+        if face_rot is not None:
+            backplate.rotation_euler = face_rot.copy()
+        backplate_mat = self.Materials.get_trash_can_lid_material()
+        if backplate_mat is not None:
+            backplate.data.materials.clear()
+            backplate.data.materials.append(backplate_mat)
+        self._frame_objects.append(backplate)
 
         if active_color == "green":
             symbol = self._create_down_arrow_mesh_object(
@@ -780,10 +802,8 @@ class AssetLibrary:
                 symbol.data.materials.clear()
                 symbol.data.materials.append(mat)
 
-            if cam is not None:
-                cam_dir = cam.location - center
-                if cam_dir.length > 1e-6:
-                    symbol.rotation_euler = cam_dir.normalized().to_track_quat("Y", "Z").to_euler()
+            if face_rot is not None:
+                symbol.rotation_euler = face_rot.copy()
 
             self._frame_objects.append(symbol)
             return
@@ -804,12 +824,9 @@ class AssetLibrary:
             depth=0.30,
         )
 
-        if cam is not None:
-            cam_dir = cam.location - center
-            if cam_dir.length > 1e-6:
-                face_rot = cam_dir.normalized().to_track_quat("Y", "Z").to_euler()
-                bar_a.rotation_euler = face_rot.copy()
-                bar_b.rotation_euler = face_rot.copy()
+        if face_rot is not None:
+            bar_a.rotation_euler = face_rot.copy()
+            bar_b.rotation_euler = face_rot.copy()
         bar_a.rotation_euler.rotate_axis("Y", math.radians(45.0))
         bar_b.rotation_euler.rotate_axis("Y", math.radians(-45.0))
 
