@@ -24,7 +24,7 @@ class TrafficLight:
     depth_m: float = 0.0
     label: str = "traffic_light"   # for consistency with Detection
     position_3d: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])  # optional, can be filled in by DepthEstimator.lift_to_3d
-    traffic_light_style: str = "standard_vertical"  # renderer hook: "standard_vertical" | "wide_green_arrow_candidate"
+    traffic_light_style: str = "standard_vertical"  # renderer hook: "standard_vertical" | "wide_green_arrow_candidate" | "square_arrow_signal_candidate"
 
 class TrafficLightDetector:
     """
@@ -65,6 +65,9 @@ class TrafficLightDetector:
         self.comparable_val_range_max = float(tl_cfg.get("comparable_val_range_max", 35.0))
         self.hue_compare_min_s = float(tl_cfg.get("hue_compare_min_s", 35.0))
         self.hue_compare_min_v = float(tl_cfg.get("hue_compare_min_v", 35.0))
+        self.square_arrow_aspect_min = float(tl_cfg.get("square_arrow_aspect_min", 0.75))
+        self.square_arrow_aspect_max = float(tl_cfg.get("square_arrow_aspect_max", 1.35))
+        self.square_arrow_max_area_ratio = float(tl_cfg.get("square_arrow_max_area_ratio", 0.008))
 
         self.score_weights = {
             "bright_ratio": float(tl_cfg.get("weight_bright_ratio", 0.45)),
@@ -81,9 +84,40 @@ class TrafficLightDetector:
         self.night_mode = bool(enabled)
 
     @staticmethod
-    def _style_from_geometry(use_dual_columns: bool) -> str:
+    def _style_from_geometry(use_dual_columns: bool, is_square_arrow_signal: bool) -> str:
         """Map ROI layout heuristic to exported style metadata."""
+        if is_square_arrow_signal:
+            return "square_arrow_signal_candidate"
         return "wide_green_arrow_candidate" if use_dual_columns else "standard_vertical"
+
+    @staticmethod
+    def _bbox_metrics(image_shape: Tuple[int, int], bbox: List[float]) -> Dict[str, float]:
+        """Return width/height/aspect/area-ratio for a clamped bbox."""
+        h_img, w_img = image_shape
+        x1 = max(0.0, float(bbox[0]))
+        y1 = max(0.0, float(bbox[1]))
+        x2 = min(float(w_img), float(bbox[2]))
+        y2 = min(float(h_img), float(bbox[3]))
+
+        width = max(0.0, x2 - x1)
+        height = max(0.0, y2 - y1)
+        aspect = width / max(height, 1e-6)
+        area_ratio = (width * height) / max(float(w_img * h_img), 1e-6)
+        return {
+            "width": width,
+            "height": height,
+            "aspect": aspect,
+            "area_ratio": area_ratio,
+        }
+
+    def _is_square_arrow_signal_candidate(self, bbox_metrics: Dict[str, float]) -> bool:
+        """Heuristic for lane-control arrow signal heads (small, near-square boxes)."""
+        aspect = float(bbox_metrics.get("aspect", 0.0))
+        area_ratio = float(bbox_metrics.get("area_ratio", 1.0))
+        return (
+            self.square_arrow_aspect_min <= aspect <= self.square_arrow_aspect_max
+            and area_ratio <= self.square_arrow_max_area_ratio
+        )
 
     def _build_hsv_ranges(self, tl_cfg: dict):
         """Package HSV range lists into a dict for color lookup."""
@@ -132,10 +166,18 @@ class TrafficLightDetector:
                 continue
 
             color, dbg = self._classify_color_region_on_debug(frame_bgr, det_bbox)
-            traffic_light_style = self._style_from_geometry(bool(dbg.get("use_dual_columns", False)))
+            bbox_metrics = self._bbox_metrics(frame_bgr.shape[:2], det_bbox)
+            is_square_arrow_signal = self._is_square_arrow_signal_candidate(bbox_metrics)
+            traffic_light_style = self._style_from_geometry(
+                use_dual_columns=bool(dbg.get("use_dual_columns", False)),
+                is_square_arrow_signal=is_square_arrow_signal,
+            )
             dbg["bbox"] = [float(v) for v in det_bbox]
             dbg["predicted_color"] = color
             dbg["traffic_light_style"] = traffic_light_style
+            dbg["bbox_aspect"] = float(bbox_metrics["aspect"])
+            dbg["bbox_area_ratio"] = float(bbox_metrics["area_ratio"])
+            dbg["square_arrow_candidate"] = bool(is_square_arrow_signal)
             self.last_debug_info.append(dbg)
 
             lights.append(TrafficLight(

@@ -24,7 +24,7 @@ possible JSON schema (one file per frame):
     {"bbox": [x1,y1,x2,y2], "depth_m": float, "position_3d": [x,y,z]}
   ],
   "traffic_lights": [
-      {"bbox": [x1,y1,x2,y2], "color": "red"|"yellow"|"green", "depth_m": float, "position_3d": [x,y,z], "traffic_light_style": "standard_vertical"|"wide_green_arrow_candidate"}
+      {"bbox": [x1,y1,x2,y2], "color": "red"|"yellow"|"green", "depth_m": float, "position_3d": [x,y,z], "traffic_light_style": "standard_vertical"|"wide_green_arrow_candidate"|"square_arrow_signal_candidate"}
   ],
     "stop_signs": [
         {"bbox": [x1,y1,x2,y2], "depth_m": float, "position_3d": [x,y,z]}
