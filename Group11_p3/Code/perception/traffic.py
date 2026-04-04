@@ -24,6 +24,7 @@ class TrafficLight:
     depth_m: float = 0.0
     label: str = "traffic_light"   # for consistency with Detection
     position_3d: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])  # optional, can be filled in by DepthEstimator.lift_to_3d
+    traffic_light_style: str = "standard_vertical"  # renderer hook: "standard_vertical" | "wide_green_arrow_candidate"
 
 class TrafficLightDetector:
     """
@@ -79,6 +80,11 @@ class TrafficLightDetector:
         """Enable night classifier that favors low saturation and high value."""
         self.night_mode = bool(enabled)
 
+    @staticmethod
+    def _style_from_geometry(use_dual_columns: bool) -> str:
+        """Map ROI layout heuristic to exported style metadata."""
+        return "wide_green_arrow_candidate" if use_dual_columns else "standard_vertical"
+
     def _build_hsv_ranges(self, tl_cfg: dict):
         """Package HSV range lists into a dict for color lookup."""
         return {
@@ -126,8 +132,10 @@ class TrafficLightDetector:
                 continue
 
             color, dbg = self._classify_color_region_on_debug(frame_bgr, det_bbox)
+            traffic_light_style = self._style_from_geometry(bool(dbg.get("use_dual_columns", False)))
             dbg["bbox"] = [float(v) for v in det_bbox]
             dbg["predicted_color"] = color
+            dbg["traffic_light_style"] = traffic_light_style
             self.last_debug_info.append(dbg)
 
             lights.append(TrafficLight(
@@ -135,7 +143,8 @@ class TrafficLightDetector:
                 color=color,
                 confidence=float(getattr(det, "confidence", 0.0)),
                 depth_m=float(getattr(det, "depth_m", 0.0)),
-                label=det_label
+                label=det_label,
+                traffic_light_style=traffic_light_style,
             ))
 
         return lights
@@ -176,6 +185,7 @@ class TrafficLightDetector:
             "hue_means": [],
             "saturation_means": [],
             "value_means": [],
+            "use_dual_columns": False,
         }
 
         if crop.size == 0:
@@ -203,6 +213,7 @@ class TrafficLightDetector:
         debug_info["hue_means"] = [float(v) for v in geom.get("hue_means", [])]
         debug_info["saturation_means"] = [float(v) for v in geom.get("saturation_means", [])]
         debug_info["value_means"] = [float(v) for v in geom.get("value_means", [])]
+        debug_info["use_dual_columns"] = bool(geom.get("use_dual_columns", False))
 
         comparable, spreads = self._is_hsv_comparable(
             debug_info["hue_means"],
@@ -293,6 +304,7 @@ class TrafficLightDetector:
             "global_v_thr": float(global_v_thr),
             "saturation_means": [],
             "value_means": [],
+            "use_dual_columns": bool(use_dual_columns),
         }
 
         scores, roi_geom = self._score_bulb_rois(inner, global_v_thr, use_dual_columns)

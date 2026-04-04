@@ -383,7 +383,29 @@
         0.1,
         0.9,
         0.2
-      ]
+      ],
+      "speed_limit_uv": {
+        "u_offset": 0.0,
+        "v_offset": 0.0,
+        "rotation_deg": 0.0,
+        "u_scale": 1.0,
+        "v_scale": 1.0
+      },
+      "speed_limit_text": {
+        "font_scale": 0.4,
+        "y_ratio": 0.69,
+        "text_color": [
+          0,
+          0,
+          0
+        ],
+        "stroke_width": 4,
+        "stroke_color": [
+          255,
+          255,
+          255
+        ]
+      }
     }
   }
 }
