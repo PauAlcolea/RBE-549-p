@@ -128,8 +128,10 @@ def _run_speed_limit_ocr(frame_bgr, non_coco_results, speed_ocr, frame_idx=None,
     if speed_ocr is None or not speed_ocr.is_active():
         return
 
+    filtered_results = []
     for det in non_coco_results:
         if getattr(det, "label", "") != "speed_limit_sign":
+            filtered_results.append(det)
             continue
 
         ocr_debug_path = None
@@ -146,6 +148,15 @@ def _run_speed_limit_ocr(frame_bgr, non_coco_results, speed_ocr, frame_idx=None,
 
         det.speed_value = ocr_result.speed_value
         det.ocr_confidence = float(ocr_result.ocr_confidence)
+        det.ocr_raw_text = str(ocr_result.raw_text)
+
+        # Keep speed-limit detections only when OCR confirms both words.
+        if not ocr_result.has_speed_limit_words:
+            continue
+
+        filtered_results.append(det)
+
+    non_coco_results[:] = filtered_results
 
 
 def _lane_color_bgr(color_name: str):
