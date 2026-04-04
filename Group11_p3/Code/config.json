@@ -32,6 +32,7 @@
   "weights": {
     "yolo": "../Weights/yolov9c.pt",
     "rtdetr": "../Weights/rtdetr-x.pt",
+    "pose2d": "../Weights/yolo26n-pose.pt",
     "depth": "../Weights/depth_anything_v2_metric_vkitti_vitb.pth",
     "lanes": "../Weights/sam3.pt",
     "orientation": "../Weights/boundingbox.pkl"
@@ -58,6 +59,17 @@
       "iou_threshold": 0.45,
       "match_iou": 0.5,
       "merged_confidence": 0.65
+    },
+    "pose": {
+      "enabled": true,
+      "model": null,
+      "format": "coco17",
+      "confidence": 0.25,
+      "iou_threshold": 0.45,
+      "keypoint_threshold": 0.2,
+      "min_bbox_w": 20,
+      "min_bbox_h": 40,
+      "crop_padding_ratio": 0.08
     },
     "lanes": {
       "model": "DART",

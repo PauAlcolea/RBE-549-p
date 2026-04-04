@@ -164,6 +164,9 @@ def build_frame_dict(
                 "bbox":        [round(v, 2) for v in det.bbox],
                 "depth_m":     round(det.depth_m, 3),
                 "position_3d": [round(v, 3) for v in det.position_3d],
+                "keypoints_2d": [[round(pt[0], 2), round(pt[1], 2)] for pt in getattr(det, "keypoints_2d", [])],
+                "keypoint_scores": [round(v, 4) for v in getattr(det, "keypoint_scores", [])],
+                "pose_format": getattr(det, "pose_format", None),
             }
             for det in pedestrians
         ],

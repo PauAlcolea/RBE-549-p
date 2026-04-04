@@ -35,6 +35,7 @@ _COLOR_3D_BOX = (60, 220, 60)
 _COLOR_3D_FRONT = (255, 120, 40)
 _COLOR_CONE  = (  0, 140, 255)   # orange
 _COLOR_NON_COCO = (180, 120, 255)
+_COLOR_POSE = (255, 80, 180)
 
 
 def _rotation_matrix_y(yaw_rad: float) -> np.ndarray:
@@ -216,7 +217,45 @@ def draw_detections(
         cv2.putText(out, text, (x1 + 2, y1 - 4),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
 
+        if det.label == "person":
+            _draw_pose_skeleton(out, det)
+
     return out
+
+
+def _draw_pose_skeleton(frame_bgr: np.ndarray, det) -> None:
+    keypoints = getattr(det, "keypoints_2d", None) or []
+    scores = getattr(det, "keypoint_scores", None) or []
+    skeleton_links = getattr(det, "skeleton_links", None) or []
+    if not keypoints:
+        return
+
+    for idx, kp in enumerate(keypoints):
+        if not isinstance(kp, (list, tuple)) or len(kp) < 2:
+            continue
+        score = float(scores[idx]) if idx < len(scores) else 1.0
+        if score < 0.2:
+            continue
+        x, y = int(round(kp[0])), int(round(kp[1]))
+        cv2.circle(frame_bgr, (x, y), 3, _COLOR_POSE, -1, lineType=cv2.LINE_AA)
+
+    for edge in skeleton_links:
+        if not isinstance(edge, (list, tuple)) or len(edge) != 2:
+            continue
+        a, b = int(edge[0]), int(edge[1])
+        if a >= len(keypoints) or b >= len(keypoints):
+            continue
+        score_a = float(scores[a]) if a < len(scores) else 1.0
+        score_b = float(scores[b]) if b < len(scores) else 1.0
+        if min(score_a, score_b) < 0.2:
+            continue
+        pa = keypoints[a]
+        pb = keypoints[b]
+        if len(pa) < 2 or len(pb) < 2:
+            continue
+        p1 = (int(round(pa[0])), int(round(pa[1])))
+        p2 = (int(round(pb[0])), int(round(pb[1])))
+        cv2.line(frame_bgr, p1, p2, _COLOR_POSE, 2, lineType=cv2.LINE_AA)
 
 
 # def draw_lanes(frame_bgr: np.ndarray, lanes: list) -> np.ndarray:

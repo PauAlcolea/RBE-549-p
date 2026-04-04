@@ -38,6 +38,7 @@ from perception.lanes import LaneDetector
 from perception.objects import ObjectDetector
 from perception.objectsDART import NonCocoDartDetector
 from perception.depth import DepthEstimator
+from perception.pose import PersonPoseEstimator
 from perception.traffic import TrafficLightDetector
 from perception.signs import SignDetector
 from perception.orientation import OrientationEstimator
@@ -116,6 +117,7 @@ def load_models(cfg, device, night_mode: bool = False, person_only: bool = False
         "objects":     ObjectDetector(cfg, device),
         "lanes":   LaneDetector(cfg, device),
         "depth":   DepthEstimator(cfg, device),
+        "pose":    PersonPoseEstimator(cfg, device) if perception_cfg.get("pose", {}).get("enabled", True) else None,
         "orientation": None if person_only else OrientationEstimator(cfg, device, strict=True),
         "traffic": None if person_only else TrafficLightDetector(cfg),
         "signs":   None if person_only else SignDetector(cfg),
@@ -409,6 +411,8 @@ def process_sequence(
         # --- Run detectors ---
         detect_classes = models["objects"].person_classes if person_only else None
         object_results = models["objects"].detect(frame_bgr, classes=detect_classes)
+        if models.get("pose") is not None:
+            object_results = models["pose"].annotate_detections(frame_bgr, object_results)
         if models.get("vehicle_subtypes") is not None:
             object_results = models["vehicle_subtypes"].refine_detections(frame_bgr, object_results)
         lane_results = []

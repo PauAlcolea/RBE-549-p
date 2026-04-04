@@ -43,6 +43,7 @@ paths:
 weights:
   yolo:         ../Weights/yolov9c.pt
   rtdetr:       ../Weights/rtdetr-x.pt      # download: ultralytics rtdetr-x (COCO pretrained)
+  pose2d:       ../Weights/yolo26n-pose.pt             # official Ultralytics pose model name or local .pt path
   depth:        ../Weights/depth_anything_v2_metric_vkitti_vitb.pth
   lanes:        ../Weights/sam3.pt
   orientation:  ../Weights/boundingbox.pkl
@@ -67,6 +68,17 @@ perception:
                               # lower = more lenient matching (good for large/truncated objects)
                               # higher = stricter spatial agreement required
     merged_confidence: 0.65   # final gate: average of both scores must exceed this (0.65 if too many false positives, 0.45 if missing too many real objects)
+
+  pose:
+    enabled: true
+    model: null               # optional override; if null, uses weights.pose2d
+    format: coco17
+    confidence: 0.25
+    iou_threshold: 0.45
+    keypoint_threshold: 0.2
+    min_bbox_w: 20
+    min_bbox_h: 40
+    crop_padding_ratio: 0.08
 
   lanes:
     model: DART
