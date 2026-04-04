@@ -27,6 +27,7 @@ import os
 import sys
 import cv2
 import numpy as np
+from types import SimpleNamespace
 sys.dont_write_bytecode = True
 
 # Make sure we can import our modules regardless of where the script is run from
@@ -157,6 +158,99 @@ def _run_speed_limit_ocr(frame_bgr, non_coco_results, speed_ocr, frame_idx=None,
         filtered_results.append(det)
 
     non_coco_results[:] = filtered_results
+
+
+def _bbox_iou(a, b) -> float:
+    """Compute IoU for [x1, y1, x2, y2] boxes."""
+    ix1 = max(float(a[0]), float(b[0]))
+    iy1 = max(float(a[1]), float(b[1]))
+    ix2 = min(float(a[2]), float(b[2]))
+    iy2 = min(float(a[3]), float(b[3]))
+    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+    if inter <= 0.0:
+        return 0.0
+
+    area_a = max(0.0, float(a[2]) - float(a[0])) * max(0.0, float(a[3]) - float(a[1]))
+    area_b = max(0.0, float(b[2]) - float(b[0])) * max(0.0, float(b[3]) - float(b[1]))
+    denom = area_a + area_b - inter
+    if denom <= 0.0:
+        return 0.0
+    return inter / denom
+
+
+def _as_traffic_candidate(det):
+    """Normalize a detection-like record to traffic detector candidate shape."""
+    return SimpleNamespace(
+        label="traffic_light",
+        bbox=[float(v) for v in getattr(det, "bbox", [0.0, 0.0, 0.0, 0.0])],
+        confidence=float(getattr(det, "confidence", 0.0)),
+    )
+
+
+def _dedupe_traffic_candidates(candidates: list, iou_thr: float) -> list:
+    """NMS-style dedupe for traffic candidates; keep highest-confidence boxes."""
+    if len(candidates) <= 1:
+        return candidates
+
+    ordered = sorted(candidates, key=lambda d: float(getattr(d, "confidence", 0.0)), reverse=True)
+    kept = []
+    for cand in ordered:
+        cand_bbox = getattr(cand, "bbox", None)
+        if cand_bbox is None:
+            continue
+        if any(_bbox_iou(cand_bbox, getattr(k, "bbox", cand_bbox)) >= iou_thr for k in kept):
+            continue
+        kept.append(cand)
+    return kept
+
+
+def _build_traffic_candidates(object_results: list, non_coco_results: list, cfg: dict, scene_name: str):
+    """OR YOLO traffic lights with DART lane-control lights, then dedupe."""
+    traffic_cfg = cfg.get("perception", {}).get("traffic_light", {})
+    dart_lane_control_enabled = bool(traffic_cfg.get("dart_lane_control_enabled", True))
+    dart_lane_control_min_conf = float(traffic_cfg.get("dart_lane_control_min_confidence", 0.30))
+    dedupe_iou = float(traffic_cfg.get("dart_lane_control_dedupe_iou", 0.45))
+    square_aspect_min = float(traffic_cfg.get("square_arrow_aspect_min", 0.75))
+    square_aspect_max = float(traffic_cfg.get("square_arrow_aspect_max", 1.35))
+    max_lane_control_side_px = 90.0
+    lane_control_scene_enabled = str(scene_name).strip().lower() == "scene2"
+
+    yolo_candidates = [d for d in object_results if getattr(d, "label", "") == "traffic_light"]
+    if (not dart_lane_control_enabled) or (not lane_control_scene_enabled):
+        non_coco_filtered = [d for d in non_coco_results if getattr(d, "label", "") != "lane_control_light"]
+        return _dedupe_traffic_candidates(yolo_candidates, iou_thr=dedupe_iou), non_coco_filtered
+
+    lane_control_candidates = []
+    non_coco_filtered = []
+    for det in non_coco_results:
+        if getattr(det, "label", "") != "lane_control_light":
+            non_coco_filtered.append(det)
+            continue
+
+        if float(getattr(det, "confidence", 0.0)) < dart_lane_control_min_conf:
+            continue
+
+        bbox = getattr(det, "bbox", None)
+        if bbox is None or len(bbox) != 4:
+            continue
+
+        width = max(0.0, float(bbox[2]) - float(bbox[0]))
+        height = max(0.0, float(bbox[3]) - float(bbox[1]))
+        if height <= 1e-6:
+            continue
+        if width > max_lane_control_side_px or height > max_lane_control_side_px:
+            continue
+
+        aspect = width / height
+        if not (square_aspect_min <= aspect <= square_aspect_max):
+            continue
+
+        lane_control_candidates.append(_as_traffic_candidate(det))
+
+    merged = list(yolo_candidates)
+    merged.extend(lane_control_candidates)
+    deduped = _dedupe_traffic_candidates(merged, iou_thr=dedupe_iou)
+    return deduped, non_coco_filtered
 
 
 def _lane_color_bgr(color_name: str):
@@ -403,6 +497,7 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
 
         lane_output = models["lanes"].detect(frame_bgr)
         non_coco_results = models["non_coco"].detect(frame_bgr) if models.get("non_coco") is not None else []
+        traffic_candidates, non_coco_results = _build_traffic_candidates(object_results, non_coco_results, cfg, scene_name)
         _run_speed_limit_ocr(
             frame_bgr,
             non_coco_results,
@@ -413,7 +508,7 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
         depth_map = models["depth"].estimate(frame_bgr)
         object_results = models["depth"].lift_to_3d(object_results, depth_map)
         non_coco_results = models["depth"].lift_to_3d(non_coco_results, depth_map)
-        traffic_results = models["depth"].lift_to_3d(models["traffic"].detect(frame_bgr, object_results), depth_map)
+        traffic_results = models["depth"].lift_to_3d(models["traffic"].detect(frame_bgr, traffic_candidates), depth_map)
         sign_results = models["signs"].detect(frame_bgr, object_results)
         
         _SPECIALIZED = {"traffic_light", "stop_sign"}
