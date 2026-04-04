@@ -152,6 +152,16 @@
             "car headlight",
             "car taillight"
           ]
+        },
+        {
+          "prompt": "traffic light arrow signal",
+          "label": "traffic_light_arrow_signal",
+          "export_bucket": "non_coco_objects",
+          "exclude_labels": [
+            "car turn signal",
+            "car taillight",
+            "car headlight"
+          ]
         }
       ],
       "default_export_bucket": "non_coco_objects",

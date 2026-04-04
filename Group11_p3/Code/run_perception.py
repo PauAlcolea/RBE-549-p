@@ -213,17 +213,21 @@ def _build_traffic_candidates(object_results: list, non_coco_results: list, cfg:
     square_aspect_min = float(traffic_cfg.get("square_arrow_aspect_min", 0.75))
     square_aspect_max = float(traffic_cfg.get("square_arrow_aspect_max", 1.35))
     max_lane_control_side_px = 90.0
-    lane_control_scene_enabled = str(scene_name).strip().lower() == "scene2"
+    scene_name_norm = str(scene_name).strip().lower()
+    lane_control_scene_enabled = scene_name_norm == "scene2"
+    arrow_signal_scene_enabled = scene_name_norm == "scene6"
+    dart_traffic_aux_labels = {"lane_control_light", "traffic_light_arrow_signal"}
 
     yolo_candidates = [d for d in object_results if getattr(d, "label", "") == "traffic_light"]
-    if (not dart_lane_control_enabled) or (not lane_control_scene_enabled):
-        non_coco_filtered = [d for d in non_coco_results if getattr(d, "label", "") != "lane_control_light"]
+    if not dart_lane_control_enabled:
+        non_coco_filtered = [d for d in non_coco_results if getattr(d, "label", "") not in dart_traffic_aux_labels]
         return _dedupe_traffic_candidates(yolo_candidates, iou_thr=dedupe_iou), non_coco_filtered
 
-    lane_control_candidates = []
+    dart_traffic_candidates = []
     non_coco_filtered = []
     for det in non_coco_results:
-        if getattr(det, "label", "") != "lane_control_light":
+        det_label = getattr(det, "label", "")
+        if det_label not in dart_traffic_aux_labels:
             non_coco_filtered.append(det)
             continue
 
@@ -238,17 +242,28 @@ def _build_traffic_candidates(object_results: list, non_coco_results: list, cfg:
         height = max(0.0, float(bbox[3]) - float(bbox[1]))
         if height <= 1e-6:
             continue
-        if width > max_lane_control_side_px or height > max_lane_control_side_px:
+
+        if det_label == "lane_control_light":
+            if not lane_control_scene_enabled:
+                continue
+            if width > max_lane_control_side_px or height > max_lane_control_side_px:
+                continue
+
+            aspect = width / height
+            if not (square_aspect_min <= aspect <= square_aspect_max):
+                continue
+
+            dart_traffic_candidates.append(_as_traffic_candidate(det))
             continue
 
-        aspect = width / height
-        if not (square_aspect_min <= aspect <= square_aspect_max):
+        if det_label == "traffic_light_arrow_signal":
+            if not arrow_signal_scene_enabled:
+                continue
+            dart_traffic_candidates.append(_as_traffic_candidate(det))
             continue
-
-        lane_control_candidates.append(_as_traffic_candidate(det))
 
     merged = list(yolo_candidates)
-    merged.extend(lane_control_candidates)
+    merged.extend(dart_traffic_candidates)
     deduped = _dedupe_traffic_candidates(merged, iou_thr=dedupe_iou)
     return deduped, non_coco_filtered
 
