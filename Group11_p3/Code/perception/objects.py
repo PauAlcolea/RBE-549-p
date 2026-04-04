@@ -82,6 +82,7 @@ class ObjectDetector:
         self.match_iou      = rtdetr_cfg["match_iou"]        # IoU needed to call two boxes "the same object"
         self.merged_conf    = rtdetr_cfg["merged_confidence"] # final gate after averaging both scores
         self.classes        = yolo_cfg["classes_phase1"]
+        self.person_classes = [_PERSON_ID]
 
         self.yolo = self._load_yolo(cfg["weights"]["yolo"])
         self.rtdetr = self._load_rtdetr(cfg["weights"]["rtdetr"])
@@ -98,26 +99,30 @@ class ObjectDetector:
         model.to(self.device)
         return model
 
-    def detect(self, frame_bgr: np.ndarray) -> List[Detection]:
+    def detect(self, frame_bgr: np.ndarray, classes: Optional[List[int]] = None) -> List[Detection]:
         """
         Run both models on one BGR frame and return verified detections.
 
+        Parameters
+        ----------
+        classes : optional list of class ids to restrict detection to.
+
         :return     list[Detection], (Only objects confirmed by both YOLO and RT-DETR.)
         """
-        yolo_dets   = self._run_yolo(frame_bgr)
-        rtdetr_dets = self._run_rtdetr(frame_bgr)
+        yolo_dets   = self._run_yolo(frame_bgr, classes=classes)
+        rtdetr_dets = self._run_rtdetr(frame_bgr, classes=classes)
         return self._merge(yolo_dets, rtdetr_dets)
 
 
     # Run each model and return raw (bbox, label, conf) tuples:
 
-    def _run_yolo(self, frame_bgr: np.ndarray):
+    def _run_yolo(self, frame_bgr: np.ndarray, classes: Optional[List[int]] = None):
         """Run YOLOv9c and return list of (bbox, label, conf)."""
         results = self.yolo.predict(
             frame_bgr,
             conf=self.yolo_conf,
             iou=self.yolo_iou,
-            classes=self.classes,
+            classes=self.classes if classes is None else classes,
             verbose=False,
         )
         out = []
@@ -128,13 +133,13 @@ class ObjectDetector:
             out.append((box.xyxy[0].tolist(), label, float(box.conf)))
         return out
 
-    def _run_rtdetr(self, frame_bgr: np.ndarray):
+    def _run_rtdetr(self, frame_bgr: np.ndarray, classes: Optional[List[int]] = None):
         """Run RT-DETR and return list of (bbox, label, conf)."""
         results = self.rtdetr.predict(
             frame_bgr,
             conf=self.rtdetr_conf,
             iou=self.rtdetr_iou,
-            classes=self.classes,
+            classes=self.classes if classes is None else classes,
             verbose=False,
         )
         out = []
