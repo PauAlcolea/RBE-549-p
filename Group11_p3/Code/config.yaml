@@ -122,7 +122,7 @@ perception:
     - prompt: "traffic light arrow signal"
       label: "traffic_light_arrow_signal"
       export_bucket: "non_coco_objects"
-      exclude_labels: ["car turn signal", "car taillight", "car headlight"]
+      exclude_labels: ["car turn signal", "car taillight", "car headlight", "arrow on sign"]
     default_export_bucket: "non_coco_objects"
     negative_overlap_iou: 0.35   # suppress a class if it overlaps an excluded class at/above this IoU
     confidence: 0.35
@@ -254,6 +254,11 @@ perception:
     dart_lane_control_enabled: true
     dart_lane_control_min_confidence: 0.30
     dart_lane_control_dedupe_iou: 0.45
+    arrow_overlap_iou: 0.35              # if arrow-signal and regular traffic-light boxes coincide, keep only one
+    arrow_overlap_ioa: 0.65              # also suppress when one box is mostly contained inside the other
+    nested_overlap_ioa: 0.80             # generic containment suppression for nested whole-light/arrow boxes
+    dart_arrow_signal_aspect_min: 0.70   # scene6 DART arrow-signal aspect filter
+    dart_arrow_signal_aspect_max: 1.35   # throw out wide arrow-signal boxes like ~1.94
 
   stop_sign:
     min_contour_area: 800       # fallback: ignore red shapes smaller than this (px²)
