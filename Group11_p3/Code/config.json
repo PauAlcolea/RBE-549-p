@@ -110,7 +110,8 @@
       "object_list": [
         "traffic_cones",
         "trash_cans",
-        "traffic_poles"
+        "traffic_poles",
+        "speed_limit_signs"
       ],
       "classes": [
         {
@@ -135,6 +136,11 @@
           "exclude_labels": [
             "traffic_cone"
           ]
+        },
+        {
+          "prompt": "speed limit sign",
+          "label": "speed_limit_sign",
+          "export_bucket": "speed_limit_signs"
         }
       ],
       "default_export_bucket": "non_coco_objects",
@@ -205,6 +211,21 @@
       "max_instances": 40,
       "match_iou": 0.5
     },
+    "speed_limit_ocr": {
+      "enabled": true,
+      "lang_list": [
+        "en"
+      ],
+      "min_confidence": 0.5,
+      "min_speed_mph": 25,
+      "max_speed_mph": 120,
+      "allowlist": "0123456789",
+      "gpu": true,
+      "padding_ratio": 0.05,
+      "min_crop_size": 24,
+      "debug_save": true,
+      "download_enabled": true
+    },
     "depth": {
       "model": {
         "encoder": "vitb",
@@ -230,7 +251,8 @@
         "traffic_light": 5,
         "traffic_cone": 0.7,
         "trash_can": 1.0,
-        "traffic_pole": 3.0
+        "traffic_pole": 3.0,
+        "speed_limit_sign": 0.6
       }
     },
     "traffic_light": {

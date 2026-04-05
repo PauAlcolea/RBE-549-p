@@ -22,6 +22,32 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BLENDER_SCRIPT="$SCRIPT_DIR/blender/scene.py"
 CONFIG="$SCRIPT_DIR/config.yaml"
 
+# Resolve Blender executable if not on PATH.
+if [[ "$BLENDER_BIN" == "~/"* ]]; then
+    BLENDER_BIN="$HOME/${BLENDER_BIN#~/}"
+fi
+
+if [[ -d "$BLENDER_BIN" && "$BLENDER_BIN" == *.app ]]; then
+    BLENDER_BIN="$BLENDER_BIN/Contents/MacOS/Blender"
+fi
+
+if [[ "$BLENDER_BIN" == "blender" ]] && ! command -v blender >/dev/null 2>&1; then
+    if [[ -x "$HOME/Applications/Blender.app/Contents/MacOS/Blender" ]]; then
+        BLENDER_BIN="$HOME/Applications/Blender.app/Contents/MacOS/Blender"
+    elif [[ -x "/Applications/Blender.app/Contents/MacOS/Blender" ]]; then
+        BLENDER_BIN="/Applications/Blender.app/Contents/MacOS/Blender"
+    fi
+fi
+
+if [[ ! -x "$BLENDER_BIN" ]]; then
+    echo "ERROR: Blender executable not found: $BLENDER_BIN" >&2
+    echo "Set BLENDER_BIN, e.g.:" >&2
+    echo "  export BLENDER_BIN=/Applications/Blender.app/Contents/MacOS/Blender" >&2
+    echo "or run with:" >&2
+    echo "  BLENDER_BIN=/Applications/Blender.app/Contents/MacOS/Blender bash run_blender.sh --scene scene2 --cam front --debug" >&2
+    exit 127
+fi
+
 # ── Argument parsing ──────────────────────────────────────────────────────────
 SCENE=""
 CAM=""

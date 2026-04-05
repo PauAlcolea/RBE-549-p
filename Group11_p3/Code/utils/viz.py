@@ -284,6 +284,11 @@ def draw_non_coco_objects(frame_bgr: np.ndarray, detections: list) -> np.ndarray
         color = _COLOR_CONE if det.label == "traffic_cone" else _COLOR_NON_COCO
         cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
         label = f"{det.label} {det.confidence:.2f}"
+        if det.label == "speed_limit_sign":
+            speed_value = getattr(det, "speed_value", None)
+            ocr_conf = float(getattr(det, "ocr_confidence", 0.0))
+            speed_text = "null" if speed_value is None else str(speed_value)
+            label = f"{det.label} v={speed_text} ocr={ocr_conf:.2f}"
         cv2.putText(out, label, (x1, y1 - 6),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
     return out

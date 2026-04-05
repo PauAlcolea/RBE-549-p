@@ -97,7 +97,7 @@ perception:
   non_coco_dart:
     enabled: true
     model: DART
-    object_list: ["traffic_cones", "trash_cans", "traffic_poles"]
+    object_list: ["traffic_cones", "trash_cans", "traffic_poles", "speed_limit_signs"]
     classes:
     - prompt: "traffic cone"
       label: "traffic_cone"
@@ -112,6 +112,9 @@ perception:
       label: "traffic_pole"
       export_bucket: "traffic_poles"
       exclude_labels: ["traffic_cone"]
+    - prompt: "speed limit sign"
+      label: "speed_limit_sign"
+      export_bucket: "speed_limit_signs"
     default_export_bucket: "non_coco_objects"
     negative_overlap_iou: 0.35   # suppress a class if it overlaps an excluded class at/above this IoU
     confidence: 0.35
@@ -160,6 +163,19 @@ perception:
     max_instances: 40
     match_iou: 0.50
 
+  speed_limit_ocr:
+    enabled: true
+    lang_list: ["en"]
+    min_confidence: 0.5
+    min_speed_mph: 25
+    max_speed_mph: 120
+    allowlist: "0123456789"
+    gpu: true
+    padding_ratio: 0.05
+    min_crop_size: 24
+    debug_save: true
+    download_enabled: true
+
   depth:
     model:
       encoder: vitb        # vits | vitb | vitl
@@ -182,6 +198,7 @@ perception:
       traffic_cone: 0.7
       trash_can: 1.0
       traffic_pole: 3.0
+      speed_limit_sign: 0.6
 
   traffic_light:
     force_best_guess: true        # if true, return top-scoring state unless score is degenerate
@@ -255,3 +272,17 @@ blender:
     light_red:   [1.0, 0.15, 0.1]
     light_yellow: [1.0, 0.85, 0.0]
     light_green: [0.1, 0.9, 0.2]
+
+    speed_limit_uv:
+      u_offset: 0.0
+      v_offset: 0.0
+      rotation_deg: 0.0
+      u_scale: 1.0
+      v_scale: 1.0
+
+    speed_limit_text:
+      font_scale: 0.40   # larger digits for readability at distance
+      y_ratio: 0.69      # place text in the blank lower panel of sign face
+      text_color: [0, 0, 0]
+      stroke_width: 4
+      stroke_color: [255, 255, 255]
