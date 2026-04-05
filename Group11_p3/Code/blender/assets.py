@@ -46,6 +46,7 @@ class AssetLibrary:
         self._scene_name = None
         self._camera_name = None
         self._frame_objects = []     # track objects placed this frame for cleanup
+        self._ground_arrow_bboxes = []
         self._ground_text_bboxes = []
         self._templates: Dict[str, object] = {}  # cache of linked template objects
         self._template_groups: Dict[str, list] = {}  # cache of linked grouped templates
@@ -449,6 +450,9 @@ class AssetLibrary:
         if not bool(marking.get("has_only_letters", False)):
             return
 
+        if float(marking.get("ocr_confidence", 0.0) or 0.0) < 0.6:
+            return
+
         bbox = marking.get("bbox") or []
         if len(bbox) != 4:
             return
@@ -477,6 +481,39 @@ class AssetLibrary:
         print(
             f"[assets] ground text: ONLY at bbox={bbox} yaw={yaw:.3f} "
             f"world=({text_obj.location.x:.3f}, {text_obj.location.y:.3f}, {text_obj.location.z:.3f})"
+        )
+
+    def place_ground_arrow(self, arrow: dict, lanes: Optional[List[dict]] = None):
+        """Render a white arrow mesh on the road for ground_arrow detections."""
+        bbox = arrow.get("bbox") or []
+        if len(bbox) != 4:
+            return
+
+        x1, y1, x2, y2 = [float(v) for v in bbox]
+        if x2 <= x1 or y2 <= y1:
+            return
+
+        bbox_t = (x1, y1, x2, y2)
+        if self._is_duplicate_ground_arrow_bbox(bbox_t):
+            return
+
+        anchor = self._ground_arrow_anchor(bbox_t, arrow)
+        if anchor is None:
+            return
+
+        # For now, render all road arrows as "forward" and flip 180 degrees
+        # from the prior default orientation.
+        yaw = (math.pi / 2.0)
+
+        arrow_obj = self._create_ground_arrow_mesh(anchor, yaw, bbox_t, arrow)
+        if arrow_obj is None:
+            return
+
+        self._frame_objects.append(arrow_obj)
+        self._ground_arrow_bboxes.append(bbox_t)
+        print(
+            f"[assets] ground arrow: bbox={bbox} yaw={yaw:.3f} "
+            f"world=({arrow_obj.location.x:.3f}, {arrow_obj.location.y:.3f}, {arrow_obj.location.z:.3f})"
         )
 
     def _resolve_speed_value(self, sign: dict):
@@ -610,6 +647,7 @@ class AssetLibrary:
         for obj in self._frame_objects:
             bpy.data.objects.remove(obj, do_unlink=True)
         self._frame_objects.clear()
+        self._ground_arrow_bboxes.clear()
         self._ground_text_bboxes.clear()
 
         for obj in bpy.data.objects:
@@ -1154,6 +1192,30 @@ class AssetLibrary:
 
         return False
 
+    def _is_duplicate_ground_arrow_bbox(self, bbox: tuple) -> bool:
+        """Suppress near-duplicate arrows so markers are not stacked."""
+        x1, y1, x2, y2 = bbox
+        cx = 0.5 * (x1 + x2)
+        cy = 0.5 * (y1 + y2)
+        w = max(x2 - x1, 1e-6)
+        h = max(y2 - y1, 1e-6)
+
+        for prev in self._ground_arrow_bboxes:
+            px1, py1, px2, py2 = prev
+            pcx = 0.5 * (px1 + px2)
+            pcy = 0.5 * (py1 + py2)
+            pw = max(px2 - px1, 1e-6)
+            ph = max(py2 - py1, 1e-6)
+
+            iou = self._bbox_iou(bbox, prev)
+            dist = math.hypot(cx - pcx, cy - pcy)
+            dist_thresh = 0.35 * max(max(w, h), max(pw, ph))
+
+            if iou >= 0.45 or dist <= dist_thresh:
+                return True
+
+        return False
+
     @staticmethod
     def _bbox_iou(a: tuple, b: tuple) -> float:
         ax1, ay1, ax2, ay2 = a
@@ -1179,13 +1241,67 @@ class AssetLibrary:
         """Project the bbox-left edge to road so O-left aligns with bbox-left."""
         x1, y1, x2, y2 = bbox
         h = max(y2 - y1, 1.0)
+        shift_px = self._estimate_only_left_shift_px(bbox, marking)
+        sample_u = x1 - shift_px
         sample_v = y2 - 0.10 * h
 
-        ground_pt = self._unproject_pixel_to_ground(float(x1), float(sample_v))
+        ground_pt = self._unproject_pixel_to_ground(float(sample_u), float(sample_v))
         if ground_pt is not None:
             return ground_pt
 
         pos3d = marking.get("position_3d")
+        if isinstance(pos3d, list) and len(pos3d) == 3:
+            bx, by, _ = self._json_to_blender(pos3d)
+            # Approximate pixel shift in world X if projection fallback is used.
+            cam_cfg = self.cfg.get("blender", {}).get("camera", {})
+            fx = max(float(cam_cfg.get("fx", 800.0)), 1e-6)
+            z = max(float(pos3d[2]), 1e-6)
+            x_shift_world = z * (shift_px / fx)
+            return Vector((float(bx) - x_shift_world, float(by), 0.0))
+
+        return None
+
+    @staticmethod
+    def _estimate_only_left_shift_px(bbox: tuple, marking: dict) -> float:
+        """Estimate how far left to move anchor when leading ONLY letters are missing."""
+        x1, _, x2, _ = bbox
+        bbox_w = max(float(x2 - x1), 1.0)
+
+        hits_raw = str(marking.get("only_letter_hits", "") or "").upper()
+        hits = {ch for ch in hits_raw if ch in {"O", "N", "L", "Y"}}
+        if not hits:
+            return 0.0
+
+        target = "ONLY"
+        present_indices = [i for i, ch in enumerate(target) if ch in hits]
+        if not present_indices:
+            return 0.0
+
+        first_idx = min(present_indices)
+        if first_idx <= 0:
+            return 0.0
+
+        last_idx = max(present_indices)
+        observed_span = max(last_idx - first_idx + 1, 1)
+        est_char_w = bbox_w / float(observed_span)
+        shift_px = first_idx * est_char_w
+
+        # Cap shift to avoid runaway offsets from noisy OCR hits.
+        return min(shift_px, 1.75 * bbox_w)
+
+    def _ground_arrow_anchor(self, bbox: tuple, arrow: dict) -> Optional[Vector]:
+        """Project bottom-center of arrow bbox to road with position_3d fallback."""
+        x1, y1, x2, y2 = bbox
+        w = max(x2 - x1, 1.0)
+        h = max(y2 - y1, 1.0)
+        sample_u = x1 + 0.5 * w
+        sample_v = y2 - 0.08 * h
+
+        ground_pt = self._unproject_pixel_to_ground(float(sample_u), float(sample_v))
+        if ground_pt is not None:
+            return ground_pt
+
+        pos3d = arrow.get("position_3d")
         if isinstance(pos3d, list) and len(pos3d) == 3:
             bx, by, _ = self._json_to_blender(pos3d)
             return Vector((float(bx), float(by), 0.0))
@@ -1317,3 +1433,49 @@ class AssetLibrary:
         text_obj.data.materials.clear()
         text_obj.data.materials.append(mat)
         return text_obj
+
+    def _create_ground_arrow_mesh(self, anchor: Vector, yaw: float, bbox: tuple, arrow: dict):
+        """Create a white ground arrow mesh aligned to the road plane."""
+        x1, y1, x2, y2 = bbox
+        bbox_px = max(float(x2 - x1), float(y2 - y1), 1.0)
+        depth_m = float(arrow.get("depth_m", 0.0) or 0.0)
+        cam_cfg = self.cfg.get("blender", {}).get("camera", {})
+        fx = max(float(cam_cfg.get("fx", 800.0)), 1e-6)
+        depth_for_scale = max(depth_m, 8.0)
+
+        approx_len = depth_for_scale * (bbox_px / fx)
+        arrow_len = min(max(approx_len * 0.9, 1.0), 4.5)
+        arrow_h = arrow_len * 0.55
+        arrow_depth = 0.02
+
+        arrow_obj = self._create_left_arrow_mesh_object(
+            name=f"GroundArrow_{len(self._frame_objects)}",
+            location=Vector((anchor.x, anchor.y, 0.018)),
+            width=arrow_len,
+            height=arrow_h,
+            depth=arrow_depth,
+        )
+
+        # Move the extruded arrow from vertical X/Z plane onto road X/Y plane.
+        arrow_obj.rotation_euler = (math.pi / 2.0, 0.0, yaw)
+
+        mat = bpy.data.materials.get("ground_arrow_white")
+        if mat is None:
+            mat = bpy.data.materials.new(name="ground_arrow_white")
+            mat.use_nodes = True
+            bsdf = mat.node_tree.nodes.get("Principled BSDF")
+            if bsdf is not None:
+                bsdf.inputs["Base Color"].default_value = (1.0, 1.0, 1.0, 1.0)
+                emission_inp = next((inp for inp in bsdf.inputs if inp.name == "Emission Color"), None)
+                emission_strength = next((inp for inp in bsdf.inputs if inp.name == "Emission Strength"), None)
+                if emission_inp is not None:
+                    emission_inp.default_value = (1.0, 1.0, 1.0, 1.0)
+                if emission_strength is not None:
+                    emission_strength.default_value = 0.15
+                rough_inp = next((inp for inp in bsdf.inputs if inp.name == "Roughness"), None)
+                if rough_inp is not None:
+                    rough_inp.default_value = 0.9
+
+        arrow_obj.data.materials.clear()
+        arrow_obj.data.materials.append(mat)
+        return arrow_obj
