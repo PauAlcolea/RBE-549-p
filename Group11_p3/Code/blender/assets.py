@@ -19,7 +19,7 @@ Coordinate system note:
 import math
 import re
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List, Optional
 import bpy
 import bmesh
 from mathutils import Vector
@@ -46,6 +46,7 @@ class AssetLibrary:
         self._scene_name = None
         self._camera_name = None
         self._frame_objects = []     # track objects placed this frame for cleanup
+        self._ground_text_bboxes = []
         self._templates: Dict[str, object] = {}  # cache of linked template objects
         self._template_groups: Dict[str, list] = {}  # cache of linked grouped templates
         self._load_templates()
@@ -443,6 +444,41 @@ class AssetLibrary:
             f"→  blender_pos={obj.location}  speed_value={speed_value}"
         )
 
+    def place_ground_text_marking(self, marking: dict, lanes: Optional[List[dict]] = None):
+        """Render ONLY as white road text for positive ground text detections."""
+        if not bool(marking.get("has_only_letters", False)):
+            return
+
+        bbox = marking.get("bbox") or []
+        if len(bbox) != 4:
+            return
+
+        x1, y1, x2, y2 = [float(v) for v in bbox]
+        if x2 <= x1 or y2 <= y1:
+            return
+
+        if self._is_duplicate_ground_text_bbox((x1, y1, x2, y2)):
+            return
+
+        lane_list = lanes or []
+        anchor = self._ground_text_left_anchor((x1, y1, x2, y2), marking)
+        if anchor is None:
+            return
+
+        # Keep road text horizontal in the frame so it reads left-to-right.
+        yaw = 0.0
+
+        text_obj = self._create_ground_only_text(anchor, yaw, (x1, y1, x2, y2), marking)
+        if text_obj is None:
+            return
+
+        self._frame_objects.append(text_obj)
+        self._ground_text_bboxes.append((x1, y1, x2, y2))
+        print(
+            f"[assets] ground text: ONLY at bbox={bbox} yaw={yaw:.3f} "
+            f"world=({text_obj.location.x:.3f}, {text_obj.location.y:.3f}, {text_obj.location.z:.3f})"
+        )
+
     def _resolve_speed_value(self, sign: dict):
         """Resolve numeric speed from structured value first, OCR text second."""
         val = sign.get("speed_value")
@@ -574,6 +610,7 @@ class AssetLibrary:
         for obj in self._frame_objects:
             bpy.data.objects.remove(obj, do_unlink=True)
         self._frame_objects.clear()
+        self._ground_text_bboxes.clear()
 
         for obj in bpy.data.objects:
             if obj.name.startswith("vehicle") or obj.name.startswith("pedestrian"):
@@ -1092,3 +1129,191 @@ class AssetLibrary:
         """
         x, y, z = pos
         return (x, z, -y)
+
+    def _is_duplicate_ground_text_bbox(self, bbox: tuple) -> bool:
+        """Suppress near-duplicate markings so ONLY is not stacked."""
+        x1, y1, x2, y2 = bbox
+        cx = 0.5 * (x1 + x2)
+        cy = 0.5 * (y1 + y2)
+        w = max(x2 - x1, 1e-6)
+        h = max(y2 - y1, 1e-6)
+
+        for prev in self._ground_text_bboxes:
+            px1, py1, px2, py2 = prev
+            pcx = 0.5 * (px1 + px2)
+            pcy = 0.5 * (py1 + py2)
+            pw = max(px2 - px1, 1e-6)
+            ph = max(py2 - py1, 1e-6)
+
+            iou = self._bbox_iou(bbox, prev)
+            dist = math.hypot(cx - pcx, cy - pcy)
+            dist_thresh = 0.35 * max(max(w, h), max(pw, ph))
+
+            if iou >= 0.45 or dist <= dist_thresh:
+                return True
+
+        return False
+
+    @staticmethod
+    def _bbox_iou(a: tuple, b: tuple) -> float:
+        ax1, ay1, ax2, ay2 = a
+        bx1, by1, bx2, by2 = b
+
+        ix1 = max(ax1, bx1)
+        iy1 = max(ay1, by1)
+        ix2 = min(ax2, bx2)
+        iy2 = min(ay2, by2)
+
+        iw = max(0.0, ix2 - ix1)
+        ih = max(0.0, iy2 - iy1)
+        inter = iw * ih
+        if inter <= 0.0:
+            return 0.0
+
+        area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+        area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+        union = max(area_a + area_b - inter, 1e-6)
+        return inter / union
+
+    def _ground_text_left_anchor(self, bbox: tuple, marking: dict) -> Optional[Vector]:
+        """Project the bbox-left edge to road so O-left aligns with bbox-left."""
+        x1, y1, x2, y2 = bbox
+        h = max(y2 - y1, 1.0)
+        sample_v = y2 - 0.10 * h
+
+        ground_pt = self._unproject_pixel_to_ground(float(x1), float(sample_v))
+        if ground_pt is not None:
+            return ground_pt
+
+        pos3d = marking.get("position_3d")
+        if isinstance(pos3d, list) and len(pos3d) == 3:
+            bx, by, _ = self._json_to_blender(pos3d)
+            return Vector((float(bx), float(by), 0.0))
+
+        return None
+
+    def _unproject_pixel_to_ground(self, u: float, v: float) -> Optional[Vector]:
+        """Unproject image pixel to road plane Z=0 using camera intrinsics."""
+        cam_cfg = self.cfg.get("blender", {}).get("camera", {})
+        fx = float(cam_cfg.get("fx", 0.0))
+        fy = float(cam_cfg.get("fy", 0.0))
+        cx = float(cam_cfg.get("cx", 0.0))
+        cy = float(cam_cfg.get("cy", 0.0))
+        h = float(cam_cfg.get("height_m", 0.0))
+
+        if fx <= 1e-6 or fy <= 1e-6 or h <= 1e-6:
+            return None
+
+        x_cam = (u - cx) / fx
+        y_cam = (v - cy) / fy
+        d = Vector((x_cam, 1.0, -y_cam))
+        if d.length <= 1e-8:
+            return None
+        d.normalize()
+
+        if d.z >= -1e-5:
+            return None
+
+        t = -h / d.z
+        if t <= 0.0:
+            return None
+
+        p = Vector((0.0, 0.0, h)) + d * t
+        return Vector((float(p.x), float(p.y), 0.0))
+
+    def _ground_text_yaw_from_lanes(self, lanes: List[dict], bbox: tuple) -> Optional[float]:
+        """Estimate road heading from nearest lane segment around text row."""
+        if not lanes:
+            return None
+
+        _, y1, _, y2 = bbox
+        target_v = 0.5 * (y1 + y2)
+
+        best = None
+        best_row_delta = float("inf")
+
+        for lane in lanes:
+            pts = lane.get("points") or []
+            if len(pts) < 2:
+                continue
+
+            for i in range(len(pts) - 1):
+                p1 = pts[i]
+                p2 = pts[i + 1]
+                if not isinstance(p1, (list, tuple)) or not isinstance(p2, (list, tuple)):
+                    continue
+                if len(p1) < 2 or len(p2) < 2:
+                    continue
+
+                u1, v1 = float(p1[0]), float(p1[1])
+                u2, v2 = float(p2[0]), float(p2[1])
+                row_delta = abs(0.5 * (v1 + v2) - target_v)
+                if row_delta < best_row_delta:
+                    best_row_delta = row_delta
+                    best = ((u1, v1), (u2, v2))
+
+        if best is None:
+            return None
+
+        (u1, v1), (u2, v2) = best
+        g1 = self._unproject_pixel_to_ground(u1, v1)
+        g2 = self._unproject_pixel_to_ground(u2, v2)
+        if g1 is None or g2 is None:
+            return None
+
+        vec = g2 - g1
+        vec.z = 0.0
+        if vec.length <= 1e-6:
+            return None
+        vec.normalize()
+
+        return math.atan2(vec.y, vec.x)
+
+    def _create_ground_only_text(self, anchor: Vector, yaw: float, bbox: tuple, marking: dict):
+        """Create a white road-surface text object anchored on O-left edge."""
+        text_curve = bpy.data.curves.new(name="GroundOnlyTextCurve", type="FONT")
+        text_curve.body = "ONLY"
+        text_curve.align_x = "LEFT"
+        text_curve.align_y = "CENTER"
+        text_curve.extrude = 0.002
+
+        text_obj = bpy.data.objects.new(name="GroundOnlyText", object_data=text_curve)
+        bpy.context.collection.objects.link(text_obj)
+        text_obj.location = Vector((anchor.x, anchor.y, 0.02))
+        text_obj.rotation_euler = (0.0, 0.0, yaw)
+
+        x1, _, x2, _ = bbox
+        bbox_w_px = max(float(x2 - x1), 1.0)
+        depth_m = float(marking.get("depth_m", 0.0) or 0.0)
+        cam_cfg = self.cfg.get("blender", {}).get("camera", {})
+        fx = max(float(cam_cfg.get("fx", 800.0)), 1e-6)
+        depth_for_scale = max(depth_m, 8.0)
+
+        approx_world_width = depth_for_scale * (bbox_w_px / fx)
+        target_width = min(max(approx_world_width * 0.72, 0.75), 3.8)
+
+        # "ONLY" width in Blender font units is roughly ~2.8 at scale=1.
+        scale = target_width / 2.8
+        scale = min(max(scale, 0.28), 1.55)
+        text_obj.scale = (scale, scale, scale)
+
+        mat = bpy.data.materials.get("ground_text_only_white")
+        if mat is None:
+            mat = bpy.data.materials.new(name="ground_text_only_white")
+            mat.use_nodes = True
+            bsdf = mat.node_tree.nodes.get("Principled BSDF")
+            if bsdf is not None:
+                bsdf.inputs["Base Color"].default_value = (1.0, 1.0, 1.0, 1.0)
+                emission_inp = next((inp for inp in bsdf.inputs if inp.name == "Emission Color"), None)
+                emission_strength = next((inp for inp in bsdf.inputs if inp.name == "Emission Strength"), None)
+                if emission_inp is not None:
+                    emission_inp.default_value = (1.0, 1.0, 1.0, 1.0)
+                if emission_strength is not None:
+                    emission_strength.default_value = 0.2
+                rough_inp = next((inp for inp in bsdf.inputs if inp.name == "Roughness"), None)
+                if rough_inp is not None:
+                    rough_inp.default_value = 0.9
+
+        text_obj.data.materials.clear()
+        text_obj.data.materials.append(mat)
+        return text_obj

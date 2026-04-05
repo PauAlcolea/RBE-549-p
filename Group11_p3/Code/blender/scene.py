@@ -152,6 +152,7 @@ def render_sequence(scene_name: str, camera: str, cfg: dict, debug: bool = False
         "trash_cans": "place_trash_can",
         "traffic_poles": "place_traffic_pole",
         "speed_limit_signs": "place_speed_limit_sign",
+        "ground_text_markings": "place_ground_text_marking",
     }
 
     # Lane renderer: persists across frames, geometry cleared per frame
@@ -191,9 +192,15 @@ def render_sequence(scene_name: str, camera: str, cfg: dict, debug: bool = False
                 lane_renderer.draw_lane(lane)
             # non-COCO objects
             for obj_type in nonCOCO_objects:
-                place_fn = getattr(asset_lib, dispatch.get(obj_type), None)
+                place_fn_name = dispatch.get(obj_type)
+                place_fn = getattr(asset_lib, place_fn_name, None) if place_fn_name else None
+                if place_fn is None:
+                    continue
                 for obj in frame_data.get(obj_type, []):
-                    place_fn(obj)
+                    if obj_type == "ground_text_markings":
+                        place_fn(obj, frame_data.get("lanes", []))
+                    else:
+                        place_fn(obj)
 
             # some white space for debugging
             print()
