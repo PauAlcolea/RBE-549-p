@@ -393,10 +393,10 @@
       ]
     },
     "pedestrians": {
-      "render_mode": "skeleton",
+      "render_mode": "hybrid",
       "keypoint_score_threshold": 0.2,
-      "joint_radius_m": 0.045,
-      "bone_radius_m": 0.022
+      "joint_radius_m": 0.08,
+      "bone_radius_m": 0.06
     }
   }
 }

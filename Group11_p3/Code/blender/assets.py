@@ -5,7 +5,7 @@ Loads the provided .blend asset files and places them in the 3D scene
 at positions derived from the per-frame detection JSON.
 
 Asset inventory (from Data/Assets/):
-  Phase 1: generic car, pedestrian, stop sign (with texture)
+  Phase 1: generic car, pedestrian (rigged), stop sign (with texture)
   Phase 2: sedan, SUV, truck, bicycle, motorcycle, traffic cone, pole, dustbin
 
 Coordinate system note:
@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Dict
 import bpy
 import bmesh
-from mathutils import Vector
+from mathutils import Vector, Matrix
 from .materials import MaterialLibrary
 
 
@@ -53,6 +53,8 @@ class AssetLibrary:
         self._load_templates()
         self.Materials = MaterialLibrary(cfg)
 
+    # ── Template loading ──────────────────────────────────────────────────
+
     def _load_templates(self):
         asset_files = {
             "sedanandhatchbacks":   self.assets_dir / "Vehicles/SedanAndHatchback.blend",
@@ -61,17 +63,15 @@ class AssetLibrary:
             "truck":                self.assets_dir / "Vehicles/Truck.blend",
             "pickuptruck":          self.assets_dir / "Vehicles/PickupTruck.blend",
             "suv":                  self.assets_dir / "Vehicles/SUV.blend",
-            "pedestrian":           self.assets_dir / "Pedestrain.blend",
             "stop_sign":            self.assets_dir / "StopSign.blend",
             "traffic_light":        self.assets_dir / "TrafficSignal.blend",
             "traffic_cone":         self.assets_dir / "TrafficConeAndCylinder.blend",
             "trash_can":            self.assets_dir / "Dustbin.blend",
-            "traffic_pole":         self.assets_dir / "TrafficAssets.blend", # iron pole
+            "traffic_pole":         self.assets_dir / "TrafficAssets.blend",
         }
 
         for name, path in asset_files.items():
             with bpy.data.libraries.load(str(path), link=False) as (data_from, data_to):
-                # Load ALL objects from the file so we can pick the right one
                 data_to.objects = list(data_from.objects)
 
             meshes = [obj for obj in data_to.objects if obj is not None and obj.type == "MESH"]
@@ -85,25 +85,16 @@ class AssetLibrary:
             def norm(obj_name: str) -> str:
                 return obj_name.lower().replace(" ", "_")
 
-            # Dustbin.blend contains multiple meshes (bin/lid/wheels).
-            # Keep the full set and instance as one grouped object.
             if name == "trash_can":
                 preferred_parts = ("bin_mesh", "lid_mesh", "wheels_mesh")
                 by_name = {norm(m.name): m for m in meshes}
                 selected = [by_name[p] for p in preferred_parts if p in by_name]
-
-                # If exact names are not present, include all mesh objects.
                 keep_meshes = selected if selected else list(meshes)
-
-                # Stable order for consistent transforms/material behavior.
                 keep_meshes = sorted(keep_meshes, key=lambda m: norm(m.name))
                 self._template_groups[name] = keep_meshes
                 mesh_obj = keep_meshes[0]
-
                 if len(meshes) > 1:
-                    mesh_names = [m.name for m in meshes]
-                    chosen_names = [m.name for m in keep_meshes]
-                    print(f"[assets] trash_can mesh group: all={mesh_names} chosen={chosen_names}")
+                    print(f"[assets] trash_can mesh group: all={[m.name for m in meshes]} chosen={[m.name for m in keep_meshes]}")
 
             if name == "traffic_pole":
                 iron_poles = [m for m in meshes if norm(m.name) == "iron_pole" or "iron_pole" in norm(m.name)]
@@ -111,10 +102,8 @@ class AssetLibrary:
                     mesh_obj = iron_poles[0]
                     keep_meshes = [mesh_obj]
                 if len(meshes) > 1:
-                    mesh_names = [m.name for m in meshes]
-                    print(f"[assets] traffic_pole mesh selection: chose '{mesh_obj.name}' from {mesh_names}")
+                    print(f"[assets] traffic_pole mesh selection: chose '{mesh_obj.name}' from {[m.name for m in meshes]}")
 
-            # Hide all loaded objects, keep only selected mesh(es).
             for obj in list(data_to.objects):
                 if obj is not None and obj not in keep_meshes:
                     bpy.data.objects.remove(obj, do_unlink=True)
@@ -125,14 +114,58 @@ class AssetLibrary:
 
             self._templates[name] = mesh_obj
 
-    def place_vehicle(self, vehicle: dict):
-        """
-        Instantiate the detected vehicle asset at the vehicle's 3D position.
+        # ── Pedestrian: load mesh + armature together ──────────────────────
+        self._load_pedestrian_templates()
 
-        Parameters
-        ----------
-        vehicle : dict with keys "position_3d", "depth_m"
+    def _load_pedestrian_templates(self):
         """
+        Load the rigged pedestrian blend file, keeping the mesh and its armature.
+        The mesh is stored under 'pedestrian', the armature under 'pedestrian_armature'.
+        """
+        ped_path = self.assets_dir / "RiggedPedestrian.blend"
+        if not ped_path.exists():
+            print(f"[assets] WARNING: pedestrian blend not found at {ped_path}")
+            return
+
+        with bpy.data.libraries.load(str(ped_path), link=False) as (data_from, data_to):
+            data_to.objects = list(data_from.objects)
+
+        ped_mesh = None
+        ped_armature = None
+
+        for obj in data_to.objects:
+            if obj is None:
+                continue
+            if obj.type == "MESH" and ped_mesh is None:
+                ped_mesh = obj
+            elif obj.type == "ARMATURE" and ped_armature is None:
+                ped_armature = obj
+            else:
+                # Remove Camera, Light, and any extra objects we don't need
+                bpy.data.objects.remove(obj, do_unlink=True)
+
+        if ped_mesh is None:
+            print("[assets] WARNING: no MESH found in RiggedPedestrian.blend")
+            return
+
+        ped_mesh.hide_render = True
+        ped_mesh.hide_viewport = True
+        self._templates["pedestrian"] = ped_mesh
+        print(f"[assets] pedestrian mesh loaded: '{ped_mesh.name}'  scale={tuple(round(v,4) for v in ped_mesh.scale)}")
+
+        if ped_armature is None:
+            print("[assets] WARNING: no ARMATURE found in RiggedPedestrian.blend — pose driving disabled")
+            return
+
+        ped_armature.hide_render = True
+        ped_armature.hide_viewport = True
+        self._templates["pedestrian_armature"] = ped_armature
+        bones = [b.name for b in ped_armature.data.bones]
+        print(f"[assets] pedestrian armature loaded: '{ped_armature.name}'  bones={bones}")
+
+    # ── Public placement methods ──────────────────────────────────────────
+
+    def place_vehicle(self, vehicle: dict):
         vehicle_class = str(vehicle.get("class", "car")).lower()
         asset_name = self._vehicle_asset_name(vehicle_class)
         obj = self._instance(asset_name)
@@ -167,12 +200,237 @@ class AssetLibrary:
             self._place_pedestrian_skeleton(ped)
 
     def _place_pedestrian_mesh(self, ped: dict):
-        obj = self._instance("pedestrian")
-        obj.location = self._json_to_blender(ped["position_3d"])
-        obj.scale = (0.009, 0.009, 0.009)
-        self._align_object_to_ground(obj, ground_z=0.0, clearance=self.ground_clearance_m)
-        self._frame_objects.append(obj)
-        print(f"[assets] pedestrian mesh: json_pos={ped['position_3d']}  →  blender_pos={obj.location}")
+        """
+        Instantiate the rigged pedestrian mesh and drive its armature pose
+        from the COCO-17 3D keypoints when available.
+        """
+        mesh_obj, arm_obj = self._instance_pedestrian_pair()
+
+        has_kps = bool(ped.get("keypoints_3d_camera")) and arm_obj is not None
+        if has_kps:
+            self._drive_coco_pose(arm_obj, ped)
+        else:
+            # Fallback: static figure at detected position
+            pos = self._json_to_blender(ped["position_3d"])
+            if arm_obj is not None:
+                arm_obj.location = Vector(pos)
+            else:
+                mesh_obj.location = Vector(pos)
+            if arm_obj is None:
+                self._align_object_to_ground(mesh_obj, ground_z=0.0, clearance=self.ground_clearance_m)
+
+        self._frame_objects.append(mesh_obj)
+        if arm_obj is not None:
+            self._frame_objects.append(arm_obj)
+
+        print(f"[assets] pedestrian mesh placed  pose_driven={has_kps}")
+
+    def _instance_pedestrian_pair(self):
+        """
+        Duplicate the pedestrian mesh AND its armature, then re-link the
+        Armature modifier on the mesh copy so it points to the new armature
+        instance (not the hidden template).
+
+        Returns (mesh_obj, arm_obj).  arm_obj is None if no armature template.
+        """
+        mesh_template = self._templates.get("pedestrian")
+        arm_template = self._templates.get("pedestrian_armature")
+
+        if mesh_template is None:
+            raise RuntimeError("[assets] pedestrian template not loaded")
+
+        # Duplicate mesh
+        mesh_copy = mesh_template.copy()
+        mesh_copy.data = mesh_template.data.copy()
+        mesh_copy.hide_render = False
+        mesh_copy.hide_viewport = False
+        bpy.context.collection.objects.link(mesh_copy)
+
+        if arm_template is None:
+            return mesh_copy, None
+
+        # Duplicate armature
+        arm_copy = arm_template.copy()
+        arm_copy.data = arm_template.data.copy()
+        arm_copy.hide_render = False
+        arm_copy.hide_viewport = False
+        bpy.context.collection.objects.link(arm_copy)
+
+        # Re-point the Armature modifier on the mesh copy to the new armature
+        for mod in mesh_copy.modifiers:
+            if mod.type == "ARMATURE":
+                mod.object = arm_copy
+                break
+
+        return mesh_copy, arm_copy
+
+    def _drive_coco_pose(self, arm_obj, ped_dict: dict):
+        """
+        Drive the armature pose from COCO-17 3D keypoints.
+
+        Bone mapping (Mixamo rig ← COCO-17 indices):
+          Hips        ← midpoint of kp11 + kp12, oriented hip→shoulder
+          Spine       ← same direction as hip→shoulder
+          Chest       ← same direction
+          LeftArm     ← kp5 → kp7  (left shoulder → left elbow)
+          LeftForeArm ← kp7 → kp9  (left elbow → left wrist)
+          RightArm    ← kp6 → kp8
+          RightForeArm← kp8 → kp10
+          LeftUpLeg   ← kp11 → kp13 (left hip → left knee)
+          LeftLeg     ← kp13 → kp15 (left knee → left ankle)
+          RightUpLeg  ← kp12 → kp14
+          RightLeg    ← kp14 → kp16
+        Face bones (Neck, Head) are left in rest pose intentionally.
+
+        Ground alignment: the armature object is translated in Z so the
+        lowest ankle keypoint lands at ground_clearance_m above Z=0.
+        """
+
+        kps_raw = ped_dict.get("keypoints_3d_camera", [])
+        scores  = ped_dict.get("keypoint_scores", [])
+
+        # ── Convert valid keypoints to Blender world-space Vectors ──────────
+        kps = []
+        for i, kp in enumerate(kps_raw):
+            if kp is None:
+                kps.append(None)
+                continue
+            score = float(scores[i]) if i < len(scores) else 1.0
+            if score < self.pose_score_threshold:
+                kps.append(None)
+            else:
+                kps.append(Vector(self._json_to_blender(kp)))
+        while len(kps) < 17:
+            kps.append(None)
+
+        # ── Derived anchor points ────────────────────────────────────────────
+        def mid(a, b):
+            va, vb = kps[a], kps[b]
+            if va is not None and vb is not None:
+                return (va + vb) * 0.5
+            return va if va is not None else vb  # whichever is available, or None
+
+        def direction(a, b):
+            """World-space direction vector from kps[a] to kps[b], or None."""
+            if kps[a] is not None and kps[b] is not None:
+                d = kps[b] - kps[a]
+                return d if d.length > 1e-4 else None
+            return None
+
+        hip_mid      = mid(11, 12) or Vector(self._json_to_blender(ped_dict["position_3d"]))
+        shoulder_mid = mid(5, 6)
+        spine_dir    = (shoulder_mid - hip_mid).normalized() if shoulder_mid is not None else Vector((0, 0, 1))
+
+        # ── Ground-alignment lift ────────────────────────────────────────────
+        # Compute how far to lift the armature object so ankles sit on the ground.
+        ankle_zs = [kps[idx].z for idx in (15, 16) if kps[idx] is not None]
+        if ankle_zs:
+            lift = self.ground_clearance_m - min(ankle_zs)
+        else:
+            # Fallback: estimate ground from hip height (assume hip ≈ half body height)
+            lift = self.ground_clearance_m - (hip_mid.z - 0.9)
+
+        # ── Helper: build 4×4 world-space bone matrix ────────────────────────
+        def bone_matrix(head: Vector, dir_vec: Vector) -> Matrix:
+            """
+            4×4 matrix with translation=head, +Y column pointing along dir_vec.
+            roll_ref chooses the X/Z axes to minimise unwanted roll.
+            """
+            y = dir_vec.normalized()
+            roll_ref = Vector((0, 0, 1))
+            if abs(y.dot(roll_ref)) > 0.98:          # near-vertical bone
+                roll_ref = Vector((1, 0, 0))
+            x = roll_ref.cross(y).normalized()
+            z = x.cross(y).normalized()
+            return Matrix((
+                (x.x, y.x, z.x, head.x),
+                (x.y, y.y, z.y, head.y),
+                (x.z, y.z, z.z, head.z),
+                (0.0, 0.0, 0.0, 1.0),
+            ))
+
+        # ── Helper: set a pose bone's world matrix ───────────────────────────
+        def aim(bone_name: str, dir_vec: Vector):
+            """
+            Rotate bone_name so its +Y axis points along dir_vec.
+            The bone's head position is preserved (read from pb.head after
+            the parent's view_layer.update()).
+            """
+            if dir_vec is None:
+                return
+            pb = arm_obj.pose.bones.get(bone_name)
+            if pb is None:
+                print(f"[assets] WARNING: bone '{bone_name}' not found in armature")
+                return
+            pb.rotation_mode = "QUATERNION"
+            head = Vector(pb.head)   # world-space, valid after view_layer.update()
+            pb.matrix = bone_matrix(head, dir_vec)
+
+        def aim_root(bone_name: str, world_pos: Vector, dir_vec: Vector):
+            """Set root bone: translate to world_pos AND orient along dir_vec."""
+            pb = arm_obj.pose.bones.get(bone_name)
+            if pb is None:
+                print(f"[assets] WARNING: root bone '{bone_name}' not found")
+                return
+            pb.rotation_mode = "QUATERNION"
+            pb.matrix = bone_matrix(world_pos, dir_vec)
+
+        # ── Initial armature object state ────────────────────────────────────
+        # Keep the object at world origin; all world positioning goes through
+        # the Hips bone matrix.  The lift is applied to arm_obj.location.z
+        # AFTER all bone matrices are set (it shifts the whole rig uniformly).
+        arm_obj.location     = Vector((0.0, 0.0, 0.0))
+        arm_obj.rotation_euler = (0.0, 0.0, 0.0)
+        bpy.context.view_layer.update()
+
+        # ── Drive bones in strict parent-first order ─────────────────────────
+
+        # ROOT — position hip centre, orient along spine
+        aim_root("Hips", hip_mid, spine_dir)
+        bpy.context.view_layer.update()
+
+        # SPINE CHAIN (children of Hips → Spine → Chest)
+        aim("Spine", spine_dir)
+        bpy.context.view_layer.update()
+        aim("Chest", spine_dir)
+        bpy.context.view_layer.update()
+
+        # LEFT ARM (children of Chest)
+        aim("LeftArm",     direction(5, 7))   # shoulder → elbow
+        bpy.context.view_layer.update()
+        aim("LeftForeArm", direction(7, 9))   # elbow → wrist
+        bpy.context.view_layer.update()
+
+        # RIGHT ARM (children of Chest)
+        aim("RightArm",     direction(6, 8))
+        bpy.context.view_layer.update()
+        aim("RightForeArm", direction(8, 10))
+        bpy.context.view_layer.update()
+
+        # LEFT LEG (children of Hips)
+        aim("LeftUpLeg", direction(11, 13))   # hip → knee
+        bpy.context.view_layer.update()
+        aim("LeftLeg",   direction(13, 15))   # knee → ankle
+        bpy.context.view_layer.update()
+
+        # RIGHT LEG (children of Hips)
+        aim("RightUpLeg", direction(12, 14))
+        bpy.context.view_layer.update()
+        aim("RightLeg",   direction(14, 16))
+        bpy.context.view_layer.update()
+
+        # ── Apply ground-alignment lift to the whole rig ─────────────────────
+        # Moving arm_obj.location shifts all bone world-positions uniformly
+        # without affecting any of the matrix_basis values we just set.
+        arm_obj.location.z += lift
+        bpy.context.view_layer.update()
+
+        print(
+            f"[assets] coco pose driven: arm={arm_obj.name}  "
+            f"hip_world={tuple(round(v,2) for v in hip_mid)}  lift={lift:.3f}m"
+        )
+
+    # ── Skeleton overlay (unchanged) ─────────────────────────────────────
 
     def _place_pedestrian_skeleton(self, ped: dict):
         points_3d = ped.get("keypoints_3d_camera") or []
@@ -192,10 +450,6 @@ class AssetLibrary:
                 continue
             valid_points.append(Vector(self._json_to_blender(pt)))
 
-        # The lifted keypoints are in raw camera space, so their vertical origin
-        # can sit below the synthetic ground plane. Align the full skeleton so
-        # its lowest valid joint sits on the same ground clearance used for mesh
-        # pedestrians, matching the fallback placement.
         z_values = [point.z for point in valid_points if point is not None]
         if z_values:
             z_offset = (0.0 + self.ground_clearance_m) - min(z_values)
@@ -205,7 +459,7 @@ class AssetLibrary:
             ]
 
         joint_mat = self.Materials.get_pose_joint_material()
-        bone_mat = self.Materials.get_pose_bone_material()
+        bone_mat  = self.Materials.get_pose_bone_material()
 
         for idx, point in enumerate(valid_points):
             if point is None:
@@ -223,12 +477,10 @@ class AssetLibrary:
         for edge in skeleton_links:
             if not isinstance(edge, (list, tuple)) or len(edge) != 2:
                 continue
-            a = int(edge[0])
-            b = int(edge[1])
+            a, b = int(edge[0]), int(edge[1])
             if a >= len(valid_points) or b >= len(valid_points):
                 continue
-            pa = valid_points[a]
-            pb = valid_points[b]
+            pa, pb = valid_points[a], valid_points[b]
             if pa is None or pb is None:
                 continue
             bone = self._create_cylinder_between_points(
@@ -244,58 +496,45 @@ class AssetLibrary:
 
         print(f"[assets] pedestrian skeleton: joints={sum(p is not None for p in valid_points)}")
 
+    # ── Other asset placements (unchanged) ───────────────────────────────
+
     def place_stop_sign(self, sign: dict):
-        """
-        Instantiate the stop sign asset and apply the provided texture.
-        Texture path: Data/Assets/stop_sign_texture.png (given by project).
-        """
         obj = self._instance("stop_sign")
         obj.location = self._json_to_blender(sign["position_3d"])
         obj.scale = (0.5, 0.5, 0.5)
-        obj.rotation_euler[2] = -math.pi / 2  # rotate to face camera diagonally
+        obj.rotation_euler[2] = -math.pi / 2
         self._align_object_to_ground(obj, ground_z=0.0, clearance=self.ground_clearance_m)
 
         texture_path = Path(self.cfg["paths"]["assets_dir"]) / "StopSignImage.png"
         decal_obj = self._create_stop_sign_decal(obj)
         self.Materials.apply_texture(decal_obj, texture_path)
         self._frame_objects.append(decal_obj)
-
         self._frame_objects.append(obj)
         print(f"[assets] stop sign: json_pos={sign['position_3d']}  →  blender_pos={obj.location}")
 
     def place_traffic_light(self, light: dict):
-        """
-        Instantiate the traffic light asset and set its state (red/yellow/green).
-        Texture path: Data/Assets/traffic_light_texture.png (given by project).
-        """
         obj = self._instance("traffic_light")
         obj.location = self._json_to_blender(light["position_3d"])
         obj.scale = (0.5, 0.5, 0.5)
-        obj.rotation_euler[2] = -math.pi / 2  # rotate to face the camera
+        obj.rotation_euler[2] = -math.pi / 2
 
-        # Color the traffic-light body/housing yellow (bulbs are separate).
         body_mat = self.Materials.get_traffic_light_body_material()
         if body_mat is not None:
             obj.data.materials.clear()
             obj.data.materials.append(body_mat)
 
-        # Choose state color from detection if available; default to red.
         tl_color = light.get("color", "red")
         if tl_color not in {"red", "yellow", "green"}:
             tl_color = "red"
 
-        # Add three emissive "bulb" disks near the traffic light position.
         self._add_traffic_light_bulbs(obj, active_color=tl_color)
-
         self._frame_objects.append(obj)
         print(f"[assets] traffic light: json_pos={light['position_3d']}  →  blender_pos={obj.location}  state={tl_color}")
 
-    
     def place_traffic_cone(self, cone: dict):
-        """Instantiate a traffic cone asset."""
         obj = self._instance("traffic_cone")
         obj.location = self._json_to_blender(cone["position_3d"])
-        obj.scale = (1.0, 1.0, 1.0)  # adjust if the cone model is not already at the right size
+        obj.scale = (1.0, 1.0, 1.0)
 
         cone_mat = self.Materials.get_traffic_cone_material()
         if cone_mat is not None:
@@ -306,22 +545,16 @@ class AssetLibrary:
         self._frame_objects.append(obj)
         print(f"[assets] traffic cone: json_pos={cone['position_3d']}  →  blender_pos={obj.location}")
 
-
     def place_trash_can(self, can: dict):
-        """Instantiate a trash can asset."""
         obj, children = self._instance_group("trash_can")
         obj.location = self._json_to_blender(can["position_3d"])
 
-        part_scales = {
-            "bin_mesh": 1.0,
-            "lid_mesh": 10,
-            "wheels_mesh": 10,
-        }
+        part_scales = {"bin_mesh": 1.0, "lid_mesh": 10, "wheels_mesh": 10}
         self._scale_group_children(children, part_scales)
 
         part_materials = {
-            "bin_mesh": self.Materials.get_trash_can_bin_material(),
-            "lid_mesh": self.Materials.get_trash_can_lid_material(),
+            "bin_mesh":    self.Materials.get_trash_can_bin_material(),
+            "lid_mesh":    self.Materials.get_trash_can_lid_material(),
             "wheels_mesh": self.Materials.get_trash_can_wheels_material(),
         }
         self._apply_group_child_materials(children, part_materials)
@@ -341,7 +574,6 @@ class AssetLibrary:
         self._frame_objects.append(obj)
         print(f"[assets] traffic pole: json_pos={pole['position_3d']}  →  blender_pos={obj.location}")
 
-
     def clear_frame_objects(self):
         """Delete all objects placed during the previous frame."""
         for obj in self._frame_objects:
@@ -352,7 +584,7 @@ class AssetLibrary:
             if obj.name.startswith("vehicle") or obj.name.startswith("pedestrian"):
                 bpy.data.objects.remove(obj, do_unlink=True)
 
-    # ── Helpers ───────────────────────────────────────────────────────────
+    # ── Internal helpers ──────────────────────────────────────────────────
 
     def _instance(self, name: str):
         """Duplicate a template object and link it to the scene."""
@@ -386,7 +618,6 @@ class AssetLibrary:
 
     @staticmethod
     def _scale_group_children(objects, part_scales: dict):
-        """Apply per-part scale multipliers to grouped meshes by name token."""
         for obj in objects:
             obj_name = obj.name.lower()
             factor = 1.0
@@ -398,7 +629,6 @@ class AssetLibrary:
 
     @staticmethod
     def _apply_group_child_materials(objects, part_materials: dict):
-        """Assign materials to grouped meshes by child-name token."""
         for obj in objects:
             obj_name = obj.name.lower()
             for token, mat in part_materials.items():
@@ -408,19 +638,10 @@ class AssetLibrary:
                     break
 
     def _add_traffic_light_bulbs(self, obj, active_color: str = "red"):
-        """Create three emissive sphere bulbs near the traffic light.
-
-        Spheres are used instead of flat disks so visibility is robust from
-        different camera angles and independent of face orientation.
-        """
-
         bpy.context.view_layer.update()
-
         base = obj.location.copy()
         cam = bpy.context.scene.camera
 
-        # Move bulbs slightly toward camera so they are not hidden by the
-        # traffic light mesh.
         to_cam = Vector((0.0, -1.0, 0.0))
         if cam is not None:
             v = cam.location - base
@@ -432,9 +653,9 @@ class AssetLibrary:
         radius = 0.19
 
         bulb_specs = [
-            ("red", vertical_spacing),
+            ("red",    vertical_spacing),
             ("yellow", 0.0),
-            ("green", -vertical_spacing),
+            ("green",  -vertical_spacing),
         ]
 
         for color, z_off in bulb_specs:
@@ -444,31 +665,20 @@ class AssetLibrary:
                 location=pos,
                 radius=radius,
             )
-
-            # Use the traffic-light color only for the active bulb;
-            # others use the "unknown" grey for an "off" look.
             mat_key = color if color == active_color else "unknown"
             mat = self.Materials.get_traffic_light_material(mat_key)
             if mat is not None:
                 bulb_obj.data.materials.clear()
                 bulb_obj.data.materials.append(mat)
-
             self._frame_objects.append(bulb_obj)
 
     @staticmethod
     def _create_sphere_mesh_object(name: str, location: Vector, radius: float):
-        """Create a small UV-sphere mesh object without bpy.ops."""
         mesh = bpy.data.meshes.new(f"{name}_Mesh")
         bm = bmesh.new()
-        bmesh.ops.create_uvsphere(
-            bm,
-            u_segments=16,
-            v_segments=8,
-            radius=radius,
-        )
+        bmesh.ops.create_uvsphere(bm, u_segments=16, v_segments=8, radius=radius)
         bm.to_mesh(mesh)
         bm.free()
-
         obj = bpy.data.objects.new(name, mesh)
         obj.location = location
         bpy.context.collection.objects.link(obj)
@@ -476,7 +686,6 @@ class AssetLibrary:
 
     @staticmethod
     def _create_cylinder_between_points(name: str, point_a: Vector, point_b: Vector, radius: float):
-        """Create a cylinder connecting two 3D points."""
         direction = point_b - point_a
         length = direction.length
         if length <= 1e-6:
@@ -484,15 +693,8 @@ class AssetLibrary:
 
         mesh = bpy.data.meshes.new(f"{name}_Mesh")
         bm = bmesh.new()
-        bmesh.ops.create_cone(
-            bm,
-            cap_ends=True,
-            cap_tris=False,
-            segments=12,
-            radius1=radius,
-            radius2=radius,
-            depth=length,
-        )
+        bmesh.ops.create_cone(bm, cap_ends=True, cap_tris=False, segments=12,
+                              radius1=radius, radius2=radius, depth=length)
         bm.to_mesh(mesh)
         bm.free()
 
@@ -504,22 +706,14 @@ class AssetLibrary:
         return obj
 
     def _create_stop_sign_decal(self, stop_obj):
-        """Create a textured octagon decal in front of the stop-sign head.
-
-        The decal has clean UVs and is independent of the imported asset's
-        material slots/UV layout, which avoids clipped edges and texture bleed.
-        """
         bpy.context.view_layer.update()
-
         world_corners = [stop_obj.matrix_world @ Vector(corner) for corner in stop_obj.bound_box]
         min_x = min(c.x for c in world_corners)
         max_x = max(c.x for c in world_corners)
         max_z = max(c.z for c in world_corners)
 
         width = max(max_x - min_x, 1e-4)
-        # Slightly oversize so the decal fully covers the white sign face.
         radius = max(0.18, 0.52 * width)
-
         center = Vector(((min_x + max_x) * 0.5, stop_obj.location.y, max_z - 1.05 * radius))
 
         cam = bpy.context.scene.camera
@@ -529,34 +723,21 @@ class AssetLibrary:
                 center += to_cam.normalized() * 0.02
 
         mesh = bpy.data.meshes.new("StopSignDecal_Mesh")
-
-        # Build a quad in local XZ plane (normal +Y). The PNG alpha defines
-        # the octagon silhouette, while the quad guarantees robust UV mapping.
         verts = [
             (-radius, 0.0, -radius),
             ( radius, 0.0, -radius),
             ( radius, 0.0,  radius),
             (-radius, 0.0,  radius),
         ]
-        faces = [(0, 1, 2, 3)]
-        mesh.from_pydata(verts, [], faces)
+        mesh.from_pydata(verts, [], [(0, 1, 2, 3)])
         mesh.update()
 
-        # Full-range UV mapping with U flipped so STOP reads correctly.
         uv_layer = mesh.uv_layers.new(name="UVMap")
-        uv_coords = [
-            (1.0, 0.0),
-            (0.0, 0.0),
-            (0.0, 1.0),
-            (1.0, 1.0),
-        ]
-        for loop_idx, uv in zip(mesh.polygons[0].loop_indices, uv_coords):
+        for loop_idx, uv in zip(mesh.polygons[0].loop_indices,
+                                [(1.0, 0.0), (0.0, 0.0), (0.0, 1.0), (1.0, 1.0)]):
             uv_layer.data[loop_idx].uv = uv
 
         decal_obj = bpy.data.objects.new("StopSignDecal", mesh)
-
-        # Billboard the decal toward camera so orientation does not depend on
-        # the imported asset's local axis conventions.
         cam = bpy.context.scene.camera
         if cam is not None:
             to_cam = cam.location - center
@@ -576,100 +757,77 @@ class AssetLibrary:
 
     @staticmethod
     def _align_object_to_ground(obj, ground_z: float = 0.0, clearance: float = 0.0):
-        """
-        Lift an object so its lowest world-space bbox point sits on the ground.
-
-        This makes placement much more robust when the asset origin is not at
-        the wheel/foot contact plane.
-        """
-        from mathutils import Vector
-
         bpy.context.view_layer.update()
         min_z = min((obj.matrix_world @ Vector(corner)).z for corner in obj.bound_box)
         obj.location.z += (ground_z + clearance) - min_z
 
     @staticmethod
     def _align_group_to_ground(parent_obj, objects, ground_z: float = 0.0, clearance: float = 0.0):
-        """Lift a grouped object so the group's lowest world-space point sits on ground."""
-        from mathutils import Vector
-
         bpy.context.view_layer.update()
-        min_z = min((obj.matrix_world @ Vector(corner)).z for obj in objects for corner in obj.bound_box)
+        min_z = min(
+            (obj.matrix_world @ Vector(corner)).z
+            for obj in objects
+            for corner in obj.bound_box
+        )
         parent_obj.location.z += (ground_z + clearance) - min_z
+
+    # ── Static lookup tables (unchanged) ─────────────────────────────────
 
     @staticmethod
     def _vehicle_yaw_from_direction(direction: str) -> float:
-        """
-        Map coarse motion labels to a plausible vehicle yaw in Blender.
-
-        Convention:
-          - 0 rad      : facing away from camera / forward in scene
-          - pi rad     : facing toward camera
-          - +/- pi/2   : side-facing left/right
-        """
         yaw_map = {
             "right": -math.pi / 2,
-            "left": math.pi / 2,
+            "left":   math.pi / 2,
             "approaching_right": -math.pi / 4,
-            "approaching_left": math.pi / 4,
-            "receding_right": -3 * math.pi / 4,
-            "receding_left": 3 * math.pi / 4,
+            "approaching_left":   math.pi / 4,
+            "receding_right":    -3 * math.pi / 4,
+            "receding_left":      3 * math.pi / 4,
             "approaching": 0.0,
-            "receding": math.pi,
-            "stationary": 0.0,
-            "unknown": 0.0,
+            "receding":    math.pi,
+            "stationary":  0.0,
+            "unknown":     0.0,
         }
         return yaw_map.get(direction, 0.0)
 
     @staticmethod
     def _vehicle_asset_name(vehicle_class: str) -> str:
-        """
-        Map detected vehicle classes to available Blender asset keys.
-
-        For now, all car-like classes share the sedan/hatchback asset.
-        """
         asset_map = {
-            "car": "sedanandhatchbacks",
-            "sedan": "sedanandhatchbacks",
-            "sedanandhatchbacks": "sedanandhatchbacks",
-            "hatchback": "sedanandhatchbacks",
-            "suv": "suv",
-            "pickuptruck": "pickuptruck",
-            "pickup_truck": "pickuptruck",
-            "bicycle": "bicycle",
-            "motorcycle": "motorcycle",
-            "truck": "truck",
-            "bus": "truck",
+            "car":               "sedanandhatchbacks",
+            "sedan":             "sedanandhatchbacks",
+            "sedanandhatchbacks":"sedanandhatchbacks",
+            "hatchback":         "sedanandhatchbacks",
+            "suv":               "suv",
+            "pickuptruck":       "pickuptruck",
+            "pickup_truck":      "pickuptruck",
+            "bicycle":           "bicycle",
+            "motorcycle":        "motorcycle",
+            "truck":             "truck",
+            "bus":               "truck",
         }
         return asset_map.get(vehicle_class, "sedanandhatchbacks")
 
     @staticmethod
     def _vehicle_scale(vehicle_class: str) -> tuple:
-        """Map detected vehicle classes to per-asset Blender scales."""
         scale_map = {
-            "car": (0.02, 0.02, 0.02),
-            "sedan": (0.02, 0.02, 0.02),
-            "sedanandhatchbacks": (0.02, 0.02, 0.02),
-            "hatchback": (0.02, 0.02, 0.02),
-            "suv": (3.354, 3.354, 3.354),
-            "pickuptruck": (0.5, 0.5, 0.5),
-            "pickup_truck": (0.5, 0.5, 0.5),
-            "truck": (0.001, 0.001, 0.001),
-            "bus": (0.001, 0.001, 0.001),
-            "bicycle": (0.118, 0.118, 0.118),
-            "motorcycle": (0.006, 0.006, 0.006),
+            "car":               (0.02, 0.02, 0.02),
+            "sedan":             (0.02, 0.02, 0.02),
+            "sedanandhatchbacks":(0.02, 0.02, 0.02),
+            "hatchback":         (0.02, 0.02, 0.02),
+            "suv":               (3.354, 3.354, 3.354),
+            "pickuptruck":       (0.5, 0.5, 0.5),
+            "pickup_truck":      (0.5, 0.5, 0.5),
+            "truck":             (0.001, 0.001, 0.001),
+            "bus":               (0.001, 0.001, 0.001),
+            "bicycle":           (0.118, 0.118, 0.118),
+            "motorcycle":        (0.006, 0.006, 0.006),
         }
         return scale_map.get(vehicle_class, (0.02, 0.02, 0.02))
 
     @staticmethod
     def _vehicle_yaw_offset(vehicle_class: str) -> float:
-        """
-        Per-asset yaw correction for meshes whose local forward axis differs
-        from the rest of the vehicle library.
-        """
         yaw_offset_map = {
             "truck": math.pi,
-            "bus": math.pi,
+            "bus":   math.pi,
         }
         return yaw_offset_map.get(vehicle_class, 0.0)
 
