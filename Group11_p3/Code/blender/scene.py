@@ -112,6 +112,319 @@ def setup_scene(cfg: dict):
           f"res={scene.render.resolution_x}x{scene.render.resolution_y}")
 
 
+def _lane_overlaps_arrow_bbox(lane: dict, arrow_bbox: list, pad_px: float = 6.0) -> bool:
+    """Return True when lane polyline intersects an expanded bbox."""
+    points = lane.get("points") or []
+    if len(points) < 2 or not isinstance(arrow_bbox, (list, tuple)) or len(arrow_bbox) != 4:
+        return False
+
+    x1, y1, x2, y2 = [float(v) for v in arrow_bbox]
+    if x2 <= x1 or y2 <= y1:
+        return False
+
+    x1 -= pad_px
+    y1 -= pad_px
+    x2 += pad_px
+    y2 += pad_px
+
+    def _point_in_rect(u: float, v: float) -> bool:
+        return x1 <= u <= x2 and y1 <= v <= y2
+
+    def _orient(ax, ay, bx, by, cx, cy):
+        return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+
+    def _on_segment(ax, ay, bx, by, cx, cy):
+        return min(ax, bx) - 1e-6 <= cx <= max(ax, bx) + 1e-6 and min(ay, by) - 1e-6 <= cy <= max(ay, by) + 1e-6
+
+    def _segments_intersect(a, b, c, d):
+        ax, ay = a
+        bx, by = b
+        cx, cy = c
+        dx, dy = d
+
+        o1 = _orient(ax, ay, bx, by, cx, cy)
+        o2 = _orient(ax, ay, bx, by, dx, dy)
+        o3 = _orient(cx, cy, dx, dy, ax, ay)
+        o4 = _orient(cx, cy, dx, dy, bx, by)
+
+        if (o1 > 0) != (o2 > 0) and (o3 > 0) != (o4 > 0):
+            return True
+
+        if abs(o1) <= 1e-6 and _on_segment(ax, ay, bx, by, cx, cy):
+            return True
+        if abs(o2) <= 1e-6 and _on_segment(ax, ay, bx, by, dx, dy):
+            return True
+        if abs(o3) <= 1e-6 and _on_segment(cx, cy, dx, dy, ax, ay):
+            return True
+        if abs(o4) <= 1e-6 and _on_segment(cx, cy, dx, dy, bx, by):
+            return True
+
+        return False
+
+    rect_edges = [
+        ((x1, y1), (x2, y1)),
+        ((x2, y1), (x2, y2)),
+        ((x2, y2), (x1, y2)),
+        ((x1, y2), (x1, y1)),
+    ]
+
+    valid_pts = []
+    for pt in points:
+        if not isinstance(pt, (list, tuple)) or len(pt) < 2:
+            continue
+        valid_pts.append((float(pt[0]), float(pt[1])))
+
+    if len(valid_pts) < 2:
+        return False
+
+    for u, v in valid_pts:
+        if _point_in_rect(u, v):
+            return True
+
+    for i in range(len(valid_pts) - 1):
+        p0 = valid_pts[i]
+        p1 = valid_pts[i + 1]
+
+        sx1 = min(p0[0], p1[0])
+        sy1 = min(p0[1], p1[1])
+        sx2 = max(p0[0], p1[0])
+        sy2 = max(p0[1], p1[1])
+        if sx2 < x1 or sx1 > x2 or sy2 < y1 or sy1 > y2:
+            continue
+
+        if _point_in_rect(p0[0], p0[1]) or _point_in_rect(p1[0], p1[1]):
+            return True
+
+        for e0, e1 in rect_edges:
+            if _segments_intersect(p0, p1, e0, e1):
+                return True
+
+    return False
+
+
+def _lane_overlaps_ground_arrows(lane: dict, ground_arrows: list) -> bool:
+    """Return True when a lane should be suppressed due to ground-arrow overlap."""
+    if not ground_arrows:
+        return False
+
+    for arrow in ground_arrows:
+        bbox = arrow.get("bbox") if isinstance(arrow, dict) else None
+        if _lane_overlaps_arrow_bbox(lane, bbox):
+            return True
+
+    return False
+
+
+def _lane_overlaps_ground_text(lane: dict, ground_text_markings: list) -> bool:
+    """Return True when a lane should be suppressed due to ONLY text overlap."""
+    if not ground_text_markings:
+        return False
+
+    for marking in ground_text_markings:
+        if not isinstance(marking, dict):
+            continue
+        if not bool(marking.get("has_only_letters", False)):
+            continue
+        if float(marking.get("ocr_confidence", 0.0) or 0.0) < 0.6:
+            continue
+
+        bbox = _only_render_bbox(marking)
+        if _lane_overlaps_arrow_bbox(lane, bbox, pad_px=0.0):
+            return True
+
+    return False
+
+
+def _point_in_bbox(pt, bbox, pad_px: float = 0.0) -> bool:
+    """Return True when a 2D point lies within a padded bbox."""
+    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        return False
+    x1, y1, x2, y2 = [float(v) for v in bbox]
+    if x2 <= x1 or y2 <= y1:
+        return False
+    x1 -= pad_px
+    y1 -= pad_px
+    x2 += pad_px
+    y2 += pad_px
+    u, v = float(pt[0]), float(pt[1])
+    return x1 <= u <= x2 and y1 <= v <= y2
+
+
+def _segment_intersects_bbox(p0, p1, bbox, pad_px: float = 3.0) -> bool:
+    """Return True when a line segment intersects a padded bbox."""
+    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        return False
+
+    x1, y1, x2, y2 = [float(v) for v in bbox]
+    if x2 <= x1 or y2 <= y1:
+        return False
+
+    x1 -= pad_px
+    y1 -= pad_px
+    x2 += pad_px
+    y2 += pad_px
+
+    def _orient(ax, ay, bx, by, cx, cy):
+        return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+
+    def _on_segment(ax, ay, bx, by, cx, cy):
+        return min(ax, bx) - 1e-6 <= cx <= max(ax, bx) + 1e-6 and min(ay, by) - 1e-6 <= cy <= max(ay, by) + 1e-6
+
+    def _segments_intersect(a, b, c, d):
+        ax, ay = a
+        bx, by = b
+        cx, cy = c
+        dx, dy = d
+
+        o1 = _orient(ax, ay, bx, by, cx, cy)
+        o2 = _orient(ax, ay, bx, by, dx, dy)
+        o3 = _orient(cx, cy, dx, dy, ax, ay)
+        o4 = _orient(cx, cy, dx, dy, bx, by)
+
+        if (o1 > 0) != (o2 > 0) and (o3 > 0) != (o4 > 0):
+            return True
+
+        if abs(o1) <= 1e-6 and _on_segment(ax, ay, bx, by, cx, cy):
+            return True
+        if abs(o2) <= 1e-6 and _on_segment(ax, ay, bx, by, dx, dy):
+            return True
+        if abs(o3) <= 1e-6 and _on_segment(cx, cy, dx, dy, ax, ay):
+            return True
+        if abs(o4) <= 1e-6 and _on_segment(cx, cy, dx, dy, bx, by):
+            return True
+
+        return False
+
+    if _point_in_bbox(p0, (x1, y1, x2, y2), 0.0) or _point_in_bbox(p1, (x1, y1, x2, y2), 0.0):
+        return True
+
+    sx1 = min(float(p0[0]), float(p1[0]))
+    sy1 = min(float(p0[1]), float(p1[1]))
+    sx2 = max(float(p0[0]), float(p1[0]))
+    sy2 = max(float(p0[1]), float(p1[1]))
+    if sx2 < x1 or sx1 > x2 or sy2 < y1 or sy1 > y2:
+        return False
+
+    rect_edges = [
+        ((x1, y1), (x2, y1)),
+        ((x2, y1), (x2, y2)),
+        ((x2, y2), (x1, y2)),
+        ((x1, y2), (x1, y1)),
+    ]
+    for e0, e1 in rect_edges:
+        if _segments_intersect(p0, p1, e0, e1):
+            return True
+
+    return False
+
+
+def _collect_lane_block_bboxes(frame_data: dict) -> list:
+    """Collect bboxes that should mask lane rendering for this frame."""
+    bboxes = []
+
+    for arrow in frame_data.get("ground_arrows", []):
+        if not isinstance(arrow, dict):
+            continue
+        bbox = arrow.get("bbox")
+        if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+            bboxes.append([float(v) for v in bbox])
+
+    for marking in frame_data.get("ground_text_markings", []):
+        if not isinstance(marking, dict):
+            continue
+        if not bool(marking.get("has_only_letters", False)):
+            continue
+        if float(marking.get("ocr_confidence", 0.0) or 0.0) < 0.6:
+            continue
+        bbox = _only_render_bbox(marking)
+        if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+            bboxes.append([float(v) for v in bbox])
+
+    return bboxes
+
+
+def _split_lane_points_by_bboxes(points: list, bboxes: list, pad_px: float = 0.0) -> list:
+    """Split lane polyline into non-overlapping fragments outside blocked bboxes."""
+    valid_pts = []
+    for pt in points or []:
+        if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+            valid_pts.append([float(pt[0]), float(pt[1])])
+
+    if len(valid_pts) < 2:
+        return []
+
+    if not bboxes:
+        return [valid_pts]
+
+    fragments = []
+    current = []
+
+    for i in range(len(valid_pts) - 1):
+        p0 = valid_pts[i]
+        p1 = valid_pts[i + 1]
+
+        p0_blocked = any(_point_in_bbox(p0, b, pad_px) for b in bboxes)
+        p1_blocked = any(_point_in_bbox(p1, b, pad_px) for b in bboxes)
+        seg_blocked = any(_segment_intersects_bbox(p0, p1, b, pad_px) for b in bboxes)
+
+        if not p0_blocked and not seg_blocked and not current:
+            current = [p0]
+
+        if p0_blocked or p1_blocked or seg_blocked:
+            if len(current) >= 2:
+                fragments.append(current)
+            current = []
+            continue
+
+        if not current:
+            current = [p0]
+        if current[-1] != p1:
+            current.append(p1)
+
+    if len(current) >= 2:
+        fragments.append(current)
+
+    return fragments
+
+
+def _only_render_bbox(marking: dict):
+    """Approximate rendered ONLY span from bbox + only_letter_hits."""
+    bbox = marking.get("bbox") if isinstance(marking, dict) else None
+    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        return bbox
+
+    x1, y1, x2, y2 = [float(v) for v in bbox]
+    if x2 <= x1 or y2 <= y1:
+        return [x1, y1, x2, y2]
+
+    hits_raw = str(marking.get("only_letter_hits", "") or "").upper()
+    hits = {ch for ch in hits_raw if ch in {"O", "N", "L", "Y"}}
+    if not hits:
+        return [x1, y1, x2, y2]
+
+    target = "ONLY"
+    present_indices = [i for i, ch in enumerate(target) if ch in hits]
+    if not present_indices:
+        return [x1, y1, x2, y2]
+
+    first_idx = min(present_indices)
+    last_idx = max(present_indices)
+    observed_span = max(last_idx - first_idx + 1, 1)
+
+    bbox_w = max(x2 - x1, 1.0)
+    est_char_w = bbox_w / float(observed_span)
+
+    render_left = x1 - first_idx * est_char_w
+    render_right = render_left + 4.0 * est_char_w
+
+    # Keep the adjusted box in a sane range near the original detection.
+    max_extra = 2.0 * bbox_w
+    render_left = max(render_left, x1 - max_extra)
+    render_right = min(render_right, x2 + max_extra)
+
+    return [render_left, y1, render_right, y2]
+
+
 def render_sequence(scene_name: str, camera: str, cfg: dict, debug: bool = False, asset_lib=None):
     """
     Main loop: iterate over all detection JSONs for one scene+camera pair,
@@ -152,6 +465,8 @@ def render_sequence(scene_name: str, camera: str, cfg: dict, debug: bool = False
         "trash_cans": "place_trash_can",
         "traffic_poles": "place_traffic_pole",
         "speed_limit_signs": "place_speed_limit_sign",
+        "ground_arrows": "place_ground_arrow",
+        "ground_text_markings": "place_ground_text_marking",
     }
 
     # Lane renderer: persists across frames, geometry cleared per frame
@@ -187,13 +502,28 @@ def render_sequence(scene_name: str, camera: str, cfg: dict, debug: bool = False
             for s in frame_data.get("stop_signs", []):
                 asset_lib.place_stop_sign(s)
             # lanes
+            lane_block_bboxes = _collect_lane_block_bboxes(frame_data)
             for lane in frame_data.get("lanes", []):
-                lane_renderer.draw_lane(lane)
+                lane_frags = _split_lane_points_by_bboxes(
+                    lane.get("points", []),
+                    lane_block_bboxes,
+                    pad_px=0.0,
+                )
+                for frag in lane_frags:
+                    lane_frag = dict(lane)
+                    lane_frag["points"] = frag
+                    lane_renderer.draw_lane(lane_frag)
             # non-COCO objects
             for obj_type in nonCOCO_objects:
-                place_fn = getattr(asset_lib, dispatch.get(obj_type), None)
+                place_fn_name = dispatch.get(obj_type)
+                place_fn = getattr(asset_lib, place_fn_name, None) if place_fn_name else None
+                if place_fn is None:
+                    continue
                 for obj in frame_data.get(obj_type, []):
-                    place_fn(obj)
+                    if obj_type in {"ground_text_markings", "ground_arrows"}:
+                        place_fn(obj, frame_data.get("lanes", []))
+                    else:
+                        place_fn(obj)
 
             # some white space for debugging
             print()
