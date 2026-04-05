@@ -102,6 +102,11 @@ perception:
     - prompt: "traffic cone"
       label: "traffic_cone"
       export_bucket: "traffic_cones"
+      exclude_labels: ["fire_hydrant"]
+    - prompt: "fire hydrant"
+      label: "fire_hydrant"
+      export_bucket: "non_coco_objects"
+      exclude_labels: ["traffic_cone"]
     - prompt: "traffic cylinder"
       label: "traffic_cone"
       export_bucket: "traffic_cones"
