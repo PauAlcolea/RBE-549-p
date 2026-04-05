@@ -43,11 +43,18 @@ class AssetLibrary:
         self.cfg = cfg
         self.assets_dir = Path(cfg["paths"]["assets_dir"])
         self.ground_clearance_m = cfg["blender"].get("ground_clearance_m", 0.03)
+        self._scene_name = None
+        self._camera_name = None
         self._frame_objects = []     # track objects placed this frame for cleanup
         self._templates: Dict[str, object] = {}  # cache of linked template objects
         self._template_groups: Dict[str, list] = {}  # cache of linked grouped templates
         self._load_templates()
         self.Materials = MaterialLibrary(cfg)
+
+    def set_render_context(self, scene_name: str = None, camera_name: str = None):
+        """Store active scene/camera so style overrides can be scene-specific."""
+        self._scene_name = str(scene_name) if scene_name is not None else None
+        self._camera_name = str(camera_name) if camera_name is not None else None
 
     def _load_templates(self):
         asset_files = {
@@ -144,6 +151,8 @@ class AssetLibrary:
                 -(float(heading_rad) - math.pi / 2)
                 + self._vehicle_yaw_offset(vehicle_class)
             )
+            if vehicle_class == "suv":
+                obj.rotation_euler[2] += math.pi
         self._align_object_to_ground(obj, ground_z=0.0, clearance=self.ground_clearance_m)
 
         self._frame_objects.append(obj)
@@ -284,10 +293,50 @@ class AssetLibrary:
         """
         Instantiate the traffic light asset and set its state (red/yellow/green).
         Texture path: Data/Assets/traffic_light_texture.png (given by project).
+
+                light dict keys consumed:
+                    - position_3d: [x, y, z] in camera coordinates (required)
+                    - color: red|yellow|green (optional, defaults to red)
+                    - traffic_light_style:
+                        standard_vertical|wide_green_arrow_candidate|square_arrow_signal_candidate
+                        (optional, defaults to standard_vertical)
         """
+        # Choose state color from detection if available; default to red.
+        tl_color = light.get("color", "red")
+        if tl_color not in {"red", "yellow", "green"}:
+            tl_color = "red"
+
+        tl_style = light.get("traffic_light_style", "standard_vertical")
+
+        # Scene prior: in scene6, all traffic lights should use the normal
+        # housing with an up-arrow glyph in the bottom (green) lens slot.
+        force_scene6_up_arrow = (self._scene_name == "scene6")
+        blender_pos = self._json_to_blender(light["position_3d"])
+
+        # Guardrail for scene6: traffic lights should be overhead, not near
+        # ground level. Skip obvious false positives that touch the road.
+        if force_scene6_up_arrow and blender_pos[2] <= 1.0:
+            print(
+                f"[assets] skip low traffic light in scene6: "
+                f"json_pos={light['position_3d']} blender_z={blender_pos[2]:.3f}"
+            )
+            return
+
+        # Special style: render standalone lane-control symbol only.
+        if tl_style == "square_arrow_signal_candidate" and not force_scene6_up_arrow:
+            self._add_square_signal_symbol(
+                base_location=Vector(blender_pos),
+                active_color=tl_color,
+            )
+            print(
+                f"[assets] square signal: json_pos={light['position_3d']}  "
+                f"state={tl_color}  style={tl_style}"
+            )
+            return
+
         obj = self._instance("traffic_light")
-        obj.location = self._json_to_blender(light["position_3d"])
-        obj.scale = (0.5, 0.5, 0.5)
+        obj.location = blender_pos
+        obj.scale = (1.0, 1.0, 1.0)
         obj.rotation_euler[2] = -math.pi / 2  # rotate to face the camera
 
         # Color the traffic-light body/housing yellow (bulbs are separate).
@@ -296,16 +345,30 @@ class AssetLibrary:
             obj.data.materials.clear()
             obj.data.materials.append(body_mat)
 
-        # Choose state color from detection if available; default to red.
-        tl_color = light.get("color", "red")
-        if tl_color not in {"red", "yellow", "green"}:
-            tl_color = "red"
+        render_green_as_arrow = (
+            tl_style == "wide_green_arrow_candidate" and tl_color == "green"
+        )
+        arrow_direction = "right"
+        if force_scene6_up_arrow:
+            render_green_as_arrow = True
+            arrow_direction = "up"
 
-        # Add three emissive "bulb" disks near the traffic light position.
-        self._add_traffic_light_bulbs(obj, active_color=tl_color)
+        # Scene6 rule: red/yellow bulbs stay off; only the green arrow is lit.
+        active_color_for_render = "green" if force_scene6_up_arrow else tl_color
+
+        # Add three emissive bulbs, with optional green-arrow replacement.
+        self._add_traffic_light_bulbs(
+            obj,
+            active_color=active_color_for_render,
+            render_green_as_arrow=render_green_as_arrow,
+            arrow_direction=arrow_direction,
+        )
 
         self._frame_objects.append(obj)
-        print(f"[assets] traffic light: json_pos={light['position_3d']}  →  blender_pos={obj.location}  state={tl_color}")
+        print(
+            f"[assets] traffic light: json_pos={light['position_3d']}  "
+            f"→  blender_pos={obj.location}  state={tl_color}  style={tl_style}"
+        )
 
     
     def place_traffic_cone(self, cone: dict):
@@ -571,11 +634,20 @@ class AssetLibrary:
                     obj.data.materials.append(mat)
                     break
 
-    def _add_traffic_light_bulbs(self, obj, active_color: str = "red"):
+    def _add_traffic_light_bulbs(
+        self,
+        obj,
+        active_color: str = "red",
+        render_green_as_arrow: bool = False,
+        arrow_direction: str = "right",
+    ):
         """Create three emissive sphere bulbs near the traffic light.
 
         Spheres are used instead of flat disks so visibility is robust from
         different camera angles and independent of face orientation.
+
+        When render_green_as_arrow is True, the green slot is rendered as a
+        left arrow mesh for wide-format green-arrow traffic lights.
         """
 
         bpy.context.view_layer.update()
@@ -591,9 +663,17 @@ class AssetLibrary:
             if v.length > 1e-6:
                 to_cam = v.normalized()
 
-        toward_cam_offset = 0.35
-        vertical_spacing = 0.5
-        radius = 0.19
+        # Original bulb tuning was done for traffic-light scale 0.5.
+        # Scale offsets and primitive size with the actual light scale so
+        # increasing light size keeps bulbs/arrows in the correct place.
+        base_light_scale = 0.5
+        obj_scale = max(abs(obj.scale.x), abs(obj.scale.y), abs(obj.scale.z))
+        scale_factor = obj_scale / base_light_scale if base_light_scale > 1e-6 else 1.0
+
+        body_top_offset = 0.8 * scale_factor
+        toward_cam_offset = 0.35 * scale_factor
+        vertical_spacing = 0.5 * scale_factor
+        radius = 0.19 * scale_factor
 
         bulb_specs = [
             ("red", vertical_spacing),
@@ -602,12 +682,39 @@ class AssetLibrary:
         ]
 
         for color, z_off in bulb_specs:
-            pos = base + Vector((0.0, 0.0, 0.8)) + to_cam * toward_cam_offset + Vector((0.0, 0.0, z_off))
-            bulb_obj = self._create_sphere_mesh_object(
-                name=f"TL_Bulb_{color}",
-                location=pos,
-                radius=radius,
-            )
+            pos = base + Vector((0.0, 0.0, body_top_offset)) + to_cam * toward_cam_offset + Vector((0.0, 0.0, z_off))
+            if color == "green" and render_green_as_arrow:
+                # Pull arrow farther toward camera so it does not get hidden
+                # by the traffic-light housing at larger signal scales.
+                arrow_pos = pos + to_cam * (0.18 * scale_factor)
+                bulb_obj = self._create_left_arrow_mesh_object(
+                    name=f"TL_Arrow_{len(self._frame_objects)}",
+                    location=arrow_pos,
+                    width=radius * 2.6,
+                    height=radius * 1.8,
+                    depth=radius * 0.65,
+                )
+                # Billboard arrow to camera so the shape is readable and not
+                # seen edge-on at long distance.
+                if cam is not None:
+                    cam_dir = cam.location - arrow_pos
+                    if cam_dir.length > 1e-6:
+                        bulb_obj.rotation_euler = cam_dir.normalized().to_track_quat("Y", "Z").to_euler()
+                        # Arrow mesh points along +X (right) in local symbol space.
+                        # Rotate around local Y to remap +X -> +Z for an up arrow.
+                        if arrow_direction == "up":
+                            bulb_obj.rotation_euler.rotate_axis("Y", math.radians(-90.0))
+                else:
+                    bulb_obj.rotation_euler = obj.rotation_euler.copy()
+                    if arrow_direction == "up":
+                        bulb_obj.rotation_euler.rotate_axis("Y", math.radians(-90.0))
+                print(f"[assets] traffic light arrow enabled: pos={arrow_pos}")
+            else:
+                bulb_obj = self._create_sphere_mesh_object(
+                    name=f"TL_Bulb_{color}",
+                    location=pos,
+                    radius=radius,
+                )
 
             # Use the traffic-light color only for the active bulb;
             # others use the "unknown" grey for an "off" look.
@@ -618,6 +725,245 @@ class AssetLibrary:
                 bulb_obj.data.materials.append(mat)
 
             self._frame_objects.append(bulb_obj)
+
+    @staticmethod
+    def _create_left_arrow_mesh_object(
+        name: str,
+        location: Vector,
+        width: float,
+        height: float,
+        depth: float,
+    ):
+        """Create a small right-pointing arrow mesh without bpy.ops.
+
+        The arrow is centered at location and extruded in Y for thickness.
+        """
+        hw = width * 0.5
+        hh = height * 0.5
+        neck_x = hw * 0.15
+        head_x = hw
+        tail_x = -hw
+        body_h = hh * 0.30
+        hy = max(depth * 0.5, 1e-4)
+
+        front = [
+            Vector((head_x, 0.0, 0.0)),
+            Vector((neck_x, 0.0, hh)),
+            Vector((neck_x, 0.0, body_h)),
+            Vector((tail_x, 0.0, body_h)),
+            Vector((tail_x, 0.0, -body_h)),
+            Vector((neck_x, 0.0, -body_h)),
+            Vector((neck_x, 0.0, -hh)),
+        ]
+        back = [Vector((v.x, -hy * 2.0, v.z)) for v in front]
+
+        mesh = bpy.data.meshes.new(f"{name}_Mesh")
+        bm = bmesh.new()
+
+        verts_f = [bm.verts.new((v.x, hy, v.z)) for v in front]
+        verts_b = [bm.verts.new((v.x, -hy, v.z)) for v in back]
+        bm.verts.ensure_lookup_table()
+
+        bm.faces.new(verts_f)
+        bm.faces.new(list(reversed(verts_b)))
+
+        n = len(verts_f)
+        for i in range(n):
+            j = (i + 1) % n
+            bm.faces.new([
+                verts_f[i],
+                verts_f[j],
+                verts_b[j],
+                verts_b[i],
+            ])
+
+        bm.normal_update()
+        bm.to_mesh(mesh)
+        bm.free()
+
+        obj = bpy.data.objects.new(name, mesh)
+        obj.location = location
+        bpy.context.collection.objects.link(obj)
+        return obj
+
+    def _add_square_signal_symbol(self, base_location: Vector, active_color: str):
+        """Render standalone symbol for square_arrow_signal_candidate.
+
+        green  -> large down arrow
+        other  -> large red X
+        """
+        bpy.context.view_layer.update()
+
+        cam = bpy.context.scene.camera
+        to_cam = Vector((0.0, -1.0, 0.0))
+        if cam is not None:
+            v = cam.location - base_location
+            if v.length > 1e-6:
+                to_cam = v.normalized()
+
+        center = base_location + Vector((0.0, 0.0, 1.8)) + to_cam * 1.0
+        face_rot = None
+        if cam is not None:
+            cam_dir = cam.location - center
+            if cam_dir.length > 1e-6:
+                face_rot = cam_dir.normalized().to_track_quat("Y", "Z").to_euler()
+
+        # Real lane-control signals are illuminated symbols on a black square face.
+        # Add a backplate slightly behind the symbol to avoid z-fighting.
+        backplate = self._create_bar_mesh_object(
+            name=f"TL_SquareBack_{len(self._frame_objects)}",
+            location=center - to_cam * 0.08,
+            length=3.4,
+            thickness=3.4,
+            depth=0.24,
+        )
+        if face_rot is not None:
+            backplate.rotation_euler = face_rot.copy()
+        backplate_mat = self.Materials.get_trash_can_lid_material()
+        if backplate_mat is not None:
+            backplate.data.materials.clear()
+            backplate.data.materials.append(backplate_mat)
+        self._frame_objects.append(backplate)
+
+        if active_color == "green":
+            symbol = self._create_down_arrow_mesh_object(
+                name=f"TL_DownArrow_{len(self._frame_objects)}",
+                location=center,
+                width=2.2,
+                height=3.0,
+                depth=0.35,
+            )
+            mat = self.Materials.get_traffic_light_material("green")
+            if mat is not None:
+                symbol.data.materials.clear()
+                symbol.data.materials.append(mat)
+
+            if face_rot is not None:
+                symbol.rotation_euler = face_rot.copy()
+
+            self._frame_objects.append(symbol)
+            return
+
+        # Non-green states: render red X.
+        bar_a = self._create_bar_mesh_object(
+            name=f"TL_XA_{len(self._frame_objects)}",
+            location=center,
+            length=2.8,
+            thickness=0.42,
+            depth=0.30,
+        )
+        bar_b = self._create_bar_mesh_object(
+            name=f"TL_XB_{len(self._frame_objects)}",
+            location=center,
+            length=2.8,
+            thickness=0.42,
+            depth=0.30,
+        )
+
+        if face_rot is not None:
+            bar_a.rotation_euler = face_rot.copy()
+            bar_b.rotation_euler = face_rot.copy()
+        bar_a.rotation_euler.rotate_axis("Y", math.radians(45.0))
+        bar_b.rotation_euler.rotate_axis("Y", math.radians(-45.0))
+
+        mat = self.Materials.get_traffic_light_material("red")
+        for bar in (bar_a, bar_b):
+            if mat is not None:
+                bar.data.materials.clear()
+                bar.data.materials.append(mat)
+            self._frame_objects.append(bar)
+
+    @staticmethod
+    def _create_down_arrow_mesh_object(
+        name: str,
+        location: Vector,
+        width: float,
+        height: float,
+        depth: float,
+    ):
+        """Create a down-pointing extruded arrow mesh."""
+        hw = width * 0.5
+        hh = height * 0.5
+        neck_z = -hh * 0.2
+        shaft_hw = hw * 0.34
+        hy = max(depth * 0.5, 1e-4)
+
+        front = [
+            Vector((0.0, 0.0, -hh)),
+            Vector((hw, 0.0, neck_z)),
+            Vector((shaft_hw, 0.0, neck_z)),
+            Vector((shaft_hw, 0.0, hh)),
+            Vector((-shaft_hw, 0.0, hh)),
+            Vector((-shaft_hw, 0.0, neck_z)),
+            Vector((-hw, 0.0, neck_z)),
+        ]
+
+        mesh = bpy.data.meshes.new(f"{name}_Mesh")
+        bm = bmesh.new()
+
+        verts_f = [bm.verts.new((v.x, hy, v.z)) for v in front]
+        verts_b = [bm.verts.new((v.x, -hy, v.z)) for v in front]
+        bm.verts.ensure_lookup_table()
+
+        bm.faces.new(verts_f)
+        bm.faces.new(list(reversed(verts_b)))
+
+        n = len(verts_f)
+        for i in range(n):
+            j = (i + 1) % n
+            bm.faces.new([verts_f[i], verts_f[j], verts_b[j], verts_b[i]])
+
+        bm.normal_update()
+        bm.to_mesh(mesh)
+        bm.free()
+
+        obj = bpy.data.objects.new(name, mesh)
+        obj.location = location
+        bpy.context.collection.objects.link(obj)
+        return obj
+
+    @staticmethod
+    def _create_bar_mesh_object(
+        name: str,
+        location: Vector,
+        length: float,
+        thickness: float,
+        depth: float,
+    ):
+        """Create an extruded rectangular bar in X/Z, used for red X symbol."""
+        hx = length * 0.5
+        hz = thickness * 0.5
+        hy = max(depth * 0.5, 1e-4)
+
+        front = [
+            Vector((-hx, 0.0, -hz)),
+            Vector((hx, 0.0, -hz)),
+            Vector((hx, 0.0, hz)),
+            Vector((-hx, 0.0, hz)),
+        ]
+
+        mesh = bpy.data.meshes.new(f"{name}_Mesh")
+        bm = bmesh.new()
+
+        verts_f = [bm.verts.new((v.x, hy, v.z)) for v in front]
+        verts_b = [bm.verts.new((v.x, -hy, v.z)) for v in front]
+        bm.verts.ensure_lookup_table()
+
+        bm.faces.new(verts_f)
+        bm.faces.new(list(reversed(verts_b)))
+        bm.faces.new([verts_f[0], verts_f[1], verts_b[1], verts_b[0]])
+        bm.faces.new([verts_f[1], verts_f[2], verts_b[2], verts_b[1]])
+        bm.faces.new([verts_f[2], verts_f[3], verts_b[3], verts_b[2]])
+        bm.faces.new([verts_f[3], verts_f[0], verts_b[0], verts_b[3]])
+
+        bm.normal_update()
+        bm.to_mesh(mesh)
+        bm.free()
+
+        obj = bpy.data.objects.new(name, mesh)
+        obj.location = location
+        bpy.context.collection.objects.link(obj)
+        return obj
 
     @staticmethod
     def _create_sphere_mesh_object(name: str, location: Vector, radius: float):

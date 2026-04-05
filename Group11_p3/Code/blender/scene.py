@@ -132,6 +132,11 @@ def render_sequence(scene_name: str, camera: str, cfg: dict, debug: bool = False
         return
  
     print(f"[scene] Rendering {len(jsons)} frames for {scene_name}/{camera}")
+
+    # Provide current sequence context to asset renderer so it can apply
+    # scene-specific rendering rules safely.
+    if asset_lib and hasattr(asset_lib, "set_render_context"):
+        asset_lib.set_render_context(scene_name=scene_name, camera_name=camera)
     
     # Camera is fixed for the entire sequence, the objects are the ones that move around
     setup_camera(cfg)
@@ -154,8 +159,7 @@ def render_sequence(scene_name: str, camera: str, cfg: dict, debug: bool = False
 
     for i, json_path in enumerate(jsons):
         frame_data = load_detection_json(json_path)
-        frame_idx  = frame_data["frame"]
- 
+        frame_idx  = frame_data["frame"] 
         # ── Per-frame work goes here as we implement Steps 3-7 ──────────────
         # Step 3: camera.setup_camera(cfg)          (added in Step 3)
         # Step 4: asset_lib.place_vehicle(v) etc.   (added in Step 4)

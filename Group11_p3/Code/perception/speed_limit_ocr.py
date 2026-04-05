@@ -20,6 +20,7 @@ class SpeedLimitOcrResult:
     speed_value: Optional[int]
     ocr_confidence: float
     raw_text: str = ""
+    has_speed_limit_words: bool = False
     debug_image_path: Optional[str] = None
 
 
@@ -109,6 +110,14 @@ class SpeedLimitOcr:
     def _sanitize_text(text: str) -> str:
         up = text.upper().replace("O", "0").replace("I", "1").replace("L", "1")
         return up
+
+    @staticmethod
+    def _has_speed_limit_words(text: str) -> bool:
+        lowered = text.lower()
+        letters_only = re.sub(r"[^a-z]", "", lowered)
+        has_speed = "speed" in lowered or "speed" in letters_only
+        has_limit = "limit" in lowered or "limit" in letters_only
+        return has_speed or has_limit
 
     def _parse_speed(self, text: str) -> Optional[int]:
         sanitized = self._sanitize_text(text)
@@ -240,11 +249,11 @@ class SpeedLimitOcr:
         debug_path: Optional[Path] = None,
     ) -> SpeedLimitOcrResult:
         if not self.enabled:
-            return SpeedLimitOcrResult(speed_value=None, ocr_confidence=0.0)
+            return SpeedLimitOcrResult(speed_value=None, ocr_confidence=0.0, has_speed_limit_words=False)
 
         roi = self._crop(frame_bgr, bbox)
         if roi is None:
-            return SpeedLimitOcrResult(speed_value=None, ocr_confidence=0.0)
+            return SpeedLimitOcrResult(speed_value=None, ocr_confidence=0.0, has_speed_limit_words=False)
 
         variants = self._preprocess_variants(roi)
 
@@ -256,7 +265,7 @@ class SpeedLimitOcr:
             if not self._reported_init_error:
                 print(f"[warn] speed-limit OCR initialization failed: {exc}")
                 self._reported_init_error = True
-            return SpeedLimitOcrResult(speed_value=None, ocr_confidence=0.0)
+            return SpeedLimitOcrResult(speed_value=None, ocr_confidence=0.0, has_speed_limit_words=False)
 
         best_value = None
         best_conf = 0.0
@@ -264,6 +273,7 @@ class SpeedLimitOcr:
         best_any_text = ""
         best_any_conf = -1.0
         candidate_lines: list[str] = []
+        all_text_lines: list[str] = []
 
         for variant_name, variant_img in variants:
             # Run with strict digit allowlist first; fallback to unrestricted text.
@@ -287,6 +297,7 @@ class SpeedLimitOcr:
                     text = str(pred[1])
                     conf = float(pred[2])
                     parsed = self._parse_speed(text)
+                    all_text_lines.append(text)
                     if conf > best_any_conf:
                         best_any_conf = conf
                         best_any_text = text
@@ -316,9 +327,11 @@ class SpeedLimitOcr:
             saved_path = str(debug_path)
 
         return_text = best_text or best_any_text
+        has_words = self._has_speed_limit_words(" ".join(all_text_lines))
         return SpeedLimitOcrResult(
             speed_value=best_value,
             ocr_confidence=best_conf,
             raw_text=return_text,
+            has_speed_limit_words=has_words,
             debug_image_path=saved_path,
         )

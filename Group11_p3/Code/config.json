@@ -141,6 +141,28 @@
           "prompt": "speed limit sign",
           "label": "speed_limit_sign",
           "export_bucket": "speed_limit_signs"
+        },
+        {
+          "prompt": "overhead lane control signal with red X or green arrow above highway lane",
+          "label": "lane_control_light",
+          "export_bucket": "non_coco_objects",
+          "exclude_labels": [
+            "car turn signal",
+            "tunnel ceiling lights",
+            "car headlight",
+            "car taillight"
+          ]
+        },
+        {
+          "prompt": "traffic light arrow signal",
+          "label": "traffic_light_arrow_signal",
+          "export_bucket": "non_coco_objects",
+          "exclude_labels": [
+            "car turn signal",
+            "car taillight",
+            "car headlight",
+            "arrow on sign"
+          ]
         }
       ],
       "default_export_bucket": "non_coco_objects",
@@ -314,7 +336,28 @@
       "comparable_sat_range_max": 30.0,
       "comparable_val_range_max": 35.0,
       "hue_compare_min_s": 35.0,
-      "hue_compare_min_v": 35.0
+      "hue_compare_min_v": 35.0,
+      "square_arrow_aspect_min": 0.75,
+      "square_arrow_aspect_max": 1.35,
+      "square_arrow_max_area_ratio": 0.008,
+      "square_arrow_prior_weight": 0.4,
+      "square_arrow_bluegreen_hue_center_deg": 176.0,
+      "square_arrow_bluegreen_hue_half_width_deg": 26.0,
+      "square_arrow_bluegreen_min_v": 170.0,
+      "square_arrow_bluegreen_max_s": 110.0,
+      "square_arrow_bluegreen_weight": 0.9,
+      "square_arrow_red_dark_max_v": 95.0,
+      "square_arrow_red_dark_min_s": 20.0,
+      "square_arrow_red_dark_weight": 0.55,
+      "dart_lane_control_enabled": true,
+      "dart_lane_control_min_confidence": 0.3,
+      "dart_lane_control_dedupe_iou": 0.45,
+      "max_candidate_bottom_y_ratio": 0.9,
+      "arrow_overlap_iou": 0.35,
+      "arrow_overlap_ioa": 0.65,
+      "nested_overlap_ioa": 0.8,
+      "dart_arrow_signal_aspect_min": 0.7,
+      "dart_arrow_signal_aspect_max": 1.35
     },
     "stop_sign": {
       "min_contour_area": 800,
@@ -383,7 +426,29 @@
         0.1,
         0.9,
         0.2
-      ]
+      ],
+      "speed_limit_uv": {
+        "u_offset": 0.0,
+        "v_offset": 0.0,
+        "rotation_deg": 0.0,
+        "u_scale": 1.0,
+        "v_scale": 1.0
+      },
+      "speed_limit_text": {
+        "font_scale": 0.4,
+        "y_ratio": 0.69,
+        "text_color": [
+          0,
+          0,
+          0
+        ],
+        "stroke_width": 4,
+        "stroke_color": [
+          255,
+          255,
+          255
+        ]
+      }
     }
   }
 }

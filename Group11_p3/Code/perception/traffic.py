@@ -24,6 +24,7 @@ class TrafficLight:
     depth_m: float = 0.0
     label: str = "traffic_light"   # for consistency with Detection
     position_3d: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])  # optional, can be filled in by DepthEstimator.lift_to_3d
+    traffic_light_style: str = "standard_vertical"  # renderer hook: "standard_vertical" | "wide_green_arrow_candidate" | "square_arrow_signal_candidate"
 
 class TrafficLightDetector:
     """
@@ -64,6 +65,18 @@ class TrafficLightDetector:
         self.comparable_val_range_max = float(tl_cfg.get("comparable_val_range_max", 35.0))
         self.hue_compare_min_s = float(tl_cfg.get("hue_compare_min_s", 35.0))
         self.hue_compare_min_v = float(tl_cfg.get("hue_compare_min_v", 35.0))
+        self.square_arrow_aspect_min = float(tl_cfg.get("square_arrow_aspect_min", 0.75))
+        self.square_arrow_aspect_max = float(tl_cfg.get("square_arrow_aspect_max", 1.35))
+        self.square_arrow_max_area_ratio = float(tl_cfg.get("square_arrow_max_area_ratio", 0.008))
+        self.square_arrow_prior_weight = float(tl_cfg.get("square_arrow_prior_weight", 0.40))
+        self.square_arrow_bluegreen_hue_center_deg = float(tl_cfg.get("square_arrow_bluegreen_hue_center_deg", 176.0))
+        self.square_arrow_bluegreen_hue_half_width_deg = float(tl_cfg.get("square_arrow_bluegreen_hue_half_width_deg", 26.0))
+        self.square_arrow_bluegreen_min_v = float(tl_cfg.get("square_arrow_bluegreen_min_v", 170.0))
+        self.square_arrow_bluegreen_max_s = float(tl_cfg.get("square_arrow_bluegreen_max_s", 110.0))
+        self.square_arrow_bluegreen_weight = float(tl_cfg.get("square_arrow_bluegreen_weight", 0.9))
+        self.square_arrow_red_dark_max_v = float(tl_cfg.get("square_arrow_red_dark_max_v", 95.0))
+        self.square_arrow_red_dark_min_s = float(tl_cfg.get("square_arrow_red_dark_min_s", 20.0))
+        self.square_arrow_red_dark_weight = float(tl_cfg.get("square_arrow_red_dark_weight", 0.55))
 
         self.score_weights = {
             "bright_ratio": float(tl_cfg.get("weight_bright_ratio", 0.45)),
@@ -78,6 +91,42 @@ class TrafficLightDetector:
     def set_night_mode(self, enabled: bool) -> None:
         """Enable night classifier that favors low saturation and high value."""
         self.night_mode = bool(enabled)
+
+    @staticmethod
+    def _style_from_geometry(use_dual_columns: bool, is_square_arrow_signal: bool) -> str:
+        """Map ROI layout heuristic to exported style metadata."""
+        if is_square_arrow_signal:
+            return "square_arrow_signal_candidate"
+        return "wide_green_arrow_candidate" if use_dual_columns else "standard_vertical"
+
+    @staticmethod
+    def _bbox_metrics(image_shape: Tuple[int, int], bbox: List[float]) -> Dict[str, float]:
+        """Return width/height/aspect/area-ratio for a clamped bbox."""
+        h_img, w_img = image_shape
+        x1 = max(0.0, float(bbox[0]))
+        y1 = max(0.0, float(bbox[1]))
+        x2 = min(float(w_img), float(bbox[2]))
+        y2 = min(float(h_img), float(bbox[3]))
+
+        width = max(0.0, x2 - x1)
+        height = max(0.0, y2 - y1)
+        aspect = width / max(height, 1e-6)
+        area_ratio = (width * height) / max(float(w_img * h_img), 1e-6)
+        return {
+            "width": width,
+            "height": height,
+            "aspect": aspect,
+            "area_ratio": area_ratio,
+        }
+
+    def _is_square_arrow_signal_candidate(self, bbox_metrics: Dict[str, float]) -> bool:
+        """Heuristic for lane-control arrow signal heads (small, near-square boxes)."""
+        aspect = float(bbox_metrics.get("aspect", 0.0))
+        area_ratio = float(bbox_metrics.get("area_ratio", 1.0))
+        return (
+            self.square_arrow_aspect_min <= aspect <= self.square_arrow_aspect_max
+            and area_ratio <= self.square_arrow_max_area_ratio
+        )
 
     def _build_hsv_ranges(self, tl_cfg: dict):
         """Package HSV range lists into a dict for color lookup."""
@@ -125,9 +174,23 @@ class TrafficLightDetector:
             if det_bbox is None:
                 continue
 
-            color, dbg = self._classify_color_region_on_debug(frame_bgr, det_bbox)
+            bbox_metrics = self._bbox_metrics(frame_bgr.shape[:2], det_bbox)
+            is_square_arrow_signal = self._is_square_arrow_signal_candidate(bbox_metrics)
+            if is_square_arrow_signal:
+                color, dbg = self._classify_square_arrow_fullbox_debug(frame_bgr, det_bbox)
+            else:
+                color, dbg = self._classify_color_region_on_debug(frame_bgr, det_bbox)
+
+            traffic_light_style = self._style_from_geometry(
+                use_dual_columns=bool(dbg.get("use_dual_columns", False)),
+                is_square_arrow_signal=is_square_arrow_signal,
+            )
             dbg["bbox"] = [float(v) for v in det_bbox]
             dbg["predicted_color"] = color
+            dbg["traffic_light_style"] = traffic_light_style
+            dbg["bbox_aspect"] = float(bbox_metrics["aspect"])
+            dbg["bbox_area_ratio"] = float(bbox_metrics["area_ratio"])
+            dbg["square_arrow_candidate"] = bool(is_square_arrow_signal)
             self.last_debug_info.append(dbg)
 
             lights.append(TrafficLight(
@@ -135,10 +198,117 @@ class TrafficLightDetector:
                 color=color,
                 confidence=float(getattr(det, "confidence", 0.0)),
                 depth_m=float(getattr(det, "depth_m", 0.0)),
-                label=det_label
+                label=det_label,
+                traffic_light_style=traffic_light_style,
             ))
 
         return lights
+
+    def _classify_square_arrow_fullbox_debug(self, frame_bgr: np.ndarray, bbox: List[float]) -> Tuple[str, Dict[str, Any]]:
+        """Classify square arrow signals using full bbox and only red-vs-green evidence."""
+        x1, y1, x2, y2 = self._clamp_bbox(frame_bgr.shape[:2], bbox)
+        crop = frame_bgr[y1:y2, x1:x2] if (x2 > x1 and y2 > y1) else np.empty((0, 0, 3), dtype=frame_bgr.dtype)
+        frame_w = max(float(frame_bgr.shape[1]), 1.0)
+        cx = 0.5 * (float(x1) + float(x2))
+        x_norm = float(np.clip(cx / frame_w, 0.0, 1.0))
+        green_prior = x_norm
+        red_prior = 1.0 - x_norm
+        prior_weight = float(self.square_arrow_prior_weight)
+        prior_green_score = float(prior_weight * green_prior)
+        prior_red_score = float(prior_weight * red_prior)
+
+        debug_info: Dict[str, Any] = {
+            "mode": "square_arrow_fullbox",
+            "night_mode": bool(self.night_mode),
+            "crop_rect": [x1, y1, x2, y2],
+            "selection_metric": "red_green_fullbox_with_side_prior",
+            "use_dual_columns": False,
+            "red_ratio": 0.0,
+            "green_ratio": 0.0,
+            "red_score": 0.0,
+            "green_score": 0.0,
+            "bluegreen_ratio": 0.0,
+            "dark_red_ratio": 0.0,
+            "left_right_norm": x_norm,
+            "red_prior": float(red_prior),
+            "green_prior": float(green_prior),
+            "prior_weight": prior_weight,
+            "winner_idx": None,
+        }
+
+        # For square arrow heads, always force a binary decision (red or green).
+        if crop.size == 0:
+            debug_info["red_score"] = prior_red_score
+            debug_info["green_score"] = prior_green_score
+            if prior_green_score >= prior_red_score:
+                debug_info["winner_idx"] = 1
+                return "green", debug_info
+            debug_info["winner_idx"] = 0
+            return "red", debug_info
+
+        if crop.shape[0] < 6 or crop.shape[1] < 6:
+            debug_info["red_score"] = prior_red_score
+            debug_info["green_score"] = prior_green_score
+            if prior_green_score >= prior_red_score:
+                debug_info["winner_idx"] = 1
+                return "green", debug_info
+            debug_info["winner_idx"] = 0
+            return "red", debug_info
+
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        roi_mask = np.ones(hsv.shape[:2], dtype=bool)
+        hue = hsv[:, :, 0].astype(np.float32)
+        sat = hsv[:, :, 1].astype(np.float32)
+        val = hsv[:, :, 2].astype(np.float32)
+
+        red_ratio_base = self._expected_color_ratio_masked(hsv, "red", roi_mask)
+        green_ratio_base = self._expected_color_ratio_masked(hsv, "green", roi_mask)
+
+        # User-requested heuristic: green can skew blue/cyan with low saturation and high value.
+        hue_center_cv = float(np.clip(self.square_arrow_bluegreen_hue_center_deg / 2.0, 0.0, 179.0))
+        hue_half_cv = max(1.0, float(self.square_arrow_bluegreen_hue_half_width_deg / 2.0))
+        hue_lo = max(0.0, hue_center_cv - hue_half_cv)
+        hue_hi = min(179.0, hue_center_cv + hue_half_cv)
+        bluegreen_mask = (
+            (hue >= hue_lo)
+            & (hue <= hue_hi)
+            & (val >= self.square_arrow_bluegreen_min_v)
+            & (sat <= self.square_arrow_bluegreen_max_s)
+        )
+        bluegreen_ratio = float(np.mean(bluegreen_mask))
+
+        # User-requested heuristic: red can be very dark.
+        # Important: require red hue so dark background does not dominate as "red".
+        red_hue_mask = ((hue <= 10.0) | (hue >= 170.0))
+        dark_red_mask = (
+            red_hue_mask
+            & (val <= self.square_arrow_red_dark_max_v)
+            & (sat >= self.square_arrow_red_dark_min_s)
+        )
+        dark_red_ratio = float(np.mean(dark_red_mask))
+
+        green_ratio = float(green_ratio_base + (self.square_arrow_bluegreen_weight * bluegreen_ratio))
+        red_ratio = float(red_ratio_base + (self.square_arrow_red_dark_weight * dark_red_ratio))
+
+        red_score = float(red_ratio + prior_red_score)
+        green_score = float(green_ratio + prior_green_score)
+
+        debug_info["red_ratio"] = float(red_ratio)
+        debug_info["green_ratio"] = float(green_ratio)
+        debug_info["bluegreen_ratio"] = float(bluegreen_ratio)
+        debug_info["dark_red_ratio"] = float(dark_red_ratio)
+        debug_info["red_score"] = red_score
+        debug_info["green_score"] = green_score
+        debug_info["left_right_norm"] = float(x_norm)
+        debug_info["red_prior"] = float(red_prior)
+        debug_info["green_prior"] = float(green_prior)
+
+        if green_score >= red_score:
+            debug_info["winner_idx"] = 1
+            return "green", debug_info
+
+        debug_info["winner_idx"] = 0
+        return "red", debug_info
 
     def _clamp_bbox(self, image_shape: Tuple[int, int], bbox: List[float]) -> Tuple[int, int, int, int]:
         """Clamp float bbox coordinates to valid integer image bounds."""
@@ -176,6 +346,7 @@ class TrafficLightDetector:
             "hue_means": [],
             "saturation_means": [],
             "value_means": [],
+            "use_dual_columns": False,
         }
 
         if crop.size == 0:
@@ -203,6 +374,7 @@ class TrafficLightDetector:
         debug_info["hue_means"] = [float(v) for v in geom.get("hue_means", [])]
         debug_info["saturation_means"] = [float(v) for v in geom.get("saturation_means", [])]
         debug_info["value_means"] = [float(v) for v in geom.get("value_means", [])]
+        debug_info["use_dual_columns"] = bool(geom.get("use_dual_columns", False))
 
         comparable, spreads = self._is_hsv_comparable(
             debug_info["hue_means"],
@@ -293,6 +465,7 @@ class TrafficLightDetector:
             "global_v_thr": float(global_v_thr),
             "saturation_means": [],
             "value_means": [],
+            "use_dual_columns": bool(use_dual_columns),
         }
 
         scores, roi_geom = self._score_bulb_rois(inner, global_v_thr, use_dual_columns)
