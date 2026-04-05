@@ -24,6 +24,7 @@ import argparse
 import torch
 from pathlib import Path
 import os
+import re
 import sys
 import cv2
 import numpy as np
@@ -159,6 +160,250 @@ def _run_speed_limit_ocr(frame_bgr, non_coco_results, speed_ocr, frame_idx=None,
 
     non_coco_results[:] = filtered_results
 
+
+def _ground_text_rank_key(det):
+    hits = str(getattr(det, "only_letter_hits", ""))
+    hit_count = len(set(hits))
+    text_conf = float(getattr(det, "ocr_confidence", 0.0))
+    det_conf = float(getattr(det, "confidence", 0.0))
+    area = _bbox_area(getattr(det, "bbox", [0.0, 0.0, 0.0, 0.0]))
+    # For overlap dedupe, keep the largest ONLY-positive box first.
+    return (area, hit_count, text_conf, det_conf)
+
+
+def _merge_ground_text_fragments(non_coco_results, cfg):
+    non_coco_cfg = cfg.get("perception", {}).get("non_coco_dart", {})
+    if not bool(non_coco_cfg.get("ground_text_merge_enabled", True)):
+        return
+
+    max_gap_ratio = float(non_coco_cfg.get("ground_text_merge_max_gap_ratio", 1.8))
+    y_center_tol_ratio = float(non_coco_cfg.get("ground_text_merge_y_center_tol_ratio", 0.9))
+    max_span_ratio = float(non_coco_cfg.get("ground_text_merge_max_span_ratio", 7.0))
+    min_cluster_size = int(non_coco_cfg.get("ground_text_merge_min_cluster_size", 2))
+
+    ground_text = [d for d in non_coco_results if getattr(d, "label", "") == "ground_text"]
+    if len(ground_text) <= 1:
+        return
+
+    others = [d for d in non_coco_results if getattr(d, "label", "") != "ground_text"]
+    ground_text_sorted = sorted(ground_text, key=lambda d: float(getattr(d, "bbox", [0.0, 0.0, 0.0, 0.0])[0]))
+
+    clusters = []
+    current = [ground_text_sorted[0]]
+    c_bbox = [float(v) for v in getattr(current[0], "bbox", [0.0, 0.0, 0.0, 0.0])]
+    for det in ground_text_sorted[1:]:
+        det_bbox = [float(v) for v in getattr(det, "bbox", [0.0, 0.0, 0.0, 0.0])]
+
+        prev_bbox = [float(v) for v in getattr(current[-1], "bbox", [0.0, 0.0, 0.0, 0.0])]
+        prev_h = max(1.0, prev_bbox[3] - prev_bbox[1])
+        det_h = max(1.0, det_bbox[3] - det_bbox[1])
+        cluster_h = max(1.0, c_bbox[3] - c_bbox[1])
+        ref_h = max(prev_h, det_h, cluster_h)
+        prev_cy = 0.5 * (c_bbox[1] + c_bbox[3])
+        det_cy = 0.5 * (det_bbox[1] + det_bbox[3])
+        gap = det_bbox[0] - max(prev_bbox[2], c_bbox[2])
+        proposed_x1 = min(c_bbox[0], det_bbox[0])
+        proposed_x2 = max(c_bbox[2], det_bbox[2])
+        proposed_span = proposed_x2 - proposed_x1
+
+        same_line = abs(det_cy - prev_cy) <= (y_center_tol_ratio * ref_h)
+        close_enough = gap <= (max_gap_ratio * ref_h)
+        span_ok = proposed_span <= (max_span_ratio * ref_h)
+        if same_line and close_enough and span_ok:
+            current.append(det)
+            c_bbox = [
+                min(c_bbox[0], det_bbox[0]),
+                min(c_bbox[1], det_bbox[1]),
+                max(c_bbox[2], det_bbox[2]),
+                max(c_bbox[3], det_bbox[3]),
+            ]
+        else:
+            clusters.append(current)
+            current = [det]
+            c_bbox = [float(v) for v in det_bbox]
+    clusters.append(current)
+
+    merged = []
+    for cluster in clusters:
+        if len(cluster) < min_cluster_size:
+            merged.append(cluster[0])
+            continue
+
+        best = max(cluster, key=_ground_text_rank_key)
+        x1 = min(float(getattr(d, "bbox", [0.0, 0.0, 0.0, 0.0])[0]) for d in cluster)
+        y1 = min(float(getattr(d, "bbox", [0.0, 0.0, 0.0, 0.0])[1]) for d in cluster)
+        x2 = max(float(getattr(d, "bbox", [0.0, 0.0, 0.0, 0.0])[2]) for d in cluster)
+        y2 = max(float(getattr(d, "bbox", [0.0, 0.0, 0.0, 0.0])[3]) for d in cluster)
+
+        hits_union = "".join(sorted({ch for d in cluster for ch in str(getattr(d, "only_letter_hits", ""))}))
+        raw_text_parts = [str(getattr(d, "ocr_raw_text", "")).strip() for d in cluster]
+        raw_text_parts = [p for p in raw_text_parts if p]
+
+        best.bbox = [x1, y1, x2, y2]
+        best.only_letter_hits = hits_union
+        best.has_only_letters = bool(hits_union)
+        best.ocr_confidence = max(float(getattr(d, "ocr_confidence", 0.0)) for d in cluster)
+        best.confidence = max(float(getattr(d, "confidence", 0.0)) for d in cluster)
+        if raw_text_parts:
+            best.ocr_raw_text = " ".join(raw_text_parts)
+
+        merged.append(best)
+
+    non_coco_results[:] = others + merged
+
+
+def _dedupe_ground_text_only(non_coco_results, cfg):
+    non_coco_cfg = cfg.get("perception", {}).get("non_coco_dart", {})
+    if not bool(non_coco_cfg.get("ground_text_dedupe_enabled", True)):
+        return
+
+    iou_thr = float(non_coco_cfg.get("ground_text_dedupe_iou", 0.15))
+    ioa_thr = float(non_coco_cfg.get("ground_text_dedupe_ioa", 0.55))
+
+    ground_text = [d for d in non_coco_results if getattr(d, "label", "") == "ground_text"]
+    if len(ground_text) <= 1:
+        return
+
+    others = [d for d in non_coco_results if getattr(d, "label", "") != "ground_text"]
+    ordered = sorted(ground_text, key=_ground_text_rank_key, reverse=True)
+    kept = []
+
+    for det in ordered:
+        det_bbox = getattr(det, "bbox", None)
+        if det_bbox is None:
+            continue
+
+        suppress = False
+        for prev in kept:
+            prev_bbox = getattr(prev, "bbox", None)
+            if prev_bbox is None:
+                continue
+
+            iou = _bbox_iou(det_bbox, prev_bbox)
+            inter = _bbox_intersection(det_bbox, prev_bbox)
+            small_area = max(min(_bbox_area(det_bbox), _bbox_area(prev_bbox)), 1e-6)
+            ioa_small = inter / small_area
+            if iou >= iou_thr or ioa_small >= ioa_thr:
+                suppress = True
+                break
+
+        if not suppress:
+            kept.append(det)
+
+    non_coco_results[:] = others + kept
+
+
+def _run_ground_text_ocr(frame_bgr, non_coco_results, speed_ocr, cfg, frame_idx=None, debug_dir=None):
+    filtered_results = []
+    if speed_ocr is None or not speed_ocr.is_active():
+        for det in non_coco_results:
+            if getattr(det, "label", "") != "ground_text":
+                filtered_results.append(det)
+        non_coco_results[:] = filtered_results
+        return
+
+    frame_h = int(frame_bgr.shape[0])
+    min_y_center = frame_h * 0.5
+
+    for det in non_coco_results:
+        if getattr(det, "label", "") != "ground_text":
+            filtered_results.append(det)
+            continue
+
+        bbox = [float(v) for v in getattr(det, "bbox", [0.0, 0.0, 0.0, 0.0])]
+        y_center = (bbox[1] + bbox[3]) * 0.5
+        if y_center < min_y_center:
+            continue
+
+        ocr_debug_path = None
+        if debug_dir is not None and frame_idx is not None:
+            x1, y1, _, _ = [int(round(v)) for v in det.bbox]
+            ocr_debug_path = Path(debug_dir) / f"ground_text_frame_{frame_idx:06d}_x{x1}_y{y1}.png"
+
+        try:
+            ocr_result = speed_ocr.infer(frame_bgr, det.bbox, debug_path=ocr_debug_path)
+        except Exception as exc:
+            print(f"[warn] ground-text OCR failed for one detection: {exc}")
+            speed_ocr.enabled = False
+            continue
+
+        det.ocr_confidence = float(ocr_result.text_confidence)
+        det.ocr_raw_text = str(ocr_result.raw_text)
+        det.has_only_letters = bool(ocr_result.has_only_letters)
+        det.only_letter_hits = str(ocr_result.only_letter_hits)
+        if not det.has_only_letters:
+            continue
+
+        filtered_results.append(det)
+
+    non_coco_results[:] = filtered_results
+    _merge_ground_text_fragments(non_coco_results, cfg)
+    _dedupe_ground_text_only(non_coco_results, cfg)
+
+
+def _suppress_ground_arrow_text_overlaps(non_coco_results, cfg):
+    """Remove ground-arrow detections when they overlap confirmed ground_text detections."""
+    non_coco_cfg = cfg.get("perception", {}).get("non_coco_dart", {})
+    iou_thr = float(non_coco_cfg.get("ground_arrow_text_overlap_iou", 0.05))
+    ioa_thr = float(non_coco_cfg.get("ground_arrow_text_overlap_ioa", 0.35))
+
+    ground_text = [d for d in non_coco_results if getattr(d, "label", "") == "ground_text"]
+    if not ground_text:
+        return
+
+    filtered = []
+    for det in non_coco_results:
+        if getattr(det, "label", "") != "ground_arrow":
+            filtered.append(det)
+            continue
+
+        det_bbox = getattr(det, "bbox", None)
+        if det_bbox is None:
+            continue
+
+        suppress = False
+        for txt in ground_text:
+            txt_bbox = getattr(txt, "bbox", None)
+            if txt_bbox is None:
+                continue
+
+            iou = _bbox_iou(det_bbox, txt_bbox)
+            inter = _bbox_intersection(det_bbox, txt_bbox)
+            small_area = max(min(_bbox_area(det_bbox), _bbox_area(txt_bbox)), 1e-6)
+            ioa_small = inter / small_area
+            if iou >= iou_thr or ioa_small >= ioa_thr:
+                suppress = True
+                break
+
+        if not suppress:
+            filtered.append(det)
+
+    non_coco_results[:] = filtered
+
+
+def _filter_ground_arrows(frame_bgr, non_coco_results, cfg):
+    """Keep only road-like ground-arrow detections in lower image regions."""
+    non_coco_cfg = cfg.get("perception", {}).get("non_coco_dart", {})
+    min_center_y_ratio = float(non_coco_cfg.get("ground_arrow_min_center_y_ratio", 0.5))
+    min_bottom_y_ratio = float(non_coco_cfg.get("ground_arrow_min_bottom_y_ratio", 0.55))
+
+    frame_h = float(frame_bgr.shape[0])
+    min_center_y = frame_h * min_center_y_ratio
+    min_bottom_y = frame_h * min_bottom_y_ratio
+
+    filtered = []
+    for det in non_coco_results:
+        if getattr(det, "label", "") != "ground_arrow":
+            filtered.append(det)
+            continue
+
+        x1, y1, x2, y2 = [float(v) for v in getattr(det, "bbox", [0.0, 0.0, 0.0, 0.0])]
+        y_center = 0.5 * (y1 + y2)
+        if y_center < min_center_y or y2 < min_bottom_y:
+            continue
+        filtered.append(det)
+
+    non_coco_results[:] = filtered
 
 def _bbox_iou(a, b) -> float:
     """Compute IoU for [x1, y1, x2, y2] boxes."""
@@ -643,6 +888,7 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
             cfg,
             scene_name,
         )
+        _filter_ground_arrows(frame_bgr, non_coco_results, cfg)
         _run_speed_limit_ocr(
             frame_bgr,
             non_coco_results,
@@ -650,6 +896,15 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
             frame_idx=frame_idx,
             debug_dir=ocr_debug_dir if debug else None,
         )
+        _run_ground_text_ocr(
+            frame_bgr,
+            non_coco_results,
+            models.get("speed_limit_ocr"),
+            cfg,
+            frame_idx=frame_idx,
+            debug_dir=ocr_debug_dir if debug else None,
+        )
+        _suppress_ground_arrow_text_overlaps(non_coco_results, cfg)
         depth_map = models["depth"].estimate(frame_bgr)
         object_results = models["depth"].lift_to_3d(object_results, depth_map)
         non_coco_results = models["depth"].lift_to_3d(non_coco_results, depth_map)
@@ -693,7 +948,12 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
                 annotated_non_coco,
                 save_path=str(debug_dir / f"debug_frame_{frame_idx:06d}.png")
             )
-            overlay = draw_lane_debug_overlay(frame_bgr, lane_results, lane_raw)
+            overlay = draw_lane_debug_overlay(
+                frame_bgr,
+                lane_results,
+                lane_raw,
+                lane_exclude_classes=lane_exclude_classes,
+            )
             debug_path = lane_debug_dir / f"frame_{frame_idx:06d}.jpg"
             cv2.imwrite(str(debug_path), overlay)
 

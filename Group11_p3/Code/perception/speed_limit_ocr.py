@@ -19,8 +19,11 @@ import numpy as np
 class SpeedLimitOcrResult:
     speed_value: Optional[int]
     ocr_confidence: float
+    text_confidence: float = 0.0
     raw_text: str = ""
     has_speed_limit_words: bool = False
+    has_only_letters: bool = False
+    only_letter_hits: str = ""
     debug_image_path: Optional[str] = None
 
 
@@ -118,6 +121,12 @@ class SpeedLimitOcr:
         has_speed = "speed" in lowered or "speed" in letters_only
         has_limit = "limit" in lowered or "limit" in letters_only
         return has_speed or has_limit
+
+    @staticmethod
+    def _only_letter_hits(text: str) -> str:
+        letters_only = re.sub(r"[^a-z]", "", text.lower())
+        present = sorted({ch for ch in letters_only if ch in {"o", "n", "l", "y"}})
+        return "".join(present)
 
     def _parse_speed(self, text: str) -> Optional[int]:
         sanitized = self._sanitize_text(text)
@@ -249,11 +258,25 @@ class SpeedLimitOcr:
         debug_path: Optional[Path] = None,
     ) -> SpeedLimitOcrResult:
         if not self.enabled:
-            return SpeedLimitOcrResult(speed_value=None, ocr_confidence=0.0, has_speed_limit_words=False)
+            return SpeedLimitOcrResult(
+                speed_value=None,
+                ocr_confidence=0.0,
+                text_confidence=0.0,
+                has_speed_limit_words=False,
+                has_only_letters=False,
+                only_letter_hits="",
+            )
 
         roi = self._crop(frame_bgr, bbox)
         if roi is None:
-            return SpeedLimitOcrResult(speed_value=None, ocr_confidence=0.0, has_speed_limit_words=False)
+            return SpeedLimitOcrResult(
+                speed_value=None,
+                ocr_confidence=0.0,
+                text_confidence=0.0,
+                has_speed_limit_words=False,
+                has_only_letters=False,
+                only_letter_hits="",
+            )
 
         variants = self._preprocess_variants(roi)
 
@@ -265,7 +288,14 @@ class SpeedLimitOcr:
             if not self._reported_init_error:
                 print(f"[warn] speed-limit OCR initialization failed: {exc}")
                 self._reported_init_error = True
-            return SpeedLimitOcrResult(speed_value=None, ocr_confidence=0.0, has_speed_limit_words=False)
+            return SpeedLimitOcrResult(
+                speed_value=None,
+                ocr_confidence=0.0,
+                text_confidence=0.0,
+                has_speed_limit_words=False,
+                has_only_letters=False,
+                only_letter_hits="",
+            )
 
         best_value = None
         best_conf = 0.0
@@ -319,19 +349,25 @@ class SpeedLimitOcr:
         saved_path = None
         if debug_path is not None and self.debug_save:
             display_text = best_text or best_any_text
+            text_conf = max(0.0, best_any_conf)
             summary = (
-                f"best={best_value} conf={best_conf:.2f} text={display_text} "
+                f"best={best_value} num_conf={best_conf:.2f} text_conf={text_conf:.2f} text={display_text} "
                 f"cands={'; '.join(candidate_lines[:5])}"
             )
             self._save_debug_panel(variants, debug_path, summary)
             saved_path = str(debug_path)
 
         return_text = best_text or best_any_text
-        has_words = self._has_speed_limit_words(" ".join(all_text_lines))
+        joined_text = " ".join(all_text_lines)
+        has_words = self._has_speed_limit_words(joined_text)
+        only_hits = self._only_letter_hits(joined_text)
         return SpeedLimitOcrResult(
             speed_value=best_value,
             ocr_confidence=best_conf,
+            text_confidence=max(0.0, best_any_conf),
             raw_text=return_text,
             has_speed_limit_words=has_words,
+            has_only_letters=bool(only_hits),
+            only_letter_hits=only_hits,
             debug_image_path=saved_path,
         )

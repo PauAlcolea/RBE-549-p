@@ -111,13 +111,26 @@
         "traffic_cones",
         "trash_cans",
         "traffic_poles",
-        "speed_limit_signs"
+        "speed_limit_signs",
+        "ground_arrows",
+        "ground_text_markings"
       ],
       "classes": [
         {
           "prompt": "traffic cone",
           "label": "traffic_cone",
-          "export_bucket": "traffic_cones"
+          "export_bucket": "traffic_cones",
+          "exclude_labels": [
+            "fire_hydrant"
+          ]
+        },
+        {
+          "prompt": "fire hydrant",
+          "label": "fire_hydrant",
+          "export_bucket": "non_coco_objects",
+          "exclude_labels": [
+            "traffic_cone"
+          ]
         },
         {
           "prompt": "traffic cylinder",
@@ -134,13 +147,42 @@
           "label": "traffic_pole",
           "export_bucket": "traffic_poles",
           "exclude_labels": [
-            "traffic_cone"
+            "traffic_cone",
+            "fence_post"
           ]
         },
         {
           "prompt": "speed limit sign",
           "label": "speed_limit_sign",
           "export_bucket": "speed_limit_signs"
+        },
+{
+          "prompt": "white directional arrow painted on road",
+          "label": "ground_arrow",
+          "export_bucket": "ground_arrows",
+          "exclude_labels": [
+            "metal sign next to road with arrow shape",
+            "lettering painted on road"
+          ]
+        },
+        {
+          "prompt": "triangle painted on road",
+          "label": "ground_arrow",
+          "export_bucket": "ground_arrows",
+          "exclude_labels": [
+            "triangle metal sign next to road"
+          ]
+        },
+        {
+          "prompt": "lettering painted on road",
+          "label": "ground_text",
+          "export_bucket": "ground_text_markings",
+          "exclude_labels": [
+            "crosswalk marking",
+            "text on metal sign next to road",
+            "text painted on car",
+            "ground_arrow"
+          ]
         },
         {
           "prompt": "overhead lane control signal with red X or green arrow above highway lane",
@@ -179,7 +221,19 @@
       "text_cache": null,
       "min_width_px": 8,
       "min_height_px": 8,
-      "max_instances": 30
+      "max_instances": 30,
+      "ground_arrow_min_center_y_ratio": 0.5,
+      "ground_arrow_min_bottom_y_ratio": 0.55,
+      "ground_text_dedupe_enabled": true,
+      "ground_text_dedupe_iou": 0.05,
+      "ground_text_dedupe_ioa": 0.25,
+      "ground_text_merge_enabled": true,
+      "ground_text_merge_max_gap_ratio": 1.8,
+      "ground_text_merge_y_center_tol_ratio": 0.9,
+      "ground_text_merge_max_span_ratio": 7.0,
+      "ground_text_merge_min_cluster_size": 2,
+      "ground_arrow_text_overlap_iou": 0.01,
+      "ground_arrow_text_overlap_ioa": 0.2
     },
     "vehicle_subtypes_dart": {
       "enabled": true,
@@ -352,8 +406,7 @@
       "dart_lane_control_enabled": true,
       "dart_lane_control_min_confidence": 0.3,
       "dart_lane_control_dedupe_iou": 0.45,
-      "max_candidate_bottom_y_ratio": 0.9,
-      "arrow_overlap_iou": 0.35,
+            "arrow_overlap_iou": 0.35,
       "arrow_overlap_ioa": 0.65,
       "nested_overlap_ioa": 0.8,
       "dart_arrow_signal_aspect_min": 0.7,
