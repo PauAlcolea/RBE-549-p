@@ -405,6 +405,22 @@ def _filter_ground_arrows(frame_bgr, non_coco_results, cfg):
 
     non_coco_results[:] = filtered
 
+
+
+def _restrict_ground_markings_to_scenes(non_coco_results, scene_name: str):
+    """Keep ground-arrow/ground-text classes only in configured scenes."""
+    allowed_scenes = {"scene3", "scene7", "scene11"}
+    scene_key = str(scene_name).strip().lower()
+    if scene_key in allowed_scenes:
+        return
+
+    blocked_labels = {"ground_arrow", "ground_text"}
+    non_coco_results[:] = [
+        det for det in non_coco_results
+        if str(getattr(det, "label", "")).strip() not in blocked_labels
+    ]
+
+
 def _bbox_iou(a, b) -> float:
     """Compute IoU for [x1, y1, x2, y2] boxes."""
     ix1 = max(float(a[0]), float(b[0]))
