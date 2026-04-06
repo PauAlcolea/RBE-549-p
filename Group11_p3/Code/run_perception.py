@@ -550,7 +550,7 @@ def _suppress_lanes_on_crosswalk_markings(lanes, lane_raw, cfg):
     pad_px = float(lanes_cfg.get("crosswalk_suppress_pad_px", 4.0))
     min_points = int(lanes_cfg.get("crosswalk_suppress_min_points", 2))
     min_ratio = float(lanes_cfg.get("crosswalk_suppress_point_ratio", 0.15))
-    min_conf = float(lanes_cfg.get("crosswalk_suppress_min_confidence", lanes_cfg.get("confidence", 0.30)))
+    min_conf = float(lanes_cfg.get("crosswalk_suppress_min_confidence", 0.85))
 
     crosswalk_boxes = _lane_raw_crosswalk_boxes(lane_raw, min_conf=min_conf)
     if not crosswalk_boxes:
@@ -777,6 +777,12 @@ def _lane_confidence(lane) -> float:
     return float(getattr(lane, "confidence", 0.0))
 
 
+def _lane_raw_index(lane) -> int:
+    if isinstance(lane, dict):
+        return int(lane.get("raw_index", -1))
+    return int(getattr(lane, "raw_index", -1))
+
+
 def _lane_color_name(lane) -> str:
     if isinstance(lane, dict):
         return str(lane.get("color", "white")).strip().lower()
@@ -827,6 +833,102 @@ def _raw_box_has_lane_match(box_xyxy, lane_results, pad_px: float, min_points: i
         if _lane_overlaps_boxes(lane, [box], pad_px=pad_px, min_points=min_points, min_ratio=min_ratio):
             return True
     return False
+
+
+def _lane_raw_index_set(lanes) -> set:
+    out = set()
+    for lane in lanes:
+        idx = _lane_raw_index(lane)
+        if idx >= 0:
+            out.add(idx)
+    return out
+
+
+def _build_lane_drop_reason_map(
+    lane_raw,
+    lane_results_detected,
+    lane_results_after_ground_text,
+    lane_results_after_crosswalk,
+    lane_results_after_conf,
+    detector_min_conf: float,
+    default_min_confidence: float,
+    yellow_min_confidence: float,
+    white_min_confidence: float,
+):
+    if not isinstance(lane_raw, dict) or "scores" not in lane_raw:
+        return {}
+
+    scores = lane_raw.get("scores")
+    names = lane_raw.get("class_names", [])
+    if scores is None:
+        return {}
+
+    detected_set = _lane_raw_index_set(lane_results_detected)
+    ground_set = _lane_raw_index_set(lane_results_after_ground_text)
+    crosswalk_set = _lane_raw_index_set(lane_results_after_crosswalk)
+    conf_set = _lane_raw_index_set(lane_results_after_conf)
+
+    reason_map = {}
+
+    for i in range(len(scores)):
+        score = float(scores[i].item())
+        cls_name = names[i] if i < len(names) else "lane"
+        cls_norm = str(cls_name).strip().lower()
+
+        if "lane" not in cls_norm:
+            continue
+
+        if score < float(detector_min_conf):
+            reason_map[i] = "below_detector_conf"
+            continue
+
+        if i not in detected_set:
+            reason_map[i] = "no_polyline_points"
+            continue
+
+        if i not in ground_set:
+            reason_map[i] = "suppressed_ground_text"
+            continue
+
+        if i not in crosswalk_set:
+            reason_map[i] = "suppressed_crosswalk"
+            continue
+
+        if i not in conf_set:
+            min_conf = _raw_lane_class_min_confidence(
+                cls_name,
+                default_min_conf=default_min_confidence,
+                yellow_min_conf=yellow_min_confidence,
+                white_min_conf=white_min_confidence,
+            )
+            reason_map[i] = f"below_export_conf<{min_conf:.2f}"
+            continue
+
+    for lane in lane_results_after_conf:
+        idx = _lane_raw_index(lane)
+        if idx < 0:
+            continue
+        if len(_lane_points(lane)) < 2:
+            reason_map[idx] = "dropped_export_points<2"
+
+    return reason_map
+
+
+def draw_lane_debug_overlay(
+    frame_bgr,
+    lane_results,
+    lane_raw=None,
+    lane_exclude_classes=None,
+    default_min_confidence: float = 0.85,
+    yellow_min_confidence: float = 0.65,
+    white_min_confidence: float = 0.85,
+    raw_match_pad_px: float = 6.0,
+    raw_match_min_points: int = 2,
+    raw_match_point_ratio: float = 0.10,
+    draw_unmatched_raw_boxes: bool = False,
+    raw_drop_reasons: dict = None,
+    show_drop_reasons: bool = True,
+):
     """Draw lane polylines and optional raw detector boxes on a frame."""
     vis = frame_bgr.copy()
 
@@ -864,6 +966,7 @@ def _raw_box_has_lane_match(box_xyxy, lane_results, pad_px: float, min_points: i
         boxes = lane_raw["boxes"]
         scores = lane_raw["scores"]
         names = lane_raw.get("class_names", [])
+        raw_drop_reasons = raw_drop_reasons or {}
         for i in range(len(scores)):
             box = boxes[i].detach().cpu().tolist()
             score = float(scores[i].item())
@@ -876,23 +979,31 @@ def _raw_box_has_lane_match(box_xyxy, lane_results, pad_px: float, min_points: i
             )
             if score < min_conf:
                 continue
-            if not draw_unmatched_raw_boxes and not _raw_box_has_lane_match(
+            matched_lane = _raw_box_has_lane_match(
                 box,
                 lane_results,
                 pad_px=raw_match_pad_px,
                 min_points=raw_match_min_points,
                 min_ratio=raw_match_point_ratio,
-            ):
+            )
+            has_reason = i in raw_drop_reasons
+            if (not matched_lane) and (not draw_unmatched_raw_boxes) and not (show_drop_reasons and has_reason):
                 continue
+
+            draw_color = (50, 255, 50) if matched_lane else (0, 140, 255)
+            reason_suffix = ""
+            if (not matched_lane) and show_drop_reasons and has_reason:
+                reason_suffix = f" | {raw_drop_reasons[i]}"
+
             x1, y1, x2, y2 = map(int, box)
-            cv2.rectangle(vis, (x1, y1), (x2, y2), (50, 255, 50), 1)
+            cv2.rectangle(vis, (x1, y1), (x2, y2), draw_color, 1)
             cv2.putText(
                 vis,
-                f"{cls_name} {score:.2f}",
+                f"{cls_name} {score:.2f}{reason_suffix}",
                 (x1, max(y1 - 4, 10)),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.4,
-                (50, 255, 50),
+                draw_color,
                 1,
                 lineType=cv2.LINE_AA,
             )
@@ -1052,6 +1163,7 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
     lane_debug_raw_match_min_points = int(lanes_cfg.get("debug_raw_match_min_points", 2))
     lane_debug_raw_match_point_ratio = float(lanes_cfg.get("debug_raw_match_point_ratio", 0.10))
     lane_debug_draw_unmatched_raw_boxes = bool(lanes_cfg.get("debug_draw_unmatched_raw_boxes", False))
+    lane_debug_show_drop_reasons = bool(lanes_cfg.get("debug_show_drop_reasons", True))
     models["traffic"].set_scene_context(scene_name)
 
     # scene_dir is the root of this sequence, e.g. Data/Sequences/scene1/
@@ -1132,10 +1244,22 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
             lane_results = lane_output
             lane_raw = None
 
-        lane_results = _suppress_lanes_near_ground_text(lane_results, non_coco_results, cfg)
-        lane_results = _suppress_lanes_on_crosswalk_markings(lane_results, lane_raw, cfg)
+        lane_results_detected = list(lane_results)
+        lane_results_after_ground_text = _suppress_lanes_near_ground_text(lane_results_detected, non_coco_results, cfg)
+        lane_results_after_crosswalk = _suppress_lanes_on_crosswalk_markings(lane_results_after_ground_text, lane_raw, cfg)
         lane_results = _filter_lanes_by_confidence(
+            lane_results_after_crosswalk,
+            default_min_confidence=lane_export_min_conf,
+            yellow_min_confidence=lane_export_min_conf_yellow,
+            white_min_confidence=lane_export_min_conf_white,
+        )
+        lane_drop_reasons = _build_lane_drop_reason_map(
+            lane_raw,
+            lane_results_detected,
+            lane_results_after_ground_text,
+            lane_results_after_crosswalk,
             lane_results,
+            detector_min_conf=float(lanes_cfg.get("confidence", 0.30)),
             default_min_confidence=lane_export_min_conf,
             yellow_min_confidence=lane_export_min_conf_yellow,
             white_min_confidence=lane_export_min_conf_white,
@@ -1177,6 +1301,8 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
                 raw_match_min_points=lane_debug_raw_match_min_points,
                 raw_match_point_ratio=lane_debug_raw_match_point_ratio,
                 draw_unmatched_raw_boxes=lane_debug_draw_unmatched_raw_boxes,
+                raw_drop_reasons=lane_drop_reasons,
+                show_drop_reasons=lane_debug_show_drop_reasons,
             )
             debug_path = lane_debug_dir / f"frame_{frame_idx:06d}.jpg"
             cv2.imwrite(str(debug_path), overlay)

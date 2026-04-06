@@ -25,8 +25,8 @@ class Lane:
 
     points: List[Tuple[float, float]]
     color: str = "white"
-    
     confidence: float = 1.0
+    raw_index: int = -1
 
 
 class LaneDetector:
@@ -310,28 +310,28 @@ class LaneDetector:
             if not points and boxes is not None and len(boxes) > i:
                 points = self._box_to_polyline(boxes[i].detach().cpu().numpy())
 
-            if len(points) < 2:
-                continue
+            # if len(points) < 2:
+            #     continue
 
             # Filter by polyline length
-            if self._polyline_length(points) < self.min_length_px:
-                continue
+            # if self._polyline_length(points) < self.min_length_px:
+            #     continue
 
             cls_name = class_names[i] if i < len(class_names) else "lane line"
             cls_name_lower = cls_name.lower()
-            if "yellow" in cls_name_lower or "non-white" in cls_name_lower:
+            if "yellow" in cls_name_lower:
                 color = "yellow"
             elif "white" in cls_name_lower:
                 color = "white"
             else:
                 color = self._classify_color(frame_bgr, points)
-            # style = self._classify_style(points, h)
 
             lanes.append(
                 Lane(
                     points=points,
                     color=color,
                     confidence=score,
+                    raw_index=i,
                 )
             )
 
@@ -424,23 +424,3 @@ class LaneDetector:
         if white_fraction >= self.white_vote_ratio:
             return "white"
         return "yellow"
-
-    def _classify_style(
-        self,
-        points: List[Tuple[float, float]],
-        img_height: int,
-    ) -> str:
-        if len(points) < 3:
-            return "solid"
-
-        ys = sorted(set(float(p[1]) for p in points))
-        if len(ys) < 3:
-            return "solid"
-
-        gaps = np.diff(np.array(ys, dtype=np.float32))
-        max_gap = float(gaps.max()) if gaps.size else 0.0
-
-        adaptive_gap = max(self.dash_gap_px, 0.06 * float(img_height))
-        if max_gap > adaptive_gap:
-            return "dashed"
-        return "solid"

@@ -154,8 +154,7 @@ def build_frame_dict(
     lanes_out = []
     for lane in lanes:
         lane_dict = _serialize_lane(lane)
-        if len(lane_dict["points"]) >= 2:
-            lanes_out.append(lane_dict)
+        lanes_out.append(lane_dict)
 
 
     return {
