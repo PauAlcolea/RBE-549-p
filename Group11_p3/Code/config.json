@@ -37,8 +37,16 @@
     "orientation": "../Weights/boundingbox.pkl"
   },
   "perception": {
-    "batch_size": 1,
-    "frame_skip": 30,
+    "heading_smoothing": {
+      "enabled": true,
+      "max_angular_velocity_degps": 45.0,
+      "dt_override_sec": null,
+      "max_position_distance_m": 16.0,
+      "min_bbox_iou": 0.01,
+      "track_timeout_frames": 3,
+      "ema_alpha": 0.5,
+      "debug_log_matches": false
+    },
     "yolo": {
       "confidence": 0.25,
       "iou_threshold": 0.45,

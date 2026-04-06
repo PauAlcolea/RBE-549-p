@@ -28,6 +28,7 @@ import re
 import sys
 import cv2
 import numpy as np
+import math
 from types import SimpleNamespace
 sys.dont_write_bytecode = True
 
@@ -450,6 +451,201 @@ def _bbox_intersection(a, b) -> float:
 
 def _bbox_area(a) -> float:
     return max(0.0, float(a[2]) - float(a[0])) * max(0.0, float(a[3]) - float(a[1]))
+
+
+def _normalize_angle_rad(angle_rad: float) -> float:
+    """Wrap an angle to [-pi, pi]."""
+    return float(np.arctan2(np.sin(angle_rad), np.cos(angle_rad)))
+
+
+def _angle_delta_rad(target_rad: float, source_rad: float) -> float:
+    """Shortest signed angular delta from source to target in [-pi, pi]."""
+    return _normalize_angle_rad(float(target_rad) - float(source_rad))
+
+
+def _heading_smoothing_config(cfg: dict) -> dict:
+    perception_cfg = cfg.get("perception", {})
+    smooth_cfg = perception_cfg.get("heading_smoothing", {})
+
+    fps = float(cfg.get("blender", {}).get("fps", 30.0))
+    fps = max(fps, 1e-6)
+    frame_skip = max(1, int(perception_cfg.get("frame_skip", 1)))
+
+    dt_override = smooth_cfg.get("dt_override_sec", None)
+    if dt_override is None:
+        dt_sec = float(frame_skip) / fps
+    else:
+        dt_sec = max(float(dt_override), 1e-6)
+
+    max_vel_radps = smooth_cfg.get("max_angular_velocity_radps", None)
+    if max_vel_radps is None:
+        max_vel_degps = float(smooth_cfg.get("max_angular_velocity_degps", 60.0))
+        max_vel_radps = math.radians(max_vel_degps)
+    max_vel_radps = max(float(max_vel_radps), 0.0)
+
+    ema_alpha_raw = smooth_cfg.get("ema_alpha", None)
+    ema_alpha = None if ema_alpha_raw is None else float(ema_alpha_raw)
+    if ema_alpha is not None:
+        ema_alpha = min(max(ema_alpha, 0.0), 1.0)
+        if ema_alpha <= 0.0:
+            ema_alpha = None
+
+    return {
+        "enabled": bool(smooth_cfg.get("enabled", False)),
+        "dt_sec": dt_sec,
+        "max_delta_rad": max_vel_radps * dt_sec,
+        "max_position_distance_m": float(smooth_cfg.get("max_position_distance_m", 8.0)),
+        "min_bbox_iou": float(smooth_cfg.get("min_bbox_iou", 0.01)),
+        "track_timeout_frames": max(0, int(smooth_cfg.get("track_timeout_frames", 3))),
+        "ema_alpha": ema_alpha,
+        "debug_log_matches": bool(smooth_cfg.get("debug_log_matches", False)),
+    }
+
+
+def _vehicle_association_data(vehicles: list) -> list:
+    out = []
+    for det in vehicles:
+        heading = getattr(det, "heading_rad", None)
+        bbox = getattr(det, "bbox", None)
+        pos3d = getattr(det, "position_3d", None)
+        if heading is None or bbox is None or pos3d is None or len(bbox) != 4 or len(pos3d) < 3:
+            continue
+
+        out.append(
+            {
+                "det": det,
+                "heading_rad": _normalize_angle_rad(float(heading)),
+                "bbox": [float(v) for v in bbox[:4]],
+                "position_3d": [float(pos3d[0]), float(pos3d[1]), float(pos3d[2])],
+            }
+        )
+    return out
+
+
+def _associate_tracks_to_detections(tracks: dict, det_data: list, smooth_cfg: dict):
+    """Greedy nearest-neighbor association with 3D distance + IoU gating."""
+    if not tracks or not det_data:
+        return {}, set(range(len(det_data))), set(tracks.keys())
+
+    candidates = []
+    max_dist = float(smooth_cfg["max_position_distance_m"])
+    min_iou = float(smooth_cfg["min_bbox_iou"])
+
+    track_items = list(tracks.items())
+    for track_id, track in track_items:
+        track_pos = track.get("position_3d", [0.0, 0.0, 0.0])
+        track_bbox = track.get("bbox", [0.0, 0.0, 0.0, 0.0])
+        for det_idx, d in enumerate(det_data):
+            det_pos = d["position_3d"]
+            dist = float(np.linalg.norm(np.array(det_pos, dtype=np.float32) - np.array(track_pos, dtype=np.float32)))
+            if dist > max_dist:
+                continue
+
+            iou = _bbox_iou(track_bbox, d["bbox"])
+            if iou < min_iou:
+                continue
+
+            candidates.append((dist, -iou, track_id, det_idx))
+
+    candidates.sort(key=lambda t: (t[0], t[1]))
+    assigned_tracks = set()
+    assigned_dets = set()
+    matches = {}
+
+    for _, _, track_id, det_idx in candidates:
+        if track_id in assigned_tracks or det_idx in assigned_dets:
+            continue
+        matches[det_idx] = track_id
+        assigned_tracks.add(track_id)
+        assigned_dets.add(det_idx)
+
+    unmatched_dets = set(range(len(det_data))) - assigned_dets
+    unmatched_tracks = set(tracks.keys()) - assigned_tracks
+    return matches, unmatched_dets, unmatched_tracks
+
+
+def _apply_vehicle_heading_smoothing(
+    vehicle_results: list,
+    smoother_state: dict,
+    smooth_cfg: dict,
+    processed_frame_idx: int,
+):
+    if not bool(smooth_cfg.get("enabled", False)):
+        return {"matched": 0, "new": 0, "unmatched_tracks": 0, "active_tracks": len(smoother_state["tracks"])}
+
+    tracks = smoother_state["tracks"]
+    timeout = int(smooth_cfg["track_timeout_frames"])
+
+    stale = [
+        track_id
+        for track_id, tr in tracks.items()
+        if (processed_frame_idx - int(tr.get("last_seen_frame", processed_frame_idx))) > timeout
+    ]
+    for track_id in stale:
+        tracks.pop(track_id, None)
+
+    det_data = _vehicle_association_data(vehicle_results)
+    if not det_data:
+        return {
+            "matched": 0,
+            "new": 0,
+            "unmatched_tracks": len(tracks),
+            "active_tracks": len(tracks),
+        }
+
+    matches, unmatched_dets, unmatched_tracks = _associate_tracks_to_detections(tracks, det_data, smooth_cfg)
+    max_delta = float(smooth_cfg["max_delta_rad"])
+    ema_alpha = smooth_cfg.get("ema_alpha", None)
+
+    for det_idx, track_id in matches.items():
+        d = det_data[det_idx]
+        det = d["det"]
+        track = tracks[track_id]
+
+        prev_heading = _normalize_angle_rad(float(track.get("heading_rad", d["heading_rad"])))
+        raw_heading = d["heading_rad"]
+        delta = _angle_delta_rad(raw_heading, prev_heading)
+        clamped_delta = float(np.clip(delta, -max_delta, max_delta))
+
+        if ema_alpha is None:
+            smoothed_heading = prev_heading + clamped_delta
+        else:
+            smoothed_heading = prev_heading + (ema_alpha * clamped_delta)
+
+        smoothed_heading = _normalize_angle_rad(smoothed_heading)
+        det.raw_heading_rad = raw_heading
+        det.heading_rad = smoothed_heading
+        det.smoothing_track_id = int(track_id)
+
+        track["heading_rad"] = smoothed_heading
+        track["position_3d"] = d["position_3d"]
+        track["bbox"] = d["bbox"]
+        track["last_seen_frame"] = int(processed_frame_idx)
+
+    for det_idx in unmatched_dets:
+        d = det_data[det_idx]
+        det = d["det"]
+        track_id = int(smoother_state["next_track_id"])
+        smoother_state["next_track_id"] = track_id + 1
+
+        init_heading = d["heading_rad"]
+        det.raw_heading_rad = init_heading
+        det.heading_rad = init_heading
+        det.smoothing_track_id = track_id
+
+        tracks[track_id] = {
+            "heading_rad": init_heading,
+            "position_3d": d["position_3d"],
+            "bbox": d["bbox"],
+            "last_seen_frame": int(processed_frame_idx),
+        }
+
+    return {
+        "matched": len(matches),
+        "new": len(unmatched_dets),
+        "unmatched_tracks": len(unmatched_tracks),
+        "active_tracks": len(tracks),
+    }
 
 
 def _lane_points(lane):
@@ -1164,6 +1360,11 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
     lane_debug_raw_match_point_ratio = float(lanes_cfg.get("debug_raw_match_point_ratio", 0.10))
     lane_debug_draw_unmatched_raw_boxes = bool(lanes_cfg.get("debug_draw_unmatched_raw_boxes", False))
     lane_debug_show_drop_reasons = bool(lanes_cfg.get("debug_show_drop_reasons", True))
+    heading_smooth_cfg = _heading_smoothing_config(cfg)
+    heading_smoother_state = {
+        "next_track_id": 1,
+        "tracks": {},
+    }
     models["traffic"].set_scene_context(scene_name)
 
     # scene_dir is the root of this sequence, e.g. Data/Sequences/scene1/
@@ -1185,6 +1386,11 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
     debug_proj_matrix = _camera_projection_matrix(cfg) if debug else None
 
     print(f"[{scene_name}] Camera: {camera}")
+    if heading_smooth_cfg["enabled"]:
+        print(
+            f"[{scene_name}/{camera}] heading_smoothing enabled | dt={heading_smooth_cfg['dt_sec']:.4f}s "
+            f"max_delta={heading_smooth_cfg['max_delta_rad']:.4f}rad"
+        )
     # Use the generator so we never load all frames into RAM at once
     for i, (frame_idx, frame_bgr) in enumerate(
         frame_generator(scene_dir, camera=camera, frame_skip=cfg["perception"]["frame_skip"])
@@ -1235,6 +1441,12 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
 
         vehicle_results = [d for d in object_results if d.label in vehicle_labels]
         orientation_estimates = models["orientation"].annotate_detections(frame_bgr, vehicle_results)
+        heading_stats = _apply_vehicle_heading_smoothing(
+            vehicle_results,
+            heading_smoother_state,
+            heading_smooth_cfg,
+            processed_frame_idx=i,
+        )
 
         if isinstance(lane_output, dict) and "lanes" in lane_output:
             lane_results = lane_output["lanes"]
@@ -1274,6 +1486,7 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
             traffic_lights=traffic_results,
             stop_signs=sign_results,
             non_coco_objects=non_coco_results,
+            include_debug=bool(debug),
         )
         save_detection_json(frame_dict, out_dir / f"frame_{frame_idx:06d}.json")
 
@@ -1325,7 +1538,16 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
             print(
                 f"  [{scene_name}/{camera}] {i+1} frames processed | "
                 f"lanes={len(lane_results)} raw_dets={raw_count} "
-                f"vehicles={len(vehicle_results)} oriented={len(orientation_estimates)}"
+                f"vehicles={len(vehicle_results)} oriented={len(orientation_estimates)} "
+                f"smooth_matched={heading_stats['matched']} smooth_new={heading_stats['new']} "
+                f"smooth_tracks={heading_stats['active_tracks']}"
+            )
+
+        if heading_smooth_cfg["enabled"] and heading_smooth_cfg["debug_log_matches"]:
+            print(
+                f"  [{scene_name}/{camera}] frame={frame_idx} "
+                f"smooth matched={heading_stats['matched']} new={heading_stats['new']} "
+                f"unmatched_tracks={heading_stats['unmatched_tracks']} active={heading_stats['active_tracks']}"
             )
 
     print(f"[{scene_name}] Done. JSONs saved to {out_dir}")
