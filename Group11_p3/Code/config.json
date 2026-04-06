@@ -38,7 +38,7 @@
   },
   "perception": {
     "batch_size": 1,
-    "frame_skip": 30,
+    "frame_skip": 1,
     "yolo": {
       "confidence": 0.25,
       "iou_threshold": 0.45,
@@ -352,7 +352,6 @@
       "dart_lane_control_enabled": true,
       "dart_lane_control_min_confidence": 0.3,
       "dart_lane_control_dedupe_iou": 0.45,
-      "max_candidate_bottom_y_ratio": 0.9,
       "arrow_overlap_iou": 0.35,
       "arrow_overlap_ioa": 0.65,
       "nested_overlap_ioa": 0.8,

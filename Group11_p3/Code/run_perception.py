@@ -21,6 +21,7 @@ Output
 """
 
 import argparse
+from copy import deepcopy
 import torch
 from pathlib import Path
 import os
@@ -95,14 +96,29 @@ def parse_args():
         help="Enable night traffic-light mode (pick lowest-saturation ROI)."
     )
 
+    parser.add_argument(
+        "--person",
+        action="store_true",
+        help="Debug mode: only run person detection."
+    )
+
     
     
     return parser.parse_args()
 
 
-def load_models(cfg, device, night_mode: bool = False):
+def load_models(cfg, device, night_mode: bool = False, person_only: bool = False):
     """Instantiate all detectors once — expensive, do it outside the frame loop."""
     print("[init] Loading models...")
+    if person_only:
+        person_cfg = deepcopy(cfg)
+        person_cfg["perception"]["yolo"]["classes_phase1"] = [0]
+        models = {
+            "objects": ObjectDetector(person_cfg, device),
+        }
+        print("[init] Person-only debug mode enabled: loading just the object detector.")
+        return models
+
     perception_cfg = cfg.get("perception", {})
     non_coco_cfg = perception_cfg.get("non_coco_dart") or perception_cfg.get("cones", {})
     non_coco_enabled = bool(non_coco_cfg.get("enabled", False))
@@ -599,7 +615,14 @@ def _camera_projection_matrix(cfg: dict) -> np.ndarray:
         dtype=np.float32,
     )
 
-def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debug: bool = False):
+def process_sequence(
+    scene_name: str,
+    camera: str,
+    cfg: dict,
+    models: dict,
+    debug: bool = False,
+    person_only: bool = False,
+):
     """Run every active detector on every frame of one sequence and write JSONs."""
     vehicle_labels = {"bicycle", "car", "motorcycle", "bus", "truck", "sedan", "hatchback", "suv", "pickuptruck", "pickup_truck"}
 
@@ -616,59 +639,70 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
     ocr_debug_dir = out_dir / "../ocr_debug"
     if debug:
         debug_dir.mkdir(parents=True, exist_ok=True)
-        lane_debug_dir.mkdir(parents=True, exist_ok=True)
-        traffic_algo_dir.mkdir(parents=True, exist_ok=True)
-        ocr_debug_dir.mkdir(parents=True, exist_ok=True)
+        if not person_only:
+            lane_debug_dir.mkdir(parents=True, exist_ok=True)
+            traffic_algo_dir.mkdir(parents=True, exist_ok=True)
+            ocr_debug_dir.mkdir(parents=True, exist_ok=True)
     debug_proj_matrix = _camera_projection_matrix(cfg) if debug else None
 
     print(f"[{scene_name}] Camera: {camera}")
     # Use the generator so we never load all frames into RAM at once
     for i, (frame_idx, frame_bgr) in enumerate(
         frame_generator(scene_dir, camera=camera, frame_skip=cfg["perception"]["frame_skip"])
-):
+    ):
         # --- Run detectors ---
         object_results = models["objects"].detect(frame_bgr)
-        if models.get("vehicle_subtypes") is not None:
-            object_results = models["vehicle_subtypes"].refine_detections(frame_bgr, object_results)
         lane_results = []
         lane_raw = None
+        non_coco_results = []
         traffic_results = []
         sign_results = []
+        vehicle_results = []
+        orientation_estimates = []
 
-        lane_output = models["lanes"].detect(frame_bgr)
-        non_coco_results = models["non_coco"].detect(frame_bgr) if models.get("non_coco") is not None else []
-        traffic_candidates, non_coco_results = _build_traffic_candidates(
-            object_results,
-            non_coco_results,
-            cfg,
-            scene_name,
-        )
-        _run_speed_limit_ocr(
-            frame_bgr,
-            non_coco_results,
-            models.get("speed_limit_ocr"),
-            frame_idx=frame_idx,
-            debug_dir=ocr_debug_dir if debug else None,
-        )
-        depth_map = models["depth"].estimate(frame_bgr)
-        object_results = models["depth"].lift_to_3d(object_results, depth_map)
-        non_coco_results = models["depth"].lift_to_3d(non_coco_results, depth_map)
-        traffic_results = models["depth"].lift_to_3d(models["traffic"].detect(frame_bgr, traffic_candidates), depth_map)
-        sign_results = models["signs"].detect(frame_bgr, object_results)
-        
-        _SPECIALIZED = {"traffic_light", "stop_sign"}
-        object_results = [d for d in object_results if d.label not in _SPECIALIZED]
-
-        vehicle_results = [d for d in object_results if d.label in vehicle_labels]
-        orientation_estimates = models["orientation"].annotate_detections(frame_bgr, vehicle_results)
-
-        if isinstance(lane_output, dict) and "lanes" in lane_output:
-            lane_results = lane_output["lanes"]
-            lane_raw = lane_output.get("raw")
+        if person_only:
+            object_results = [d for d in object_results if d.label == "person"]
         else:
-            # Backward compatibility if detect returns a plain list.
-            lane_results = lane_output
-            lane_raw = None
+            if models.get("vehicle_subtypes") is not None:
+                object_results = models["vehicle_subtypes"].refine_detections(frame_bgr, object_results)
+
+            lane_output = models["lanes"].detect(frame_bgr)
+            non_coco_results = models["non_coco"].detect(frame_bgr) if models.get("non_coco") is not None else []
+            traffic_candidates, non_coco_results = _build_traffic_candidates(
+                object_results,
+                non_coco_results,
+                cfg,
+                scene_name,
+            )
+            _run_speed_limit_ocr(
+                frame_bgr,
+                non_coco_results,
+                models.get("speed_limit_ocr"),
+                frame_idx=frame_idx,
+                debug_dir=ocr_debug_dir if debug else None,
+            )
+            depth_map = models["depth"].estimate(frame_bgr)
+            object_results = models["depth"].lift_to_3d(object_results, depth_map)
+            non_coco_results = models["depth"].lift_to_3d(non_coco_results, depth_map)
+            traffic_results = models["depth"].lift_to_3d(
+                models["traffic"].detect(frame_bgr, traffic_candidates),
+                depth_map,
+            )
+            sign_results = models["signs"].detect(frame_bgr, object_results)
+
+            _SPECIALIZED = {"traffic_light", "stop_sign"}
+            object_results = [d for d in object_results if d.label not in _SPECIALIZED]
+
+            vehicle_results = [d for d in object_results if d.label in vehicle_labels]
+            orientation_estimates = models["orientation"].annotate_detections(frame_bgr, vehicle_results)
+
+            if isinstance(lane_output, dict) and "lanes" in lane_output:
+                lane_results = lane_output["lanes"]
+                lane_raw = lane_output.get("raw")
+            else:
+                # Backward compatibility if detect returns a plain list.
+                lane_results = lane_output
+                lane_raw = None
 
         # --- Build and save JSON ---
         frame_dict = build_frame_dict(
@@ -693,20 +727,21 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
                 annotated_non_coco,
                 save_path=str(debug_dir / f"debug_frame_{frame_idx:06d}.png")
             )
-            overlay = draw_lane_debug_overlay(frame_bgr, lane_results, lane_raw)
-            debug_path = lane_debug_dir / f"frame_{frame_idx:06d}.jpg"
-            cv2.imwrite(str(debug_path), overlay)
+            if not person_only:
+                overlay = draw_lane_debug_overlay(frame_bgr, lane_results, lane_raw)
+                debug_path = lane_debug_dir / f"frame_{frame_idx:06d}.jpg"
+                cv2.imwrite(str(debug_path), overlay)
 
-            traffic_debug = models["traffic"].last_debug_info
-            if traffic_debug:
-                traffic_overlay = draw_traffic_algorithm_overlay(frame_bgr, traffic_debug)
-                cv2.imwrite(str(traffic_algo_dir / f"frame_{frame_idx:06d}.png"), traffic_overlay)
-                save_traffic_detail_panels(
-                    frame_bgr,
-                    traffic_debug,
-                    frame_idx,
-                    traffic_algo_dir / "detail",
-                )
+                traffic_debug = models["traffic"].last_debug_info
+                if traffic_debug:
+                    traffic_overlay = draw_traffic_algorithm_overlay(frame_bgr, traffic_debug)
+                    cv2.imwrite(str(traffic_algo_dir / f"frame_{frame_idx:06d}.png"), traffic_overlay)
+                    save_traffic_detail_panels(
+                        frame_bgr,
+                        traffic_debug,
+                        frame_idx,
+                        traffic_algo_dir / "detail",
+                    )
 
         if (i + 1) % 50 == 0:
             raw_count = 0
@@ -715,14 +750,16 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
             print(
                 f"  [{scene_name}/{camera}] {i+1} frames processed | "
                 f"lanes={len(lane_results)} raw_dets={raw_count} "
-                f"vehicles={len(vehicle_results)} oriented={len(orientation_estimates)}"
+                f"vehicles={len(vehicle_results)} oriented={len(orientation_estimates)} "
+                f"pedestrians={sum(1 for d in object_results if d.label == 'person')}"
             )
 
     print(f"[{scene_name}] Done. JSONs saved to {out_dir}")
     if debug:
         print(f"[{scene_name}] Debug overlays saved to {debug_dir}")
-        print(f"[{scene_name}] Lane overlays saved to {lane_debug_dir}")
-        print(f"[{scene_name}] Traffic algorithm figures saved to {traffic_algo_dir}")
+        if not person_only:
+            print(f"[{scene_name}] Lane overlays saved to {lane_debug_dir}")
+            print(f"[{scene_name}] Traffic algorithm figures saved to {traffic_algo_dir}")
     return
 
 
@@ -745,9 +782,11 @@ def main():
     cameras = cfg["cameras"] if args.allcam else [args.cam]
 
     # instantiate all of the detectors
-    models = load_models(cfg, device, night_mode=args.night)
+    models = load_models(cfg, device, night_mode=args.night, person_only=args.person)
     if args.night:
         print("[init] Night traffic-light mode enabled (--night).")
+    if args.person:
+        print("[init] Person-only debug mode enabled (--person).")
 
     # process the sequences
     for scene in scenes:
@@ -758,6 +797,7 @@ def main():
                 cfg,
                 models,
                 debug=args.debug,
+                person_only=args.person,
             )
 
     print("\n[done] All sequences processed.")
