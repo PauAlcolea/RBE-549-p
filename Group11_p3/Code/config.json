@@ -34,7 +34,8 @@
     "rtdetr": "../Weights/rtdetr-x.pt",
     "depth": "../Weights/depth_anything_v2_metric_vkitti_vitb.pth",
     "lanes": "../Weights/sam3.pt",
-    "orientation": "../Weights/boundingbox.pkl"
+    "orientation": "../Weights/boundingbox.pkl",
+    "pymaf": "../Weights/PyMAF_model_checkpoint.pt"
   },
   "perception": {
     "batch_size": 1,
@@ -276,6 +277,26 @@
         "traffic_pole": 3.0,
         "speed_limit_sign": 0.6
       }
+    },
+    "pymaf": {
+      "enabled": true,
+      "repo_dir": "perception/PyMAF",
+      "checkpoint": "../Weights/PyMAF_model_checkpoint.pt",
+      "smpl_fallback_pkl": "../Weights/pymaf_male.pkl",
+      "output_dir": "../Outputs/PyMAF",
+      "cfg_file": "configs/pymaf_config.yaml",
+      "python_exec": "python3",
+      "detector": "yolov8",
+      "tracking_method": "bbox",
+      "yolo_img_size": 416,
+      "tracker_batch_size": 12,
+      "model_batch_size": 8,
+      "no_render": true,
+      "reuse_cache": true,
+      "match_iou": 0.2,
+      "min_bbox_side_px": 20.0,
+      "include_joints3d": true,
+      "strict_assets": false
     },
     "traffic_light": {
       "force_best_guess": true,

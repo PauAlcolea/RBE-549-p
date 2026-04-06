@@ -34,8 +34,22 @@ sys.dont_write_bytecode = True
 # Make sure we can import our modules regardless of where the script is run from
 # sys.path.insert(0, str(Path(__file__).parent))
 
-from utils.io_utils import load_config, frame_generator, get_video_frames, save_detection_json
-from utils.viz import draw_detections, show_or_save, draw_traffic_lights, draw_signs, draw_non_coco_objects
+from utils.io_utils import (
+    load_config,
+    frame_generator,
+    get_video_frames,
+    save_detection_json,
+    load_detection_json,
+    list_frame_jsons,
+)
+from utils.viz import (
+    draw_detections,
+    show_or_save,
+    draw_traffic_lights,
+    draw_signs,
+    draw_non_coco_objects,
+    draw_pymaf_matches,
+)
 from perception.lanes import LaneDetector
 from perception.objects import ObjectDetector
 from perception.objectsDART import NonCocoDartDetector
@@ -46,6 +60,7 @@ from perception.orientation import OrientationEstimator
 from perception.speed_limit_ocr import SpeedLimitOcr
 from perception.export import build_frame_dict
 from perception.vehicle_subtypes import VehicleSubtypeClassifier
+from perception.pymaf import PymafEstimator
 
 
 def parse_args():
@@ -102,14 +117,33 @@ def parse_args():
         help="Debug mode: only run person detection."
     )
 
+    parser.add_argument(
+        "--pymaf-only",
+        action="store_true",
+        help="Run only PyMAF and update existing detection JSONs in-place."
+    )
+
     
     
     return parser.parse_args()
 
 
-def load_models(cfg, device, night_mode: bool = False, person_only: bool = False):
+def load_models(
+    cfg,
+    device,
+    night_mode: bool = False,
+    person_only: bool = False,
+    pymaf_only: bool = False,
+):
     """Instantiate all detectors once — expensive, do it outside the frame loop."""
     print("[init] Loading models...")
+    if pymaf_only:
+        models = {
+            "pymaf": PymafEstimator(cfg, device),
+        }
+        print("[init] PyMAF-only mode enabled: loading just PyMAF bridge.")
+        return models
+
     if person_only:
         person_cfg = deepcopy(cfg)
         person_cfg["perception"]["yolo"]["classes_phase1"] = [0]
@@ -646,6 +680,7 @@ def process_sequence(
     debug_proj_matrix = _camera_projection_matrix(cfg) if debug else None
 
     print(f"[{scene_name}] Camera: {camera}")
+
     # Use the generator so we never load all frames into RAM at once
     for i, (frame_idx, frame_bgr) in enumerate(
         frame_generator(scene_dir, camera=camera, frame_skip=cfg["perception"]["frame_skip"])
@@ -727,6 +762,7 @@ def process_sequence(
                 annotated_non_coco,
                 save_path=str(debug_dir / f"debug_frame_{frame_idx:06d}.png")
             )
+
             if not person_only:
                 overlay = draw_lane_debug_overlay(frame_bgr, lane_results, lane_raw)
                 debug_path = lane_debug_dir / f"frame_{frame_idx:06d}.jpg"
@@ -763,6 +799,127 @@ def process_sequence(
     return
 
 
+def _frame_idx_from_json_path(json_path: Path) -> int:
+    name = json_path.stem  # frame_000123
+    if not name.startswith("frame_"):
+        raise ValueError(f"Unexpected frame json name: {json_path.name}")
+    return int(name.split("_", 1)[1])
+
+
+def process_sequence_pymaf_only(
+    scene_name: str,
+    camera: str,
+    cfg: dict,
+    models: dict,
+    debug: bool = False,
+):
+    """
+    Run only PyMAF and update existing per-frame detection JSON files in place.
+    """
+    scene_dir = Path(cfg["paths"]["sequences_dir"]) / scene_name
+    out_dir = Path(cfg["paths"]["detections_dir"]) / scene_name / camera
+    pymaf_debug_dir = Path(cfg["paths"]["detections_dir"]) / scene_name / "pymaf_debug"
+
+    json_paths = list_frame_jsons(out_dir)
+    if not json_paths:
+        print(f"[warn] No existing detection JSONs found in {out_dir}.")
+        return
+
+    pymaf_model = models.get("pymaf")
+    if pymaf_model is None or not pymaf_model.is_active():
+        print(f"[warn] PyMAF is not active for {scene_name}/{camera}; skipping.")
+        return
+
+    print(f"[{scene_name}] Camera: {camera} (pymaf-only)")
+    pymaf_model.prepare_scene(scene_name, camera, scene_dir)
+
+    per_frame_person_dets = {}
+    matched_total = 0
+    updated_jsons = 0
+
+    for i, json_path in enumerate(json_paths):
+        frame_idx = _frame_idx_from_json_path(json_path)
+        frame_dict = load_detection_json(json_path)
+        pedestrians = frame_dict.get("pedestrians", [])
+
+        det_pairs = []
+        for ped in pedestrians:
+            bbox = ped.get("bbox", None)
+            if not isinstance(bbox, list) or len(bbox) != 4:
+                continue
+
+            # Clear stale PyMAF fields before re-annotating this frame.
+            for key in ("pymaf_track_id", "pymaf_match_iou", "smpl_pose", "smpl_betas", "smpl_joints3d"):
+                ped.pop(key, None)
+
+            det_obj = SimpleNamespace(
+                label="person",
+                bbox=[float(v) for v in bbox],
+                depth_m=float(ped.get("depth_m", 0.0)),
+                confidence=1.0,
+                position_3d=[float(v) for v in ped.get("position_3d", [0.0, 0.0, 0.0])],
+            )
+            det_pairs.append((ped, det_obj))
+
+        dets = [d for _, d in det_pairs]
+        matched_frame = pymaf_model.annotate_person_detections(frame_idx, dets)
+        matched_total += matched_frame
+        per_frame_person_dets[frame_idx] = dets
+
+        for ped, det in det_pairs:
+            track_id = getattr(det, "pymaf_track_id", None)
+            if track_id is None:
+                continue
+            ped["pymaf_track_id"] = int(track_id)
+            ped["pymaf_match_iou"] = round(float(getattr(det, "pymaf_match_iou", 0.0)), 4)
+
+            smpl_pose = getattr(det, "smpl_pose", None)
+            if smpl_pose is not None:
+                ped["smpl_pose"] = [round(float(v), 6) for v in smpl_pose]
+
+            smpl_betas = getattr(det, "smpl_betas", None)
+            if smpl_betas is not None:
+                ped["smpl_betas"] = [round(float(v), 6) for v in smpl_betas]
+
+            smpl_joints3d = getattr(det, "smpl_joints3d", None)
+            if smpl_joints3d is not None:
+                ped["smpl_joints3d"] = [
+                    [round(float(coord), 6) for coord in joint]
+                    for joint in smpl_joints3d
+                ]
+
+        save_detection_json(frame_dict, json_path)
+        updated_jsons += 1
+
+        if (i + 1) % 50 == 0:
+            print(
+                f"  [{scene_name}/{camera}] {i+1} jsons updated | "
+                f"frame_matches={matched_frame} total_matches={matched_total}"
+            )
+
+    if debug:
+        pymaf_debug_dir.mkdir(parents=True, exist_ok=True)
+        saved = 0
+        target = len(per_frame_person_dets)
+        for frame_idx, frame_bgr in frame_generator(scene_dir, camera=camera, frame_skip=1):
+            dets = per_frame_person_dets.get(frame_idx, None)
+            if dets is None:
+                continue
+            vis = draw_pymaf_matches(frame_bgr, dets)
+            show_or_save(vis, save_path=str(pymaf_debug_dir / f"pymaf_frame_{frame_idx:06d}.png"))
+            saved += 1
+            if saved >= target:
+                break
+
+        print(f"[{scene_name}] PyMAF overlays saved to {pymaf_debug_dir}")
+
+    print(
+        f"[{scene_name}] PyMAF-only done for {camera}: "
+        f"updated_jsons={updated_jsons}, total_matches={matched_total}"
+    )
+    return
+
+
 def main():
     device = (
         "cuda" if torch.cuda.is_available()
@@ -782,23 +939,40 @@ def main():
     cameras = cfg["cameras"] if args.allcam else [args.cam]
 
     # instantiate all of the detectors
-    models = load_models(cfg, device, night_mode=args.night, person_only=args.person)
+    models = load_models(
+        cfg,
+        device,
+        night_mode=args.night,
+        person_only=args.person,
+        pymaf_only=args.pymaf_only,
+    )
     if args.night:
         print("[init] Night traffic-light mode enabled (--night).")
     if args.person:
         print("[init] Person-only debug mode enabled (--person).")
+    if args.pymaf_only:
+        print("[init] PyMAF-only mode enabled (--pymaf-only).")
 
     # process the sequences
     for scene in scenes:
         for camera in cameras:  # this might break at the time to do for all the cameras
-            process_sequence(
-                scene,
-                camera,
-                cfg,
-                models,
-                debug=args.debug,
-                person_only=args.person,
-            )
+            if args.pymaf_only:
+                process_sequence_pymaf_only(
+                    scene,
+                    camera,
+                    cfg,
+                    models,
+                    debug=args.debug,
+                )
+            else:
+                process_sequence(
+                    scene,
+                    camera,
+                    cfg,
+                    models,
+                    debug=args.debug,
+                    person_only=args.person,
+                )
 
     print("\n[done] All sequences processed.")
     return

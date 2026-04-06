@@ -15,6 +15,7 @@ numpy>=1.24                 # arrays everywhere
 # ── Config & utilities ─────────────────────────────────────────────────────
 pyyaml>=6.0                 # config.yaml loading
 tqdm>=4.66                  # progress bars
+joblib>=1.2                 # load PyMAF output.pkl when pymaf integration is enabled
 
 # ── Coming soon (uncomment as you implement each module) ───────────────────
 # timm>=0.9                 # DepthAnything backbone

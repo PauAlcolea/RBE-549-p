@@ -35,6 +35,7 @@ _COLOR_3D_BOX = (60, 220, 60)
 _COLOR_3D_FRONT = (255, 120, 40)
 _COLOR_CONE  = (  0, 140, 255)   # orange
 _COLOR_NON_COCO = (180, 120, 255)
+_COLOR_PYMAF = (255, 255, 0)     # cyan-yellow for pymaf overlays
 
 
 def _rotation_matrix_y(yaw_rad: float) -> np.ndarray:
@@ -291,6 +292,58 @@ def draw_non_coco_objects(frame_bgr: np.ndarray, detections: list) -> np.ndarray
             label = f"{det.label} v={speed_text} ocr={ocr_conf:.2f}"
         cv2.putText(out, label, (x1, y1 - 6),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+    return out
+
+
+def draw_pymaf_matches(frame_bgr: np.ndarray, detections: list) -> np.ndarray:
+    """
+    Overlay PyMAF match diagnostics on top of person detections.
+
+    A person is considered matched when `pymaf_track_id` is present.
+    """
+    out = frame_bgr.copy()
+    matched = 0
+    persons = 0
+
+    for det in detections:
+        if getattr(det, "label", "") != "person":
+            continue
+        persons += 1
+
+        track_id = getattr(det, "pymaf_track_id", None)
+        if track_id is None:
+            continue
+        matched += 1
+
+        x1, y1, x2, y2 = [int(v) for v in det.bbox]
+        iou = float(getattr(det, "pymaf_match_iou", 0.0))
+        has_pose = getattr(det, "smpl_pose", None) is not None
+
+        cv2.rectangle(out, (x1, y1), (x2, y2), _COLOR_PYMAF, 2)
+        text = f"pymaf id={int(track_id)} iou={iou:.2f} pose={'Y' if has_pose else 'N'}"
+        cv2.putText(
+            out,
+            text,
+            (x1, max(y1 - 8, 12)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            _COLOR_PYMAF,
+            1,
+            lineType=cv2.LINE_AA,
+        )
+
+    summary = f"PyMAF matched persons: {matched}/{persons}"
+    cv2.rectangle(out, (8, 8), (330, 34), (10, 10, 10), -1)
+    cv2.putText(
+        out,
+        summary,
+        (14, 28),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        _COLOR_PYMAF,
+        1,
+        lineType=cv2.LINE_AA,
+    )
     return out
 
 

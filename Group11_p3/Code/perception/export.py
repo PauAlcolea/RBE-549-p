@@ -91,6 +91,36 @@ def _serialize_vehicle(det) -> dict:
 
     return vehicle
 
+
+def _serialize_pedestrian(det) -> dict:
+    ped = {
+        "bbox": [round(v, 2) for v in det.bbox],
+        "depth_m": round(det.depth_m, 3),
+        "position_3d": [round(v, 3) for v in det.position_3d],
+    }
+
+    pymaf_track_id = getattr(det, "pymaf_track_id", None)
+    if pymaf_track_id is not None:
+        ped["pymaf_track_id"] = int(pymaf_track_id)
+        ped["pymaf_match_iou"] = round(float(getattr(det, "pymaf_match_iou", 0.0)), 4)
+
+    smpl_pose = getattr(det, "smpl_pose", None)
+    if smpl_pose is not None:
+        ped["smpl_pose"] = [round(float(v), 6) for v in smpl_pose]
+
+    smpl_betas = getattr(det, "smpl_betas", None)
+    if smpl_betas is not None:
+        ped["smpl_betas"] = [round(float(v), 6) for v in smpl_betas]
+
+    smpl_joints3d = getattr(det, "smpl_joints3d", None)
+    if smpl_joints3d is not None:
+        ped["smpl_joints3d"] = [
+            [round(float(coord), 6) for coord in joint]
+            for joint in smpl_joints3d
+        ]
+
+    return ped
+
 def build_frame_dict(
     frame_idx: int,
     fps: float,
@@ -165,11 +195,7 @@ def build_frame_dict(
         ],
 
         "pedestrians": [
-            {
-                "bbox":        [round(v, 2) for v in det.bbox],
-                "depth_m":     round(det.depth_m, 3),
-                "position_3d": [round(v, 3) for v in det.position_3d],
-            }
+            _serialize_pedestrian(det)
             for det in pedestrians
         ],
 
