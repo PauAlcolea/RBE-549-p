@@ -1155,6 +1155,8 @@ class AssetLibrary:
         yaw_offset_map = {
             "truck": math.pi,
             "bus": math.pi,
+            "pickuptruck": math.pi / 2,
+            "pickup_truck": math.pi / 2,
         }
         return yaw_offset_map.get(vehicle_class, 0.0)
 
