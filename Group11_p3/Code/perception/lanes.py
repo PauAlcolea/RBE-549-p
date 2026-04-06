@@ -50,11 +50,12 @@ class LaneDetector:
 
         self.model_name = self.lanes_cfg.get("model", "DART")
         self.max_lanes = int(self.lanes_cfg.get("max_lanes", 8))
-        self.classes = list(
+        self.lane_classes = list(
             self.lanes_cfg.get(
-                "classes", ["white lane line", "yellow lane line"]
+                "classes", ["yellow lane line painted on road", "white lane line painted on road", "crosswalk marking on road"]
             )
         )
+        self.classes = list(self.lane_classes)
 
         self.confidence = float(self.lanes_cfg.get("confidence", 0.35))
         self.nms = float(self.lanes_cfg.get("nms", 0.4))
@@ -295,6 +296,12 @@ class LaneDetector:
             if score < self.confidence:
                 continue
 
+            cls_name = class_names[i] if i < len(class_names) else "lane line"
+            cls_name_lower = cls_name.lower()
+            is_lane = ("lane" in cls_name_lower)
+            if not is_lane:
+                continue
+
             points: List[Tuple[float, float]] = []
             if masks is not None and len(masks) > i:
                 mask = masks[i].detach().cpu().numpy().astype(np.uint8)
@@ -312,7 +319,7 @@ class LaneDetector:
 
             cls_name = class_names[i] if i < len(class_names) else "lane line"
             cls_name_lower = cls_name.lower()
-            if "yellow" in cls_name_lower:
+            if "yellow" in cls_name_lower or "non-white" in cls_name_lower:
                 color = "yellow"
             elif "white" in cls_name_lower:
                 color = "white"
@@ -324,7 +331,6 @@ class LaneDetector:
                 Lane(
                     points=points,
                     color=color,
-                    # style=style,
                     confidence=score,
                 )
             )

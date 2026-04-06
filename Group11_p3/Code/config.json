@@ -63,8 +63,9 @@
       "model": "DART",
       "max_lanes": 8,
       "classes": [
-        "white lane line",
-        "yellow lane line"
+        "yellow lane line painted on road",
+        "white lane line painted on road",
+        "crosswalk marking on road"
       ],
       "confidence": 0.3,
       "nms": 0.4,
@@ -83,6 +84,13 @@
       "white_vote_ratio": 0.5,
       "dash_gap_px": 60,
       "min_length_px": 60.0,
+      "export_min_confidence": 0.85,
+      "export_min_confidence_yellow": 0.65,
+      "export_min_confidence_white": 0.85,
+      "debug_draw_unmatched_raw_boxes": false,
+      "debug_raw_match_pad_px": 6.0,
+      "debug_raw_match_min_points": 2,
+      "debug_raw_match_point_ratio": 0.1,
       "hsv_yellow_low": [
         15,
         90,
@@ -156,7 +164,7 @@
           "label": "speed_limit_sign",
           "export_bucket": "speed_limit_signs"
         },
-{
+        {
           "prompt": "white directional arrow painted on road",
           "label": "ground_arrow",
           "export_bucket": "ground_arrows",
@@ -406,7 +414,7 @@
       "dart_lane_control_enabled": true,
       "dart_lane_control_min_confidence": 0.3,
       "dart_lane_control_dedupe_iou": 0.45,
-            "arrow_overlap_iou": 0.35,
+      "arrow_overlap_iou": 0.35,
       "arrow_overlap_ioa": 0.65,
       "nested_overlap_ioa": 0.8,
       "dart_arrow_signal_aspect_min": 0.7,

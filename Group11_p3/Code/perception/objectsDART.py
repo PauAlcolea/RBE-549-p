@@ -10,7 +10,7 @@ be added without creating one module per object type.
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 import re
 import sys
 
@@ -31,6 +31,8 @@ class NonCocoObject:
 	speed_value: Optional[int] = None
 	ocr_confidence: float = 0.0
 	ocr_raw_text: str = ""
+	has_only_letters: bool = False
+	only_letter_hits: str = ""
 
 
 def _compute_iou(a: List[float], b: List[float]) -> float:
