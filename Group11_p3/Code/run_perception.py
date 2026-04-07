@@ -516,444 +516,24 @@ def _heading_smoothing_config(cfg: dict) -> dict:
     }
 
 
-def _vehicle_stabilization_config(cfg: dict) -> dict:
-    perception_cfg = cfg.get("perception", {})
-    stab_cfg = perception_cfg.get("vehicle_stabilization", {})
-
-    mode = str(stab_cfg.get("mode", "raw")).strip().lower()
-    if mode not in {"raw", "stabilized", "dual_debug"}:
-        mode = "raw"
-
-    class_cfg = stab_cfg.get("class", {})
-    pos_cfg = stab_cfg.get("position", {})
-    presence_cfg = stab_cfg.get("presence", {})
-
-    return {
-        "mode": mode,
-        "class": {
-            "enabled": bool(class_cfg.get("enabled", False)),
-            "track_timeout_frames": max(0, int(class_cfg.get("track_timeout_frames", 5))),
-            "max_position_distance_m": float(class_cfg.get("max_position_distance_m", 8.0)),
-            "min_bbox_iou": float(class_cfg.get("min_bbox_iou", 0.01)),
-            "history_window_frames": max(1, int(class_cfg.get("history_window_frames", 8))),
-            "min_history_frames": max(1, int(class_cfg.get("min_history_frames", 3))),
-            "switch_margin": max(0, int(class_cfg.get("switch_margin", 1))),
-        },
-        "position": {
-            "enabled": bool(pos_cfg.get("enabled", False)),
-            "track_timeout_frames": max(0, int(pos_cfg.get("track_timeout_frames", 5))),
-            "max_position_distance_m": float(pos_cfg.get("max_position_distance_m", 8.0)),
-            "min_bbox_iou": float(pos_cfg.get("min_bbox_iou", 0.01)),
-            "ema_alpha_position3d": min(max(float(pos_cfg.get("ema_alpha_position3d", 0.35)), 0.0), 1.0),
-            "ema_alpha_bbox": min(max(float(pos_cfg.get("ema_alpha_bbox", 0.35)), 0.0), 1.0),
-            "max_position_step_m": pos_cfg.get("max_position_step_m", None),
-            "max_bbox_step_px": pos_cfg.get("max_bbox_step_px", None),
-        },
-        "presence": {
-            "enabled": bool(presence_cfg.get("enabled", False)),
-            "method": str(presence_cfg.get("method", "two_sided")).strip().lower(),
-            "max_hold_frames": max(0, int(presence_cfg.get("max_hold_frames", 1))),
-            "min_track_age_frames": max(1, int(presence_cfg.get("min_track_age_frames", 1))),
-        },
-    }
-
-
-def _vehicle_association_data(vehicles: list, require_heading: bool = False) -> list:
+def _vehicle_association_data(vehicles: list) -> list:
     out = []
     for det in vehicles:
         heading = getattr(det, "heading_rad", None)
         bbox = getattr(det, "bbox", None)
         pos3d = getattr(det, "position_3d", None)
-        if bbox is None or pos3d is None or len(bbox) != 4 or len(pos3d) < 3:
-            continue
-        if require_heading and heading is None:
+        if heading is None or bbox is None or pos3d is None or len(bbox) != 4 or len(pos3d) < 3:
             continue
 
-        entry = {
-            "det": det,
-            "bbox": [float(v) for v in bbox[:4]],
-            "position_3d": [float(pos3d[0]), float(pos3d[1]), float(pos3d[2])],
-        }
-        if heading is not None:
-            entry["heading_rad"] = _normalize_angle_rad(float(heading))
-
-        out.append(entry)
+        out.append(
+            {
+                "det": det,
+                "heading_rad": _normalize_angle_rad(float(heading)),
+                "bbox": [float(v) for v in bbox[:4]],
+                "position_3d": [float(pos3d[0]), float(pos3d[1]), float(pos3d[2])],
+            }
+        )
     return out
-
-
-def _apply_step_clamp(prev_vals: list, target_vals: list, max_step: float | None) -> list:
-    if max_step is None:
-        return [float(v) for v in target_vals]
-    step = max(float(max_step), 0.0)
-    out = []
-    for p, t in zip(prev_vals, target_vals):
-        delta = float(t) - float(p)
-        out.append(float(p) + float(np.clip(delta, -step, step)))
-    return out
-
-
-def _ema_values(prev_vals: list, target_vals: list, alpha: float) -> list:
-    a = min(max(float(alpha), 0.0), 1.0)
-    return [((1.0 - a) * float(p)) + (a * float(t)) for p, t in zip(prev_vals, target_vals)]
-
-
-def _mode_is_stabilized(mode: str) -> bool:
-    return str(mode).strip().lower() == "stabilized"
-
-
-def _mode_is_dual_debug(mode: str) -> bool:
-    return str(mode).strip().lower() == "dual_debug"
-
-
-def _vehicle_track_map_from_objects(objects: list, vehicle_labels: set) -> dict:
-    out = {}
-    for det in objects:
-        if str(getattr(det, "label", "")) not in vehicle_labels:
-            continue
-        if bool(getattr(det, "is_interpolated", False)):
-            continue
-        track_id = getattr(det, "stabilization_track_id", None)
-        if track_id is None:
-            continue
-        out[int(track_id)] = det
-    return out
-
-
-def _interp_angle(prev_heading, next_heading):
-    if prev_heading is None and next_heading is None:
-        return None
-    if prev_heading is None:
-        return float(next_heading)
-    if next_heading is None:
-        return float(prev_heading)
-    s = np.sin(float(prev_heading)) + np.sin(float(next_heading))
-    c = np.cos(float(prev_heading)) + np.cos(float(next_heading))
-    return float(np.arctan2(s, c))
-
-
-def _interpolate_vehicle_detection(prev_det, next_det, track_id: int, mode: str):
-    prev_bbox = [float(v) for v in getattr(prev_det, "bbox", [0.0, 0.0, 0.0, 0.0])]
-    next_bbox = [float(v) for v in getattr(next_det, "bbox", [0.0, 0.0, 0.0, 0.0])]
-    prev_pos = [float(v) for v in getattr(prev_det, "position_3d", [0.0, 0.0, 0.0])[:3]]
-    next_pos = [float(v) for v in getattr(next_det, "position_3d", [0.0, 0.0, 0.0])[:3]]
-
-    bbox = [0.5 * (a + b) for a, b in zip(prev_bbox, next_bbox)]
-    pos3d = [0.5 * (a + b) for a, b in zip(prev_pos, next_pos)]
-    label = str(getattr(prev_det, "label", "car"))
-    if str(getattr(next_det, "label", label)) != label:
-        label = str(getattr(next_det, "label", label))
-
-    det = SimpleNamespace(
-        label=label,
-        bbox=bbox,
-        confidence=0.5 * (
-            float(getattr(prev_det, "confidence", 0.0))
-            + float(getattr(next_det, "confidence", 0.0))
-        ),
-        depth_m=0.5 * (
-            float(getattr(prev_det, "depth_m", 0.0))
-            + float(getattr(next_det, "depth_m", 0.0))
-        ),
-        position_3d=pos3d,
-        heading_rad=_interp_angle(
-            getattr(prev_det, "heading_rad", None),
-            getattr(next_det, "heading_rad", None),
-        ),
-    )
-    det.is_interpolated = True
-    det.stabilization_track_id = int(track_id)
-
-    if _mode_is_dual_debug(mode):
-        det.raw_label = str(getattr(prev_det, "raw_label", getattr(prev_det, "label", label)))
-        det.stabilized_label = str(getattr(prev_det, "stabilized_label", label))
-        det.raw_bbox = list(getattr(prev_det, "raw_bbox", prev_bbox))
-        det.stabilized_bbox = list(getattr(prev_det, "stabilized_bbox", bbox))
-        det.raw_position_3d = list(getattr(prev_det, "raw_position_3d", prev_pos))
-        det.stabilized_position_3d = list(getattr(prev_det, "stabilized_position_3d", pos3d))
-
-    return det
-
-
-def _apply_two_sided_presence_interpolation(prev_packet: dict, prev_prev_packet: dict, curr_packet: dict, mode: str, vehicle_labels: set) -> int:
-    if prev_packet is None or prev_prev_packet is None or curr_packet is None:
-        return 0
-
-    prev_prev_map = _vehicle_track_map_from_objects(prev_prev_packet.get("object_results", []), vehicle_labels)
-    prev_map = _vehicle_track_map_from_objects(prev_packet.get("object_results", []), vehicle_labels)
-    curr_map = _vehicle_track_map_from_objects(curr_packet.get("object_results", []), vehicle_labels)
-
-    candidate_ids = (set(prev_prev_map.keys()) & set(curr_map.keys())) - set(prev_map.keys())
-    added = 0
-    for track_id in candidate_ids:
-        interp_det = _interpolate_vehicle_detection(prev_prev_map[track_id], curr_map[track_id], track_id, mode)
-        prev_packet["object_results"].append(interp_det)
-        added += 1
-
-    return added
-
-
-def _make_virtual_vehicle_detection(track: dict, track_id: int, mode: str):
-    if _mode_is_stabilized(mode):
-        label = str(track.get("stable_label", track.get("last_label", "car")))
-        bbox = list(track.get("smoothed_bbox", track.get("bbox", [0.0, 0.0, 0.0, 0.0])))
-        pos3d = list(track.get("smoothed_position_3d", track.get("position_3d", [0.0, 0.0, 0.0])))
-    else:
-        label = str(track.get("last_label", track.get("stable_label", "car")))
-        bbox = list(track.get("bbox", [0.0, 0.0, 0.0, 0.0]))
-        pos3d = list(track.get("position_3d", [0.0, 0.0, 0.0]))
-
-    det = SimpleNamespace(
-        label=label,
-        bbox=[float(v) for v in bbox[:4]],
-        confidence=float(track.get("confidence", 0.0)),
-        depth_m=float(track.get("depth_m", 0.0)),
-        position_3d=[float(v) for v in pos3d[:3]],
-        heading_rad=track.get("heading_rad", None),
-    )
-
-    det.is_interpolated = True
-    det.stabilization_track_id = int(track_id)
-    if _mode_is_dual_debug(mode):
-        det.raw_label = str(track.get("last_label", label))
-        det.stabilized_label = str(track.get("stable_label", label))
-        det.raw_bbox = list(track.get("bbox", det.bbox))
-        det.stabilized_bbox = list(track.get("smoothed_bbox", det.bbox))
-        det.raw_position_3d = list(track.get("position_3d", det.position_3d))
-        det.stabilized_position_3d = list(track.get("smoothed_position_3d", det.position_3d))
-
-    return det
-
-
-def _apply_vehicle_class_and_position_stabilization(
-    vehicle_results: list,
-    stabilizer_state: dict,
-    stabilization_cfg: dict,
-    processed_frame_idx: int,
-):
-    mode = stabilization_cfg.get("mode", "raw")
-    class_cfg = stabilization_cfg.get("class", {})
-    pos_cfg = stabilization_cfg.get("position", {})
-    presence_cfg = stabilization_cfg.get("presence", {})
-    class_enabled = bool(class_cfg.get("enabled", False))
-    pos_enabled = bool(pos_cfg.get("enabled", False))
-    presence_enabled = bool(presence_cfg.get("enabled", False))
-    presence_method = str(presence_cfg.get("method", "two_sided")).strip().lower()
-    if (not class_enabled and not pos_enabled and not presence_enabled) or not vehicle_results:
-        return {
-            "matched": 0,
-            "new": 0,
-            "unmatched_tracks": 0,
-            "active_tracks": len(stabilizer_state["tracks"]),
-            "class_switches": 0,
-            "presence_filled": 0,
-            "virtual_detections": [],
-        }
-
-    timeout = int(max(class_cfg.get("track_timeout_frames", 5), pos_cfg.get("track_timeout_frames", 5)))
-    tracks = stabilizer_state["tracks"]
-    stale = [
-        track_id
-        for track_id, tr in tracks.items()
-        if (processed_frame_idx - int(tr.get("last_seen_frame", processed_frame_idx))) > timeout
-    ]
-    for track_id in stale:
-        tracks.pop(track_id, None)
-
-    assoc_cfg = {
-        "max_position_distance_m": float(min(
-            class_cfg.get("max_position_distance_m", 8.0),
-            pos_cfg.get("max_position_distance_m", 8.0),
-        )),
-        "min_bbox_iou": float(max(
-            class_cfg.get("min_bbox_iou", 0.01),
-            pos_cfg.get("min_bbox_iou", 0.01),
-        )),
-    }
-
-    det_data = _vehicle_association_data(vehicle_results, require_heading=False)
-    if not det_data:
-        return {
-            "matched": 0,
-            "new": 0,
-            "unmatched_tracks": len(tracks),
-            "active_tracks": len(tracks),
-            "class_switches": 0,
-            "presence_filled": 0,
-            "virtual_detections": [],
-        }
-
-    matches, unmatched_dets, unmatched_tracks = _associate_tracks_to_detections(tracks, det_data, assoc_cfg)
-    history_window = int(class_cfg.get("history_window_frames", 8))
-    min_history = int(class_cfg.get("min_history_frames", 3))
-    switch_margin = int(class_cfg.get("switch_margin", 1))
-    class_switches = 0
-    virtual_detections = []
-
-    for det_idx, track_id in matches.items():
-        d = det_data[det_idx]
-        det = d["det"]
-        track = tracks[track_id]
-
-        raw_label = str(getattr(det, "label", ""))
-        raw_bbox = [float(v) for v in d["bbox"]]
-        raw_pos3d = [float(v) for v in d["position_3d"]]
-
-        det.raw_label = raw_label
-        det.raw_bbox = list(raw_bbox)
-        det.raw_position_3d = list(raw_pos3d)
-        det.stabilization_track_id = int(track_id)
-
-        if class_enabled:
-            label_history = list(track.get("label_history", []))
-            label_history.append(raw_label)
-            if len(label_history) > history_window:
-                label_history = label_history[-history_window:]
-
-            counts = {}
-            for lbl in label_history:
-                counts[lbl] = counts.get(lbl, 0) + 1
-
-            stable_label = str(track.get("stable_label", raw_label))
-            stable_votes = int(counts.get(stable_label, 0))
-            candidate_label = max(counts, key=counts.get)
-            candidate_votes = int(counts.get(candidate_label, 0))
-
-            if candidate_label != stable_label:
-                allow_switch = (
-                    candidate_votes >= min_history
-                    and candidate_votes >= (stable_votes + switch_margin)
-                )
-                if allow_switch:
-                    stable_label = candidate_label
-                    class_switches += 1
-
-            track["label_history"] = label_history
-            track["stable_label"] = stable_label
-            det.stabilized_label = stable_label
-
-            if _mode_is_stabilized(mode):
-                det.label = stable_label
-
-        if pos_enabled:
-            prev_pos = list(track.get("smoothed_position_3d", raw_pos3d))
-            prev_bbox = list(track.get("smoothed_bbox", raw_bbox))
-
-            pos_step = pos_cfg.get("max_position_step_m", None)
-            bbox_step = pos_cfg.get("max_bbox_step_px", None)
-            pos_step = None if pos_step is None else float(pos_step)
-            bbox_step = None if bbox_step is None else float(bbox_step)
-
-            target_pos = _apply_step_clamp(prev_pos, raw_pos3d, pos_step)
-            target_bbox = _apply_step_clamp(prev_bbox, raw_bbox, bbox_step)
-
-            smoothed_pos = _ema_values(prev_pos, target_pos, float(pos_cfg.get("ema_alpha_position3d", 0.35)))
-            smoothed_bbox = _ema_values(prev_bbox, target_bbox, float(pos_cfg.get("ema_alpha_bbox", 0.35)))
-
-            if smoothed_bbox[2] <= smoothed_bbox[0]:
-                smoothed_bbox[2] = smoothed_bbox[0] + 1.0
-            if smoothed_bbox[3] <= smoothed_bbox[1]:
-                smoothed_bbox[3] = smoothed_bbox[1] + 1.0
-
-            track["smoothed_position_3d"] = list(smoothed_pos)
-            track["smoothed_bbox"] = list(smoothed_bbox)
-
-            det.stabilized_position_3d = list(smoothed_pos)
-            det.stabilized_bbox = list(smoothed_bbox)
-
-            if _mode_is_stabilized(mode):
-                det.position_3d = list(smoothed_pos)
-                det.bbox = list(smoothed_bbox)
-
-        track["position_3d"] = raw_pos3d
-        track["bbox"] = raw_bbox
-        track["last_seen_frame"] = int(processed_frame_idx)
-        track["last_label"] = str(raw_label)
-        track["depth_m"] = float(getattr(det, "depth_m", track.get("depth_m", 0.0)))
-        track["confidence"] = float(getattr(det, "confidence", track.get("confidence", 0.0)))
-        heading = getattr(det, "heading_rad", None)
-        if heading is not None:
-            track["heading_rad"] = float(heading)
-        track["match_count"] = int(track.get("match_count", 0)) + 1
-
-    for det_idx in unmatched_dets:
-        d = det_data[det_idx]
-        det = d["det"]
-        raw_label = str(getattr(det, "label", ""))
-        raw_bbox = [float(v) for v in d["bbox"]]
-        raw_pos3d = [float(v) for v in d["position_3d"]]
-
-        track_id = int(stabilizer_state["next_track_id"])
-        stabilizer_state["next_track_id"] = track_id + 1
-
-        det.raw_label = raw_label
-        det.raw_bbox = list(raw_bbox)
-        det.raw_position_3d = list(raw_pos3d)
-        det.stabilization_track_id = int(track_id)
-        det.stabilized_label = raw_label
-        det.stabilized_position_3d = list(raw_pos3d)
-        det.stabilized_bbox = list(raw_bbox)
-
-        if class_enabled and _mode_is_stabilized(mode):
-            det.label = raw_label
-        if pos_enabled and _mode_is_stabilized(mode):
-            det.position_3d = list(raw_pos3d)
-            det.bbox = list(raw_bbox)
-
-        tracks[track_id] = {
-            "position_3d": list(raw_pos3d),
-            "bbox": list(raw_bbox),
-            "last_seen_frame": int(processed_frame_idx),
-            "stable_label": raw_label,
-            "label_history": [raw_label],
-            "smoothed_position_3d": list(raw_pos3d),
-            "smoothed_bbox": list(raw_bbox),
-            "last_label": raw_label,
-            "depth_m": float(getattr(det, "depth_m", 0.0)),
-            "confidence": float(getattr(det, "confidence", 0.0)),
-            "heading_rad": getattr(det, "heading_rad", None),
-            "match_count": 1,
-        }
-
-    if presence_enabled and presence_method == "causal_keep_alive":
-        max_hold_frames = int(presence_cfg.get("max_hold_frames", 1))
-        min_track_age = int(presence_cfg.get("min_track_age_frames", 1))
-        for track_id in unmatched_tracks:
-            track = tracks.get(track_id)
-            if track is None:
-                continue
-
-            misses = int(processed_frame_idx - int(track.get("last_seen_frame", processed_frame_idx)))
-            if misses <= 0 or misses > max_hold_frames:
-                continue
-            if int(track.get("match_count", 0)) < min_track_age:
-                continue
-
-            virtual_detections.append(_make_virtual_vehicle_detection(track, track_id, mode))
-
-    if not _mode_is_dual_debug(mode):
-        for det in vehicle_results:
-            if hasattr(det, "raw_label"):
-                delattr(det, "raw_label")
-            if hasattr(det, "stabilized_label"):
-                delattr(det, "stabilized_label")
-            if hasattr(det, "raw_position_3d"):
-                delattr(det, "raw_position_3d")
-            if hasattr(det, "stabilized_position_3d"):
-                delattr(det, "stabilized_position_3d")
-            if hasattr(det, "raw_bbox"):
-                delattr(det, "raw_bbox")
-            if hasattr(det, "stabilized_bbox"):
-                delattr(det, "stabilized_bbox")
-
-    return {
-        "matched": len(matches),
-        "new": len(unmatched_dets),
-        "unmatched_tracks": len(unmatched_tracks),
-        "active_tracks": len(tracks),
-        "class_switches": class_switches,
-        "presence_filled": len(virtual_detections),
-        "virtual_detections": virtual_detections,
-    }
 
 
 def _associate_tracks_to_detections(tracks: dict, det_data: list, smooth_cfg: dict):
@@ -1018,7 +598,7 @@ def _apply_vehicle_heading_smoothing(
     for track_id in stale:
         tracks.pop(track_id, None)
 
-    det_data = _vehicle_association_data(vehicle_results, require_heading=True)
+    det_data = _vehicle_association_data(vehicle_results)
     if not det_data:
         return {
             "matched": 0,
@@ -1811,11 +1391,6 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
         "next_track_id": 1,
         "tracks": {},
     }
-    vehicle_stab_cfg = _vehicle_stabilization_config(cfg)
-    vehicle_stabilizer_state = {
-        "next_track_id": 1,
-        "tracks": {},
-    }
     models["traffic"].set_scene_context(scene_name)
 
     # scene_dir is the root of this sequence, e.g. Data/Sequences/scene1/
@@ -1842,30 +1417,6 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
             f"[{scene_name}/{camera}] heading_smoothing enabled | dt={heading_smooth_cfg['dt_sec']:.4f}s "
             f"max_delta={heading_smooth_cfg['max_delta_rad']:.4f}rad"
         )
-    print(
-        f"[{scene_name}/{camera}] vehicle_stabilization mode={vehicle_stab_cfg['mode']} "
-        f"class={vehicle_stab_cfg['class']['enabled']} position={vehicle_stab_cfg['position']['enabled']} "
-        f"presence={vehicle_stab_cfg['presence']['enabled']}({vehicle_stab_cfg['presence']['method']})"
-    )
-
-    def _save_frame_packet(packet: dict):
-        if packet is None:
-            return
-        frame_dict = build_frame_dict(
-            frame_idx=packet["frame_idx"],
-            fps=cfg["blender"]["fps"],
-            lanes=packet["lane_results"],
-            objects=packet["object_results"],
-            traffic_lights=packet["traffic_results"],
-            stop_signs=packet["sign_results"],
-            non_coco_objects=packet["non_coco_results"],
-            include_debug=bool(debug),
-            vehicle_stabilization_mode=vehicle_stab_cfg["mode"],
-        )
-        save_detection_json(frame_dict, out_dir / f"frame_{packet['frame_idx']:06d}.json")
-
-    prev_packet = None
-    prev_prev_packet = None
     # Use the generator so we never load all frames into RAM at once
     for i, (frame_idx, frame_bgr) in enumerate(
         frame_generator(scene_dir, camera=camera, frame_skip=cfg["perception"]["frame_skip"])
@@ -1923,15 +1474,6 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
             heading_smooth_cfg,
             processed_frame_idx=i,
         )
-        vehicle_stab_stats = _apply_vehicle_class_and_position_stabilization(
-            vehicle_results,
-            vehicle_stabilizer_state,
-            vehicle_stab_cfg,
-            processed_frame_idx=i,
-        )
-        virtual_vehicle_results = list(vehicle_stab_stats.get("virtual_detections", []))
-        if virtual_vehicle_results:
-            object_results.extend(virtual_vehicle_results)
 
         if isinstance(lane_output, dict) and "lanes" in lane_output:
             lane_results = lane_output["lanes"]
@@ -1962,36 +1504,18 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
             white_min_confidence=lane_export_min_conf_white,
         )
 
-        curr_packet = {
-            "frame_idx": frame_idx,
-            "lane_results": lane_results,
-            "object_results": object_results,
-            "traffic_results": traffic_results,
-            "sign_results": sign_results,
-            "non_coco_results": non_coco_results,
-            "presence_filled": int(vehicle_stab_stats.get("presence_filled", 0)),
-        }
-
-        if (
-            vehicle_stab_cfg["presence"]["enabled"]
-            and vehicle_stab_cfg["presence"]["method"] == "two_sided"
-            and prev_packet is not None
-            and prev_prev_packet is not None
-        ):
-            added_two_sided = _apply_two_sided_presence_interpolation(
-                prev_packet,
-                prev_prev_packet,
-                curr_packet,
-                mode=vehicle_stab_cfg["mode"],
-                vehicle_labels=vehicle_labels,
-            )
-            prev_packet["presence_filled"] = int(prev_packet.get("presence_filled", 0)) + int(added_two_sided)
-
-        if prev_packet is not None:
-            _save_frame_packet(prev_packet)
-
-        prev_prev_packet = prev_packet
-        prev_packet = curr_packet
+        # --- Build and save JSON ---
+        frame_dict = build_frame_dict(
+            frame_idx=frame_idx,
+            fps=cfg["blender"]["fps"],
+            lanes=lane_results,
+            objects=object_results,
+            traffic_lights=traffic_results,
+            stop_signs=sign_results,
+            non_coco_objects=non_coco_results,
+            include_debug=bool(debug),
+        )
+        save_detection_json(frame_dict, out_dir / f"frame_{frame_idx:06d}.json")
 
         if debug:
             annotated = draw_detections(frame_bgr, object_results, proj_matrix=debug_proj_matrix)
@@ -2043,10 +1567,7 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
                 f"lanes={len(lane_results)} raw_dets={raw_count} "
                 f"vehicles={len(vehicle_results)} oriented={len(orientation_estimates)} "
                 f"smooth_matched={heading_stats['matched']} smooth_new={heading_stats['new']} "
-                f"smooth_tracks={heading_stats['active_tracks']} "
-                f"stab_matched={vehicle_stab_stats['matched']} stab_new={vehicle_stab_stats['new']} "
-                f"stab_switches={vehicle_stab_stats['class_switches']} "
-                f"presence_filled={int(vehicle_stab_stats['presence_filled'])}"
+                f"smooth_tracks={heading_stats['active_tracks']}"
             )
 
         if heading_smooth_cfg["enabled"] and heading_smooth_cfg["debug_log_matches"]:
@@ -2055,9 +1576,6 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
                 f"smooth matched={heading_stats['matched']} new={heading_stats['new']} "
                 f"unmatched_tracks={heading_stats['unmatched_tracks']} active={heading_stats['active_tracks']}"
             )
-
-    if prev_packet is not None:
-        _save_frame_packet(prev_packet)
 
     print(f"[{scene_name}] Done. JSONs saved to {out_dir}")
     if debug:

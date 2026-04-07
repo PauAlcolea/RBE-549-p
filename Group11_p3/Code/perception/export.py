@@ -76,7 +76,7 @@ def _serialize_lane(lane) -> dict:
     return lane_out
 
 
-def _serialize_vehicle(det, include_debug: bool = False, vehicle_stabilization_mode: str = "raw") -> dict:
+def _serialize_vehicle(det, include_debug: bool = False) -> dict:
     """normalize vehicles and add the radian heading if it has one"""
     vehicle = {
         "bbox": [round(v, 2) for v in det.bbox],
@@ -98,38 +98,6 @@ def _serialize_vehicle(det, include_debug: bool = False, vehicle_stabilization_m
         if track_id is not None:
             vehicle["smoothing_track_id"] = int(track_id)
 
-        if hasattr(det, "is_interpolated"):
-            vehicle["is_interpolated"] = bool(getattr(det, "is_interpolated", False))
-
-    if include_debug and str(vehicle_stabilization_mode).strip().lower() == "dual_debug":
-        raw_label = getattr(det, "raw_label", None)
-        if raw_label is not None:
-            vehicle["raw_label"] = str(raw_label)
-
-        stabilized_label = getattr(det, "stabilized_label", None)
-        if stabilized_label is not None:
-            vehicle["stabilized_label"] = str(stabilized_label)
-
-        raw_position_3d = getattr(det, "raw_position_3d", None)
-        if raw_position_3d is not None and len(raw_position_3d) >= 3:
-            vehicle["raw_position_3d"] = [round(float(v), 3) for v in raw_position_3d[:3]]
-
-        stabilized_position_3d = getattr(det, "stabilized_position_3d", None)
-        if stabilized_position_3d is not None and len(stabilized_position_3d) >= 3:
-            vehicle["stabilized_position_3d"] = [round(float(v), 3) for v in stabilized_position_3d[:3]]
-
-        raw_bbox = getattr(det, "raw_bbox", None)
-        if raw_bbox is not None and len(raw_bbox) >= 4:
-            vehicle["raw_bbox"] = [round(float(v), 2) for v in raw_bbox[:4]]
-
-        stabilized_bbox = getattr(det, "stabilized_bbox", None)
-        if stabilized_bbox is not None and len(stabilized_bbox) >= 4:
-            vehicle["stabilized_bbox"] = [round(float(v), 2) for v in stabilized_bbox[:4]]
-
-        track_id = getattr(det, "stabilization_track_id", None)
-        if track_id is not None:
-            vehicle["stabilization_track_id"] = int(track_id)
-
     return vehicle
 
 def build_frame_dict(
@@ -141,7 +109,6 @@ def build_frame_dict(
     stop_signs: list,
     non_coco_objects: list,
     include_debug: bool = False,
-    vehicle_stabilization_mode: str = "raw",
 ) -> dict:
     """
     Convert all detector outputs for one frame into the shared JSON schema.
@@ -207,11 +174,7 @@ def build_frame_dict(
         "lanes": lanes_out,
 
         "vehicles": [
-            _serialize_vehicle(
-                det,
-                include_debug=include_debug,
-                vehicle_stabilization_mode=vehicle_stabilization_mode,
-            )
+            _serialize_vehicle(det, include_debug=include_debug)
             for det in vehicles
         ],
 
