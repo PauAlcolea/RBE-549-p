@@ -525,18 +525,35 @@ class AssetLibrary:
 
         # ── Convert SMPL y-up → Blender space ────────────────────────────────
         # SMPL: x=right, y=up, z=back  →  Blender: x=right, y=forward, z=up
-        # _smpl_to_blender_local maps (x,y,z) → Vector(x, z, y) for y-up mode
-        verts_bl = np.stack([
-            [float(v[0]), float(v[2]), float(v[1])]   # (x, z, y)
-            for v in verts_smpl
-        ], dtype=object)   # keep as plain list for bmesh
-
+        # _smpl_to_blender_local maps (x,y,z) → Vector(x, z, y) for y-up mode.
         verts_bl_arr = verts_smpl[:, [0, 2, 1]]       # numpy fast path: (6890,3)
         if self.pymaf_y_up:
             verts_bl_arr = verts_smpl[:, [0, 2, 1]]
         else:
             verts_bl_arr = verts_smpl * np.array([1, 1, -1], dtype=np.float32)
             verts_bl_arr = verts_bl_arr[:, [0, 2, 1]]
+
+        # Apply the same upside-down detector used by skeleton mode.
+        # If mirrored across the ground plane, flip local Z for vertices.
+        # For meshes, also flip triangle winding to preserve outward normals.
+        mesh_upright_fix = False
+        joints_raw = ped.get("smpl_joints3d")
+        if isinstance(joints_raw, list) and len(joints_raw) >= self.pymaf_min_joint_count:
+            joints_smpl = self._select_smpl24_joints(joints_raw)
+            if joints_smpl is not None:
+                joints_local = []
+                valid = True
+                for pt in joints_smpl:
+                    if not isinstance(pt, (list, tuple)) or len(pt) < 3:
+                        valid = False
+                        break
+                    joints_local.append(self._smpl_to_blender_local(pt))
+                if valid and len(joints_local) >= 24:
+                    _, was_flipped = self._auto_fix_upside_down_pymaf(joints_local)
+                    if was_flipped:
+                        verts_bl_arr[:, 2] *= -1.0
+                        faces = faces[:, [0, 2, 1]]
+                        mesh_upright_fix = True
 
         # ── Scale to target height ────────────────────────────────────────────
         z_min, z_max = float(verts_bl_arr[:, 2].min()), float(verts_bl_arr[:, 2].max())
@@ -546,18 +563,21 @@ class AssetLibrary:
             scale = max(0.5, min(2.5, self.pymaf_target_height_m / mesh_height))
         verts_bl_arr = verts_bl_arr * scale
 
-        # ── Position: ground the mesh, then translate to world position ───────
-        z_min_s = float(verts_bl_arr[:, 2].min())
-        lift     = (0.0 + self.ground_clearance_m) - z_min_s
-
+        # ── Position: place at target root, then ground in world space ────────
         # Find root joint (joint 0 = pelvis) for centering in XY
         root_smpl = verts_smpl.mean(axis=0)   # approximate – or use joint 0 from FK
         root_bl   = np.array([root_smpl[0], root_smpl[2], root_smpl[1]], dtype=np.float32) * scale
         target    = np.array(self._json_to_blender(ped["position_3d"]), dtype=np.float32)
         offset    = target - root_bl
-        offset[2] += lift  # also apply ground lift
 
         final_verts = verts_bl_arr + offset   # (6890, 3)
+
+        # Match skeleton behavior: after translation, lift so lowest vertex
+        # sits exactly on the ground plane + clearance.
+        min_world_z = float(final_verts[:, 2].min())
+        lift = (0.0 + self.ground_clearance_m) - min_world_z
+        if abs(lift) > 1e-6:
+            final_verts[:, 2] += lift
 
         # ── Build Blender mesh ────────────────────────────────────────────────
         track_id  = ped.get("pymaf_track_id", "na")
@@ -589,7 +609,7 @@ class AssetLibrary:
         self._frame_objects.append(obj)
         print(
             f"[assets] pedestrian(smpl_mesh): track={track_id} "
-            f"verts=6890 scale={scale:.3f} "
+            f"verts=6890 scale={scale:.3f} upright_fix={'on' if mesh_upright_fix else 'off'} "
             f"json_pos={ped['position_3d']} → blender_pos={tuple(round(float(v), 3) for v in target)}"
         )
         return True
