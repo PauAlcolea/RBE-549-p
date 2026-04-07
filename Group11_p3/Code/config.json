@@ -164,12 +164,11 @@
           "export_bucket": "trash_cans"
         },
         {
-          "prompt": "bollard",
+          "prompt": "bollard on road",
           "label": "traffic_pole",
           "export_bucket": "traffic_poles",
           "exclude_labels": [
-            "traffic_cone",
-            "fence_post"
+            "traffic_cone"
           ]
         },
         {

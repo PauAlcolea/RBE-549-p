@@ -407,6 +407,20 @@ def _filter_ground_arrows(frame_bgr, non_coco_results, cfg):
     non_coco_results[:] = filtered
 
 
+def _drop_aux_non_coco_labels(non_coco_results, cfg, non_coco_model=None):
+    """Remove internal helper labels that should never be exported or visualized."""
+    non_coco_cfg = cfg.get("perception", {}).get("non_coco_dart", {})
+    aux_labels = set(str(v).strip() for v in non_coco_cfg.get("aux_labels", ["arrow_sign"]))
+    if non_coco_model is not None and hasattr(non_coco_model, "get_aux_labels"):
+        aux_labels.update(str(v).strip() for v in non_coco_model.get_aux_labels())
+    if not aux_labels:
+        return
+
+    non_coco_results[:] = [
+        det for det in non_coco_results
+        if str(getattr(det, "label", "")).strip() not in aux_labels
+    ]
+
 
 def _restrict_ground_markings_to_scenes(non_coco_results, scene_name: str):
     """Keep ground-arrow/ground-text classes only in configured scenes."""
@@ -967,6 +981,11 @@ def _lane_color_bgr(color_name: str):
     return (255, 255, 255)
 
 
+def _slugify_class_name(name: str) -> str:
+    clean = re.sub(r"[^a-z0-9]+", "_", str(name).strip().lower())
+    return clean.strip("_")
+
+
 def _lane_confidence(lane) -> float:
     if isinstance(lane, dict):
         return float(lane.get("confidence", 0.0))
@@ -1127,6 +1146,11 @@ def draw_lane_debug_overlay(
 ):
     """Draw lane polylines and optional raw detector boxes on a frame."""
     vis = frame_bgr.copy()
+    exclude_keys = {
+        _slugify_class_name(v)
+        for v in (lane_exclude_classes or [])
+        if str(v).strip()
+    }
 
     for lane in lane_results:
         points = lane.get("points", []) if isinstance(lane, dict) else []
@@ -1167,6 +1191,8 @@ def draw_lane_debug_overlay(
             box = boxes[i].detach().cpu().tolist()
             score = float(scores[i].item())
             cls_name = names[i] if i < len(names) else "lane"
+            if _slugify_class_name(cls_name) in exclude_keys:
+                continue
             min_conf = _raw_lane_class_min_confidence(
                 cls_name,
                 default_min_conf=default_min_confidence,
@@ -1414,6 +1440,7 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
             scene_name,
         )
         _filter_ground_arrows(frame_bgr, non_coco_results, cfg)
+        _drop_aux_non_coco_labels(non_coco_results, cfg, models.get("non_coco"))
         _run_speed_limit_ocr(
             frame_bgr,
             non_coco_results,
