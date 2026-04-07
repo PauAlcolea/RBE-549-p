@@ -403,6 +403,16 @@
     "samples": 32,
     "output_format": "PNG",
     "ground_clearance_m": 0.03,
+    "pedestrian": {
+      "mode": "smpl_mesh",
+      "smpl_pkl": "../Weights/SMPL_NEUTRAL.pkl",
+      "pymaf_target_height_m": 1.7,
+      "pymaf_bone_radius_m": 0.018,
+      "pymaf_joint_radius_m": 0.025,
+      "pymaf_min_joint_count": 24,
+      "pymaf_use_last24": true,
+      "pymaf_y_up": true
+    },
     "camera": {
       "fx": 1600.327787,
       "fy": 1613.801735,

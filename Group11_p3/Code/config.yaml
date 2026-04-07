@@ -303,12 +303,14 @@ blender:
   output_format: PNG
   ground_clearance_m: 0.03
   pedestrian:
-    mode: pymaf               # pymaf | asset
+    mode: smpl_mesh          # was: pymaf (skeleton) | asset (generic mesh)
+    smpl_pkl: "../Weights/SMPL_NEUTRAL.pkl"   # path to your SMPL neutral model
     pymaf_target_height_m: 1.70
+    # skeleton-mode settings below still apply as fallback
     pymaf_bone_radius_m: 0.018
     pymaf_joint_radius_m: 0.025
     pymaf_min_joint_count: 24
-    pymaf_use_last24: true    # for 49-joint arrays, use the final 24 SMPL joints
+    pymaf_use_last24: true
     pymaf_y_up: true          # PyMAF joints are generally y-up in local body space
 
   camera:
