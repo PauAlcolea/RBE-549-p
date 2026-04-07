@@ -50,6 +50,8 @@ weights:
 # ── Perception settings ────────────────────────────────────────────────────
 perception:
   # device: cuda          # cuda | cpu    # might not be needed because we specify it in main()
+  batch_size: 1         # increase if GPU memory allows
+  frame_skip: 30         # process every Nth frame (30 = every frame)
 
   heading_smoothing:
     enabled: true

@@ -37,6 +37,8 @@
     "orientation": "../Weights/boundingbox.pkl"
   },
   "perception": {
+    "batch_size": 1,
+    "frame_skip": 30,
     "heading_smoothing": {
       "enabled": true,
       "max_angular_velocity_degps": 45.0,
