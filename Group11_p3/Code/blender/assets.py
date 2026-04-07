@@ -205,6 +205,8 @@ class AssetLibrary:
         if len(joints_local) < 24:
             return False
 
+        joints_local, was_flipped = self._auto_fix_upside_down_pymaf(joints_local)
+
         root_local = joints_local[0]
         local_heights = [v.z for v in joints_local]
         local_height = max(local_heights) - min(local_heights)
@@ -247,7 +249,8 @@ class AssetLibrary:
         self._frame_objects.append(head_obj)
         print(
             f"[assets] pedestrian(pymaf): track={track_id} bones={len(self._SMPL24_BONES)} "
-            f"json_pos={ped['position_3d']} root={tuple(round(v, 3) for v in joints_world[0])}"
+            f"json_pos={ped['position_3d']} root={tuple(round(v, 3) for v in joints_world[0])} "
+            f"upright_fix={'on' if was_flipped else 'off'}"
         )
         return True
 
@@ -265,6 +268,33 @@ class AssetLibrary:
             return Vector((x, z, y))
         # Fallback for camera-style coordinates (x-right, y-down, z-forward).
         return Vector((x, z, -y))
+
+    @staticmethod
+    def _auto_fix_upside_down_pymaf(joints_local):
+        """
+        Detect and correct inverted skeletons by checking vertical ordering.
+
+        In SMPL24, joints 12/15 (upper torso/head area) should sit above
+        joints 10/11 (ankles) in upright poses.
+        """
+        if len(joints_local) < 16:
+            return joints_local, False
+
+        upper_ids = (12, 15)
+        lower_ids = (10, 11)
+        upper_z = [joints_local[i].z for i in upper_ids if i < len(joints_local)]
+        lower_z = [joints_local[i].z for i in lower_ids if i < len(joints_local)]
+
+        if not upper_z or not lower_z:
+            return joints_local, False
+
+        upper_avg = sum(upper_z) / len(upper_z)
+        lower_avg = sum(lower_z) / len(lower_z)
+        if upper_avg >= lower_avg:
+            return joints_local, False
+
+        flipped = [Vector((v.x, v.y, -v.z)) for v in joints_local]
+        return flipped, True
 
     def _create_pymaf_skeleton_curve(self, joints_world, name: str):
         curve = bpy.data.curves.new(f"{name}_curve", type="CURVE")
