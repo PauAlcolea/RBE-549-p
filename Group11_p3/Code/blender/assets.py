@@ -61,6 +61,7 @@ class AssetLibrary:
     def _load_templates(self):
         asset_files = {
             "sedanandhatchbacks":   self.assets_dir / "Vehicles/SedanAndHatchback.blend",
+            "tesla":                self.assets_dir / "Vehicles/Tesla.blend",
             "bicycle":              self.assets_dir / "Vehicles/Bicycle.blend",
             "motorcycle":           self.assets_dir / "Vehicles/Motorcycle.blend",
             "truck":                self.assets_dir / "Vehicles/Truck.blend",
@@ -91,8 +92,7 @@ class AssetLibrary:
             def norm(obj_name: str) -> str:
                 return obj_name.lower().replace(" ", "_")
 
-            # Dustbin.blend contains multiple meshes (bin/lid/wheels).
-            # Keep the full set and instance as one grouped object.
+            # Some assets contain multiple meshes and must be instanced as a group.
             if name == "trash_can":
                 preferred_parts = ("bin_mesh", "lid_mesh", "wheels_mesh")
                 by_name = {norm(m.name): m for m in meshes}
@@ -110,6 +110,14 @@ class AssetLibrary:
                     mesh_names = [m.name for m in meshes]
                     chosen_names = [m.name for m in keep_meshes]
                     print(f"[assets] trash_can mesh group: all={mesh_names} chosen={chosen_names}")
+
+            if name == "tesla":
+                keep_meshes = sorted(list(meshes), key=lambda m: norm(m.name))
+                self._template_groups[name] = keep_meshes
+                mesh_obj = keep_meshes[0]
+                if len(meshes) > 1:
+                    mesh_names = [m.name for m in meshes]
+                    print(f"[assets] tesla mesh group: all={mesh_names}")
 
             if name == "traffic_pole":
                 iron_poles = [m for m in meshes if norm(m.name) == "iron_pole" or "iron_pole" in norm(m.name)]
@@ -162,6 +170,327 @@ class AssetLibrary:
             f"[assets] vehicle: class={vehicle_class} asset={asset_name} scale={tuple(vehicle_scale)} "
             f"json_pos={vehicle['position_3d']}  →  blender_pos={bpos}  depth={vehicle['depth_m']:.1f}m"
         )
+
+    def place_ego_vehicle(self):
+        """Instantiate the configured ego vehicle (Tesla) at world origin."""
+        ego_cfg = self.cfg.get("blender", {}).get("ego_vehicle", {})
+        asset_name = str(ego_cfg.get("asset", "tesla")).lower()
+        if asset_name not in self._templates:
+            print(f"[assets] WARNING: ego asset '{asset_name}' not loaded; skipping ego vehicle")
+            return None
+
+        children = []
+        if asset_name in self._template_groups:
+            obj, children = self._instance_group(asset_name)
+        else:
+            obj = self._instance(asset_name)
+
+        location = ego_cfg.get("location", [0.0, 0.0, 0.0])
+        if not isinstance(location, (list, tuple)) or len(location) != 3:
+            location = [0.0, 0.0, 0.0]
+        obj.location = (float(location[0]), float(location[1]), float(location[2]))
+
+        scale = ego_cfg.get("scale", self._vehicle_scale("tesla"))
+        if not isinstance(scale, (list, tuple)) or len(scale) != 3:
+            scale = self._vehicle_scale("tesla")
+        obj.scale = (float(scale[0]), float(scale[1]), float(scale[2]))
+
+        yaw_rad = float(ego_cfg.get("yaw_rad", 0.0))
+        asset_yaw_offset_rad = float(ego_cfg.get("asset_yaw_offset_rad", 0.0))
+        obj.rotation_euler[2] = yaw_rad + asset_yaw_offset_rad + self._vehicle_yaw_offset("tesla")
+
+        targets = children if children else [obj]
+        ego_paint_rgb = self._ego_paint_rgb()
+        if ego_paint_rgb is not None:
+            self._apply_ego_paint_override(targets, ego_paint_rgb)
+        self._apply_ego_tesla_part_materials(targets)
+
+        if children:
+            self._align_group_to_ground(obj, children, ground_z=0.0, clearance=self.ground_clearance_m)
+        else:
+            self._align_object_to_ground(obj, ground_z=0.0, clearance=self.ground_clearance_m)
+
+        self._frame_objects.append(obj)
+        self._frame_objects.extend(children)
+        print(
+            f"[assets] ego vehicle: asset={asset_name} scale={tuple(obj.scale)} "
+            f"blender_pos={(obj.location.x, obj.location.y, obj.location.z)} "
+            f"heading={yaw_rad:.3f} visual_offset={asset_yaw_offset_rad:.3f}"
+        )
+        return obj
+
+    def _ego_paint_rgb(self):
+        """Return optional ego paint RGB override from config, or None."""
+        style_cfg = self.cfg.get("blender", {}).get("style", {})
+        rgb = style_cfg.get("ego_paint_rgb")
+        if not isinstance(rgb, (list, tuple)) or len(rgb) != 3:
+            return None
+        try:
+            return tuple(max(0.0, min(1.0, float(c))) for c in rgb)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _is_tesla_body_mesh(mesh_name: str) -> bool:
+        """Heuristic filter for Tesla body-like meshes (exclude glass/lights/wheels)."""
+        n = mesh_name.lower()
+        include_tokens = (
+            "body", "bumper", "door", "frame", "trunk", "front", "side", "top", "hood", "panel"
+        )
+        exclude_tokens = (
+            "window", "glass", "headlight", "light", "tire", "rim", "brake", "rotor",
+            "logo", "camera", "seat", "steering", "plug", "reflector", "wheel"
+        )
+        if any(tok in n for tok in exclude_tokens):
+            return False
+        return any(tok in n for tok in include_tokens)
+
+    @staticmethod
+    def _get_or_create_ego_paint_material(rgb):
+        """Create/reuse glossy paint material for ego color override."""
+        mat_name = "ego_paint_override"
+        mat = bpy.data.materials.get(mat_name)
+        if mat is None:
+            mat = bpy.data.materials.new(name=mat_name)
+        mat.use_nodes = True
+        nodes = mat.node_tree.nodes
+        bsdf = nodes.get("Principled BSDF")
+        if bsdf is not None:
+            bsdf.inputs["Base Color"].default_value = (rgb[0], rgb[1], rgb[2], 1.0)
+            metallic_inp = next((inp for inp in bsdf.inputs if inp.name == "Metallic"), None)
+            if metallic_inp is not None:
+                metallic_inp.default_value = 0.15
+            rough_inp = next((inp for inp in bsdf.inputs if inp.name == "Roughness"), None)
+            if rough_inp is not None:
+                rough_inp.default_value = 0.22
+            clearcoat_inp = next((inp for inp in bsdf.inputs if inp.name == "Coat Weight"), None)
+            if clearcoat_inp is None:
+                clearcoat_inp = next((inp for inp in bsdf.inputs if inp.name == "Clearcoat"), None)
+            if clearcoat_inp is not None:
+                clearcoat_inp.default_value = 1.0
+            coat_rough_inp = next((inp for inp in bsdf.inputs if inp.name == "Coat Roughness"), None)
+            if coat_rough_inp is None:
+                coat_rough_inp = next((inp for inp in bsdf.inputs if inp.name == "Clearcoat Roughness"), None)
+            if coat_rough_inp is not None:
+                coat_rough_inp.default_value = 0.08
+        return mat
+
+    def _apply_ego_paint_override(self, objects, rgb):
+        """Assign override paint material to Tesla body meshes only."""
+        mat = self._get_or_create_ego_paint_material(rgb)
+        for obj in objects:
+            if obj is None or obj.type != "MESH":
+                continue
+            if not self._is_tesla_body_mesh(obj.name):
+                continue
+            obj.data.materials.clear()
+            obj.data.materials.append(mat)
+
+    @staticmethod
+    def _get_or_create_principled_material(
+        name: str,
+        base_color,
+        metallic: float,
+        roughness: float,
+        alpha: float = 1.0,
+        transmission: float = 0.0,
+        specular: float = 0.5,
+    ):
+        """Create/reuse a configurable Principled material for Tesla part styling."""
+        mat = bpy.data.materials.get(name)
+        if mat is None:
+            mat = bpy.data.materials.new(name=name)
+
+        mat.use_nodes = True
+        nodes = mat.node_tree.nodes
+        bsdf = nodes.get("Principled BSDF")
+        if bsdf is not None:
+            bsdf.inputs["Base Color"].default_value = (
+                float(base_color[0]),
+                float(base_color[1]),
+                float(base_color[2]),
+                1.0,
+            )
+
+            metallic_inp = next((inp for inp in bsdf.inputs if inp.name == "Metallic"), None)
+            if metallic_inp is not None:
+                metallic_inp.default_value = float(metallic)
+
+            rough_inp = next((inp for inp in bsdf.inputs if inp.name == "Roughness"), None)
+            if rough_inp is not None:
+                rough_inp.default_value = float(roughness)
+
+            spec_inp = next(
+                (inp for inp in bsdf.inputs if inp.name in ("Specular IOR Level", "Specular")),
+                None,
+            )
+            if spec_inp is not None:
+                spec_inp.default_value = float(specular)
+
+            trans_inp = next((inp for inp in bsdf.inputs if inp.name == "Transmission Weight"), None)
+            if trans_inp is None:
+                trans_inp = next((inp for inp in bsdf.inputs if inp.name == "Transmission"), None)
+            if trans_inp is not None:
+                trans_inp.default_value = float(transmission)
+
+            alpha_inp = next((inp for inp in bsdf.inputs if inp.name == "Alpha"), None)
+            if alpha_inp is not None:
+                alpha_inp.default_value = float(alpha)
+
+        if hasattr(mat, "blend_method"):
+            mat.blend_method = "BLEND" if float(alpha) < 0.999 else "OPAQUE"
+        if hasattr(mat, "shadow_method"):
+            mat.shadow_method = "HASHED" if float(alpha) < 0.999 else "OPAQUE"
+
+        return mat
+
+    def _ego_tesla_style_enabled(self) -> bool:
+        """Return whether Tesla per-part styling is enabled."""
+        style_cfg = self.cfg.get("blender", {}).get("style", {})
+        return bool(style_cfg.get("ego_tesla_style_enabled", True))
+
+    def _apply_ego_tesla_part_materials(self, objects):
+        """Assign Tesla per-part materials by mesh-name tokens."""
+        if not self._ego_tesla_style_enabled():
+            return
+
+        def _src_name(obj):
+            return str(obj.get("source_name", obj.name)).lower()
+
+        style_cfg = self.cfg.get("blender", {}).get("style", {})
+
+        top_glass_color = style_cfg.get("ego_tesla_top_glass_rgb", [0.02, 0.02, 0.02])
+        top_glass_alpha = float(style_cfg.get("ego_tesla_top_glass_alpha", 0.28))
+        top_glass_transmission = float(style_cfg.get("ego_tesla_top_glass_transmission", 0.90))
+
+        gray_trim_color = style_cfg.get("ego_tesla_trim_gray_rgb", [0.49, 0.49, 0.49])
+        logo_gray_color = style_cfg.get("ego_tesla_logo_gray_rgb", [0.8, 0.8, 0.8])
+        red_paint_color = style_cfg.get("ego_tesla_red_paint_rgb", [0.8, 0.05, 0.05])
+
+        top_glass_mat = self._get_or_create_principled_material(
+            "ego_tesla_top_glass",
+            top_glass_color,
+            metallic=0.0,
+            roughness=0.06,
+            alpha=top_glass_alpha,
+            transmission=top_glass_transmission,
+            specular=0.55,
+        )
+        trim_gray_mat = self._get_or_create_principled_material(
+            "ego_tesla_trim_gray",
+            gray_trim_color,
+            metallic=0.88,
+            roughness=0.14,
+            alpha=1.0,
+            transmission=0.0,
+            specular=0.45,
+        )
+        logo_gray_mat = self._get_or_create_principled_material(
+            "ego_tesla_logo_gray",
+            logo_gray_color,
+            metallic=1.0,
+            roughness=0.10,
+            alpha=1.0,
+            transmission=0.0,
+            specular=0.75,
+        )
+        red_paint_mat = self._get_or_create_principled_material(
+            "ego_tesla_red_paint",
+            red_paint_color,
+            metallic=0.15,
+            roughness=0.22,
+            alpha=1.0,
+            transmission=0.0,
+            specular=0.45,
+        )
+        white_mat = self._get_or_create_principled_material(
+            "ego_tesla_white",
+            (0.9, 0.9, 0.9),
+            metallic=0.0,
+            roughness=0.1,
+            alpha=1.0,
+            transmission=0.0,
+            specular=1.0,
+        )
+
+        side_window_mat = None
+        for obj in objects:
+            if obj is None or obj.type != "MESH":
+                continue
+            obj_name = _src_name(obj)
+            if "window" not in obj_name:
+                continue
+            if len(obj.data.materials) == 0:
+                continue
+            side_window_mat = obj.data.materials[0]
+            if side_window_mat is not None:
+                break
+
+        top_mat = side_window_mat if side_window_mat is not None else top_glass_mat
+        default_token_materials = {
+            "logo_text": logo_gray_mat,
+            "top": top_mat,
+            "logo text": logo_gray_mat,
+            "logo": logo_gray_mat,
+            "trunk.001": trim_gray_mat,
+            "trunk.002": trim_gray_mat,
+            "trunk": red_paint_mat,
+            "bumper.": trim_gray_mat,
+            "frontbumper": trim_gray_mat,
+            "rearbumper": trim_gray_mat,
+            "side.001": white_mat,
+            "side.002": white_mat
+        }
+
+        user_token_materials = style_cfg.get("ego_tesla_part_material_tokens", {})
+        if isinstance(user_token_materials, dict):
+            for token, material_key in user_token_materials.items():
+                token_name = str(token).lower().strip()
+                if not token_name:
+                    continue
+
+                if isinstance(material_key, (list, tuple)) and len(material_key) == 3:
+                    try:
+                        rgb = [max(0.0, min(1.0, float(c))) for c in material_key]
+                    except Exception:
+                        continue
+                    default_token_materials[token_name] = self._get_or_create_principled_material(
+                        f"ego_tesla_token_{token_name.replace(' ', '_').replace('.', '_')}",
+                        rgb,
+                        metallic=0.15,
+                        roughness=0.22,
+                        alpha=1.0,
+                        transmission=0.0,
+                        specular=0.45,
+                    )
+                    continue
+
+                key = str(material_key).strip().lower()
+                if key == "top_glass":
+                    default_token_materials[token_name] = top_glass_mat
+                elif key == "side_window":
+                    default_token_materials[token_name] = top_mat
+                elif key == "trim_gray":
+                    default_token_materials[token_name] = trim_gray_mat
+                elif key == "logo_gray":
+                    default_token_materials[token_name] = logo_gray_mat
+                elif key in ("keep_red", "body_red", "keep"):
+                    default_token_materials[token_name] = "__KEEP__"
+
+        for obj in objects:
+            if obj is None or obj.type != "MESH":
+                continue
+
+            obj_name = _src_name(obj)
+            if obj_name == "bumper":
+                continue
+            for token, mat in default_token_materials.items():
+                if token in obj_name and mat is not None:
+                    if mat == "__KEEP__":
+                        break
+                    obj.data.materials.clear()
+                    obj.data.materials.append(mat)
+                    break
 
     def place_pedestrian(self, ped: dict):
         """Instantiate the pedestrian asset."""
@@ -679,6 +1008,7 @@ class AssetLibrary:
             child.data = template.data.copy()
             child.hide_render = False
             child.hide_viewport = False
+            child["source_name"] = template.name
             bpy.context.collection.objects.link(child)
             child.parent = root
             child.matrix_parent_inverse = root.matrix_world.inverted()
@@ -1114,6 +1444,8 @@ class AssetLibrary:
         For now, all car-like classes share the sedan/hatchback asset.
         """
         asset_map = {
+            "tesla": "tesla",
+            "ego": "tesla",
             "car": "sedanandhatchbacks",
             "sedan": "sedanandhatchbacks",
             "sedanandhatchbacks": "sedanandhatchbacks",
@@ -1132,6 +1464,8 @@ class AssetLibrary:
     def _vehicle_scale(vehicle_class: str) -> tuple:
         """Map detected vehicle classes to per-asset Blender scales."""
         scale_map = {
+            "tesla": (0.85, 0.85, 0.85),
+            "ego": (0.85, 0.85, 0.85),
             "car": (0.02, 0.02, 0.02),
             "sedan": (0.02, 0.02, 0.02),
             "sedanandhatchbacks": (0.02, 0.02, 0.02),
@@ -1153,6 +1487,8 @@ class AssetLibrary:
         from the rest of the vehicle library.
         """
         yaw_offset_map = {
+            "tesla": 0.0,
+            "ego": 0.0,
             "truck": math.pi,
             "bus": math.pi,
             "pickuptruck": math.pi / 2,

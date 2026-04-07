@@ -324,17 +324,53 @@ blender:
   ground_clearance_m: 0.03
 
   camera:
+    mode: third_person   # first_person | third_person
     # Intrinsics from calibration -- automatically updated with calibration
     fx: 1600.327787
     fy: 1613.801735 
     cx: 637.482852
     cy: 424.546778
     height_m: 1.2
+    chase_offset:
+      behind_m: 12.0
+      right_m: 0.0
+      up_m: 3.0
+    follow_ego_heading: true
+    fixed_heading_rad: 0.0
+    look_ahead_m: 25.0
+    look_at_height_m: 1.0
+
+  ego_vehicle:
+    asset: tesla
+    location: [0.0, 0.0, 0.0]
+    yaw_rad: 0.0
+    asset_yaw_offset_rad: 3.141592653589793
+    scale: [0.9, 0.9, 0.9]
 
   # Visual style for Tesla-like overlay
   style:
-    lane_solid_white:  [1.0, 1.0, 1.0]   # RGB 0-1
+    lane_solid_white:  [1.0, 1.0, 1.0]
     lane_solid_yellow: [1.0, 0.85, 0.0]
+    ego_paint_rgb: [0.80, 0.06, 0.08]
+    ego_tesla_style_enabled: true
+    ego_tesla_top_glass_rgb: [0.02, 0.02, 0.02]
+    ego_tesla_top_glass_alpha: 0.28
+    ego_tesla_top_glass_transmission: 0.90
+    ego_tesla_trim_gray_rgb: [0.58, 0.58, 0.58]
+    ego_tesla_logo_gray_rgb: [0.8, 0.8, 0.8]
+    ego_tesla_part_material_tokens:
+      top: side_window
+      trunk.001: trim_gray
+      trunk.002: trim_gray
+      bumper: keep_red
+      bumper.001: trim_gray
+      bumper.002: trim_gray
+      bumper.003: trim_gray
+      bumper.004: trim_gray
+      bumper.005: trim_gray
+      logo_text: logo_gray
+      logo text: logo_gray
+      logo: logo_gray
     lane_width: 0.15          # meters (rendered lane stripe width)
     car_color:   [0.2, 0.6, 1.0]
     ped_color:   [0.1, 0.9, 0.4]
