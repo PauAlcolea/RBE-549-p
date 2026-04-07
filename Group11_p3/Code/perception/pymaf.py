@@ -225,7 +225,8 @@ class PymafEstimator:
             raise FileNotFoundError(
                 f"PyMAF expected video '*-{camera}_undistort.mp4' in {undist_dir}"
             )
-        return matches[0]
+        # demo.py is executed with cwd=self.repo_dir, so ensure absolute path.
+        return matches[0].resolve()
 
     def _bootstrap_smpl_models(self):
         """
@@ -278,6 +279,8 @@ class PymafEstimator:
         ]
 
         missing = [str(p) for p in required if not p.exists()]
+        if shutil.which("ffmpeg") is None:
+            missing.append("ffmpeg (executable not found in PATH)")
         return missing
 
     def _ensure_output_pkl(self, scene_name: str, camera: str, video_path: Path) -> Path:
