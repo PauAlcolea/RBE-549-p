@@ -53,16 +53,6 @@ perception:
   batch_size: 1         # increase if GPU memory allows
   frame_skip: 30         # process every Nth frame (30 = every frame)
 
-  heading_smoothing:
-    enabled: true
-    max_angular_velocity_degps: 60.0   # physical heading-rate cap used with dt = frame_skip / fps
-    dt_override_sec: null              # optional dev override; null keeps dt computed from config
-    max_position_distance_m: 8.0       # primary association gate (3D nearest-neighbor)
-    min_bbox_iou: 0.01                 # secondary association gate (2D overlap)
-    track_timeout_frames: 3            # timeout in processed-frame units
-    ema_alpha: null                    # null/0 disables EMA; (0,1] applies extra damping after clamp
-    debug_log_matches: false
-
   yolo:
     confidence: 0.25    # low on purpose
     iou_threshold: 0.45

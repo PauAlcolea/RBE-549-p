@@ -76,7 +76,7 @@ def _serialize_lane(lane) -> dict:
     return lane_out
 
 
-def _serialize_vehicle(det, include_debug: bool = False) -> dict:
+def _serialize_vehicle(det) -> dict:
     """normalize vehicles and add the radian heading if it has one"""
     vehicle = {
         "bbox": [round(v, 2) for v in det.bbox],
@@ -89,15 +89,6 @@ def _serialize_vehicle(det, include_debug: bool = False) -> dict:
     if heading_rad is not None:
         vehicle["heading_rad"] = round(float(heading_rad), 4)
 
-    if include_debug:
-        raw_heading = getattr(det, "raw_heading_rad", None)
-        if raw_heading is not None:
-            vehicle["raw_heading_rad"] = round(float(raw_heading), 4)
-
-        track_id = getattr(det, "smoothing_track_id", None)
-        if track_id is not None:
-            vehicle["smoothing_track_id"] = int(track_id)
-
     return vehicle
 
 def build_frame_dict(
@@ -108,7 +99,6 @@ def build_frame_dict(
     traffic_lights: list,
     stop_signs: list,
     non_coco_objects: list,
-    include_debug: bool = False,
 ) -> dict:
     """
     Convert all detector outputs for one frame into the shared JSON schema.
@@ -174,7 +164,7 @@ def build_frame_dict(
         "lanes": lanes_out,
 
         "vehicles": [
-            _serialize_vehicle(det, include_debug=include_debug)
+            _serialize_vehicle(det)
             for det in vehicles
         ],
 
