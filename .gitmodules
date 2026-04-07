@@ -7,6 +7,3 @@
 [submodule "Group11_p3/Code/perception/BoundingBox_3D"]
 	path = Group11_p3/Code/perception/BoundingBox_3D
 	url = https://github.com/PauAlcolea/BoundingBox_3D
-[submodule "Group11_p3/Code/perception/PyMAF"]
-	path = Group11_p3/Code/perception/PyMAF
-	url = https://github.com/PauAlcolea/PyMAF
