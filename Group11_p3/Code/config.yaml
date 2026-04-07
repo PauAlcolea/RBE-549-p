@@ -302,6 +302,14 @@ blender:
   samples: 32            # lower = faster; 32 is a reasonable Phase 1 default
   output_format: PNG
   ground_clearance_m: 0.03
+  pedestrian:
+    mode: pymaf               # pymaf | asset
+    pymaf_target_height_m: 1.70
+    pymaf_bone_radius_m: 0.018
+    pymaf_joint_radius_m: 0.025
+    pymaf_min_joint_count: 24
+    pymaf_use_last24: true    # for 49-joint arrays, use the final 24 SMPL joints
+    pymaf_y_up: true          # PyMAF joints are generally y-up in local body space
 
   camera:
     # Intrinsics from calibration -- automatically updated with calibration

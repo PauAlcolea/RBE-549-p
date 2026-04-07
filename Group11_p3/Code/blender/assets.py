@@ -38,11 +38,26 @@ class AssetLibrary:
     lib.place_stop_sign(sign_dict)
     lib.clear_frame_objects()    # call before each new frame
     """
+    _SMPL24_BONES = (
+        (0, 1), (1, 4), (4, 7), (7, 10),
+        (0, 2), (2, 5), (5, 8), (8, 11),
+        (0, 3), (3, 6), (6, 9), (9, 12), (12, 15),
+        (12, 13), (13, 16), (16, 18), (18, 20), (20, 22),
+        (12, 14), (14, 17), (17, 19), (19, 21), (21, 23),
+    )
 
     def __init__(self, cfg: dict):
         self.cfg = cfg
         self.assets_dir = Path(cfg["paths"]["assets_dir"])
         self.ground_clearance_m = cfg["blender"].get("ground_clearance_m", 0.03)
+        ped_cfg = cfg.get("blender", {}).get("pedestrian", {})
+        self.ped_mode = str(ped_cfg.get("mode", "pymaf")).strip().lower()
+        self.pymaf_target_height_m = float(ped_cfg.get("pymaf_target_height_m", 1.70))
+        self.pymaf_bone_radius_m = float(ped_cfg.get("pymaf_bone_radius_m", 0.018))
+        self.pymaf_joint_radius_m = float(ped_cfg.get("pymaf_joint_radius_m", 0.025))
+        self.pymaf_min_joint_count = int(ped_cfg.get("pymaf_min_joint_count", 24))
+        self.pymaf_use_last24 = bool(ped_cfg.get("pymaf_use_last24", True))
+        self.pymaf_y_up = bool(ped_cfg.get("pymaf_y_up", True))
         self._scene_name = None
         self._camera_name = None
         self._frame_objects = []     # track objects placed this frame for cleanup
@@ -162,13 +177,124 @@ class AssetLibrary:
         )
 
     def place_pedestrian(self, ped: dict):
-        """Instantiate the pedestrian asset."""
+        """Instantiate a pedestrian using PyMAF skeleton when available."""
+        if self.ped_mode != "asset" and self._place_pedestrian_pymaf(ped):
+            return
+
         obj = self._instance("pedestrian")
         obj.location = self._json_to_blender(ped["position_3d"])
         obj.scale = (0.009, 0.009, 0.009)
         self._align_object_to_ground(obj, ground_z=0.0, clearance=self.ground_clearance_m)
         self._frame_objects.append(obj)
         print(f"[assets] pedestrian: json_pos={ped['position_3d']}  →  blender_pos={obj.location}")
+
+    def _place_pedestrian_pymaf(self, ped: dict) -> bool:
+        joints_raw = ped.get("smpl_joints3d")
+        if not isinstance(joints_raw, list) or len(joints_raw) < self.pymaf_min_joint_count:
+            return False
+
+        joints_smpl = self._select_smpl24_joints(joints_raw)
+        if joints_smpl is None:
+            return False
+
+        joints_local = []
+        for pt in joints_smpl:
+            if not isinstance(pt, (list, tuple)) or len(pt) < 3:
+                return False
+            joints_local.append(self._smpl_to_blender_local(pt))
+        if len(joints_local) < 24:
+            return False
+
+        root_local = joints_local[0]
+        local_heights = [v.z for v in joints_local]
+        local_height = max(local_heights) - min(local_heights)
+        scale = 1.0
+        if local_height > 1e-6 and self.pymaf_target_height_m > 0.0:
+            scale = self.pymaf_target_height_m / local_height
+            scale = max(0.5, min(2.5, scale))
+
+        target_root = Vector(self._json_to_blender(ped["position_3d"]))
+        joints_world = [((v - root_local) * scale) + target_root for v in joints_local]
+
+        # Match existing asset behavior: pedestrians are grounded on z=0.
+        min_world_z = min(v.z for v in joints_world)
+        lift = (0.0 + self.ground_clearance_m) - min_world_z
+        if abs(lift) > 1e-6:
+            joints_world = [Vector((v.x, v.y, v.z + lift)) for v in joints_world]
+
+        track_id = ped.get("pymaf_track_id", "na")
+        base_name = f"ped_pymaf_{track_id}_{len(self._frame_objects)}"
+        skel_obj = self._create_pymaf_skeleton_curve(joints_world, name=base_name)
+        if skel_obj is None:
+            return False
+
+        ped_mat = self.Materials.get_pedestrian_material()
+        if ped_mat is not None:
+            skel_obj.data.materials.clear()
+            skel_obj.data.materials.append(ped_mat)
+
+        head_idx = 15 if len(joints_world) > 15 else max(range(len(joints_world)), key=lambda i: joints_world[i].z)
+        head_obj = self._create_sphere_mesh_object(
+            name=f"{base_name}_head",
+            location=joints_world[head_idx],
+            radius=max(0.005, self.pymaf_joint_radius_m),
+        )
+        if ped_mat is not None:
+            head_obj.data.materials.clear()
+            head_obj.data.materials.append(ped_mat)
+
+        self._frame_objects.append(skel_obj)
+        self._frame_objects.append(head_obj)
+        print(
+            f"[assets] pedestrian(pymaf): track={track_id} bones={len(self._SMPL24_BONES)} "
+            f"json_pos={ped['position_3d']} root={tuple(round(v, 3) for v in joints_world[0])}"
+        )
+        return True
+
+    def _select_smpl24_joints(self, joints_raw: list):
+        if self.pymaf_use_last24 and len(joints_raw) >= 49:
+            return joints_raw[-24:]
+        if len(joints_raw) >= 24:
+            return joints_raw[:24]
+        return None
+
+    def _smpl_to_blender_local(self, pos) -> Vector:
+        x, y, z = [float(v) for v in pos[:3]]
+        if self.pymaf_y_up:
+            # PyMAF joints are typically SMPL local coordinates: y-up, z-forward.
+            return Vector((x, z, y))
+        # Fallback for camera-style coordinates (x-right, y-down, z-forward).
+        return Vector((x, z, -y))
+
+    def _create_pymaf_skeleton_curve(self, joints_world, name: str):
+        curve = bpy.data.curves.new(f"{name}_curve", type="CURVE")
+        curve.dimensions = "3D"
+        curve.bevel_depth = max(0.001, self.pymaf_bone_radius_m)
+        curve.bevel_resolution = 2
+        curve.use_fill_caps = True
+
+        num_bones = 0
+        for a, b in self._SMPL24_BONES:
+            if a >= len(joints_world) or b >= len(joints_world):
+                continue
+            p0 = joints_world[a]
+            p1 = joints_world[b]
+            if (p1 - p0).length <= 1e-4:
+                continue
+
+            spline = curve.splines.new("POLY")
+            spline.points.add(1)
+            spline.points[0].co = (p0.x, p0.y, p0.z, 1.0)
+            spline.points[1].co = (p1.x, p1.y, p1.z, 1.0)
+            num_bones += 1
+
+        if num_bones == 0:
+            bpy.data.curves.remove(curve, do_unlink=True)
+            return None
+
+        obj = bpy.data.objects.new(name, curve)
+        bpy.context.collection.objects.link(obj)
+        return obj
 
     def place_stop_sign(self, sign: dict):
         """
