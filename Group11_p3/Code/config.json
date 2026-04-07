@@ -41,13 +41,41 @@
     "frame_skip": 30,
     "heading_smoothing": {
       "enabled": true,
-      "max_angular_velocity_degps": 45.0,
+      "max_angular_velocity_degps": 60.0,
       "dt_override_sec": null,
-      "max_position_distance_m": 16.0,
+      "max_position_distance_m": 8.0,
       "min_bbox_iou": 0.01,
       "track_timeout_frames": 3,
-      "ema_alpha": 0.5,
+      "ema_alpha": null,
       "debug_log_matches": false
+    },
+    "vehicle_stabilization": {
+      "mode": "stabilized",
+      "class": {
+        "enabled": true,
+        "track_timeout_frames": 5,
+        "max_position_distance_m": 8.0,
+        "min_bbox_iou": 0.01,
+        "history_window_frames": 8,
+        "min_history_frames": 3,
+        "switch_margin": 1
+      },
+      "position": {
+        "enabled": true,
+        "track_timeout_frames": 5,
+        "max_position_distance_m": 8.0,
+        "min_bbox_iou": 0.01,
+        "ema_alpha_position3d": 0.35,
+        "ema_alpha_bbox": 0.35,
+        "max_position_step_m": null,
+        "max_bbox_step_px": null
+      },
+      "presence": {
+        "enabled": true,
+        "method": "two_sided",
+        "max_hold_frames": 1,
+        "min_track_age_frames": 1
+      }
     },
     "yolo": {
       "confidence": 0.25,

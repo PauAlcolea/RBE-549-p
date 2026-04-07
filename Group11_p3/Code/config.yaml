@@ -63,6 +63,34 @@ perception:
     ema_alpha: null                    # null/0 disables EMA; (0,1] applies extra damping after clamp
     debug_log_matches: false
 
+  vehicle_stabilization:
+    mode: stabilized                          # raw | stabilized | dual_debug
+
+    class:
+      enabled: true
+      track_timeout_frames: 5
+      max_position_distance_m: 8.0
+      min_bbox_iou: 0.01
+      history_window_frames: 8
+      min_history_frames: 3
+      switch_margin: 1                # candidate votes must exceed stable-label votes by this amount
+
+    position:
+      enabled: true
+      track_timeout_frames: 5
+      max_position_distance_m: 8.0
+      min_bbox_iou: 0.01
+      ema_alpha_position3d: 0.35
+      ema_alpha_bbox: 0.35
+      max_position_step_m: null       # optional per-step clamp in meters
+      max_bbox_step_px: null          # optional per-step clamp in pixels per coord
+
+    presence:
+      enabled: true
+      method: two_sided            # two_sided | causal_keep_alive
+      max_hold_frames: 1              # keep a vehicle for up to N missed processed frames
+      min_track_age_frames: 1         # require at least this many matched frames before keep-alive
+
   yolo:
     confidence: 0.25    # low on purpose
     iou_threshold: 0.45
