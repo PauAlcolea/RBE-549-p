@@ -332,12 +332,12 @@ blender:
     cy: 424.546778
     height_m: 1.2
     chase_offset:
-      behind_m: 12.0
+      behind_m: 14.0 # how far behind the car the camera should be
       right_m: 0.0
-      up_m: 3.0
+      up_m: 4.0 # higher = more top-down view
     follow_ego_heading: true
     fixed_heading_rad: 0.0
-    look_ahead_m: 25.0
+    look_ahead_m: 10.0 # how far ahead of tesla the camera should look
     look_at_height_m: 1.0
 
   ego_vehicle:
