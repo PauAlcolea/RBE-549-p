@@ -25,6 +25,7 @@ from copy import deepcopy
 import torch
 from pathlib import Path
 import os
+import re
 import sys
 import cv2
 import numpy as np
@@ -210,6 +211,280 @@ def _run_speed_limit_ocr(frame_bgr, non_coco_results, speed_ocr, frame_idx=None,
     non_coco_results[:] = filtered_results
 
 
+def _ground_text_rank_key(det):
+    hits = str(getattr(det, "only_letter_hits", ""))
+    hit_count = len(set(hits))
+    text_conf = float(getattr(det, "ocr_confidence", 0.0))
+    det_conf = float(getattr(det, "confidence", 0.0))
+    area = _bbox_area(getattr(det, "bbox", [0.0, 0.0, 0.0, 0.0]))
+    # For overlap dedupe, keep the largest ONLY-positive box first.
+    return (area, hit_count, text_conf, det_conf)
+
+
+def _merge_ground_text_fragments(non_coco_results, cfg):
+    non_coco_cfg = cfg.get("perception", {}).get("non_coco_dart", {})
+    if not bool(non_coco_cfg.get("ground_text_merge_enabled", True)):
+        return
+
+    max_gap_ratio = float(non_coco_cfg.get("ground_text_merge_max_gap_ratio", 1.8))
+    y_center_tol_ratio = float(non_coco_cfg.get("ground_text_merge_y_center_tol_ratio", 0.9))
+    max_span_ratio = float(non_coco_cfg.get("ground_text_merge_max_span_ratio", 7.0))
+    min_cluster_size = int(non_coco_cfg.get("ground_text_merge_min_cluster_size", 2))
+
+    ground_text = [d for d in non_coco_results if getattr(d, "label", "") == "ground_text"]
+    if len(ground_text) <= 1:
+        return
+
+    others = [d for d in non_coco_results if getattr(d, "label", "") != "ground_text"]
+    ground_text_sorted = sorted(ground_text, key=lambda d: float(getattr(d, "bbox", [0.0, 0.0, 0.0, 0.0])[0]))
+
+    clusters = []
+    current = [ground_text_sorted[0]]
+    c_bbox = [float(v) for v in getattr(current[0], "bbox", [0.0, 0.0, 0.0, 0.0])]
+    for det in ground_text_sorted[1:]:
+        det_bbox = [float(v) for v in getattr(det, "bbox", [0.0, 0.0, 0.0, 0.0])]
+
+        prev_bbox = [float(v) for v in getattr(current[-1], "bbox", [0.0, 0.0, 0.0, 0.0])]
+        prev_h = max(1.0, prev_bbox[3] - prev_bbox[1])
+        det_h = max(1.0, det_bbox[3] - det_bbox[1])
+        cluster_h = max(1.0, c_bbox[3] - c_bbox[1])
+        ref_h = max(prev_h, det_h, cluster_h)
+        prev_cy = 0.5 * (c_bbox[1] + c_bbox[3])
+        det_cy = 0.5 * (det_bbox[1] + det_bbox[3])
+        gap = det_bbox[0] - max(prev_bbox[2], c_bbox[2])
+        proposed_x1 = min(c_bbox[0], det_bbox[0])
+        proposed_x2 = max(c_bbox[2], det_bbox[2])
+        proposed_span = proposed_x2 - proposed_x1
+
+        same_line = abs(det_cy - prev_cy) <= (y_center_tol_ratio * ref_h)
+        close_enough = gap <= (max_gap_ratio * ref_h)
+        span_ok = proposed_span <= (max_span_ratio * ref_h)
+        if same_line and close_enough and span_ok:
+            current.append(det)
+            c_bbox = [
+                min(c_bbox[0], det_bbox[0]),
+                min(c_bbox[1], det_bbox[1]),
+                max(c_bbox[2], det_bbox[2]),
+                max(c_bbox[3], det_bbox[3]),
+            ]
+        else:
+            clusters.append(current)
+            current = [det]
+            c_bbox = [float(v) for v in det_bbox]
+    clusters.append(current)
+
+    merged = []
+    for cluster in clusters:
+        if len(cluster) < min_cluster_size:
+            merged.append(cluster[0])
+            continue
+
+        best = max(cluster, key=_ground_text_rank_key)
+        x1 = min(float(getattr(d, "bbox", [0.0, 0.0, 0.0, 0.0])[0]) for d in cluster)
+        y1 = min(float(getattr(d, "bbox", [0.0, 0.0, 0.0, 0.0])[1]) for d in cluster)
+        x2 = max(float(getattr(d, "bbox", [0.0, 0.0, 0.0, 0.0])[2]) for d in cluster)
+        y2 = max(float(getattr(d, "bbox", [0.0, 0.0, 0.0, 0.0])[3]) for d in cluster)
+
+        hits_union = "".join(sorted({ch for d in cluster for ch in str(getattr(d, "only_letter_hits", ""))}))
+        raw_text_parts = [str(getattr(d, "ocr_raw_text", "")).strip() for d in cluster]
+        raw_text_parts = [p for p in raw_text_parts if p]
+
+        best.bbox = [x1, y1, x2, y2]
+        best.only_letter_hits = hits_union
+        best.has_only_letters = bool(hits_union)
+        best.ocr_confidence = max(float(getattr(d, "ocr_confidence", 0.0)) for d in cluster)
+        best.confidence = max(float(getattr(d, "confidence", 0.0)) for d in cluster)
+        if raw_text_parts:
+            best.ocr_raw_text = " ".join(raw_text_parts)
+
+        merged.append(best)
+
+    non_coco_results[:] = others + merged
+
+
+def _dedupe_ground_text_only(non_coco_results, cfg):
+    non_coco_cfg = cfg.get("perception", {}).get("non_coco_dart", {})
+    if not bool(non_coco_cfg.get("ground_text_dedupe_enabled", True)):
+        return
+
+    iou_thr = float(non_coco_cfg.get("ground_text_dedupe_iou", 0.15))
+    ioa_thr = float(non_coco_cfg.get("ground_text_dedupe_ioa", 0.55))
+
+    ground_text = [d for d in non_coco_results if getattr(d, "label", "") == "ground_text"]
+    if len(ground_text) <= 1:
+        return
+
+    others = [d for d in non_coco_results if getattr(d, "label", "") != "ground_text"]
+    ordered = sorted(ground_text, key=_ground_text_rank_key, reverse=True)
+    kept = []
+
+    for det in ordered:
+        det_bbox = getattr(det, "bbox", None)
+        if det_bbox is None:
+            continue
+
+        suppress = False
+        for prev in kept:
+            prev_bbox = getattr(prev, "bbox", None)
+            if prev_bbox is None:
+                continue
+
+            iou = _bbox_iou(det_bbox, prev_bbox)
+            inter = _bbox_intersection(det_bbox, prev_bbox)
+            small_area = max(min(_bbox_area(det_bbox), _bbox_area(prev_bbox)), 1e-6)
+            ioa_small = inter / small_area
+            if iou >= iou_thr or ioa_small >= ioa_thr:
+                suppress = True
+                break
+
+        if not suppress:
+            kept.append(det)
+
+    non_coco_results[:] = others + kept
+
+
+def _run_ground_text_ocr(frame_bgr, non_coco_results, speed_ocr, cfg, frame_idx=None, debug_dir=None):
+    filtered_results = []
+    if speed_ocr is None or not speed_ocr.is_active():
+        for det in non_coco_results:
+            if getattr(det, "label", "") != "ground_text":
+                filtered_results.append(det)
+        non_coco_results[:] = filtered_results
+        return
+
+    frame_h = int(frame_bgr.shape[0])
+    min_y_center = frame_h * 0.5
+
+    for det in non_coco_results:
+        if getattr(det, "label", "") != "ground_text":
+            filtered_results.append(det)
+            continue
+
+        bbox = [float(v) for v in getattr(det, "bbox", [0.0, 0.0, 0.0, 0.0])]
+        y_center = (bbox[1] + bbox[3]) * 0.5
+        if y_center < min_y_center:
+            continue
+
+        ocr_debug_path = None
+        if debug_dir is not None and frame_idx is not None:
+            x1, y1, _, _ = [int(round(v)) for v in det.bbox]
+            ocr_debug_path = Path(debug_dir) / f"ground_text_frame_{frame_idx:06d}_x{x1}_y{y1}.png"
+
+        try:
+            ocr_result = speed_ocr.infer(frame_bgr, det.bbox, debug_path=ocr_debug_path)
+        except Exception as exc:
+            print(f"[warn] ground-text OCR failed for one detection: {exc}")
+            speed_ocr.enabled = False
+            continue
+
+        det.ocr_confidence = float(ocr_result.text_confidence)
+        det.ocr_raw_text = str(ocr_result.raw_text)
+        det.has_only_letters = bool(ocr_result.has_only_letters)
+        det.only_letter_hits = str(ocr_result.only_letter_hits)
+        if not det.has_only_letters:
+            continue
+
+        filtered_results.append(det)
+
+    non_coco_results[:] = filtered_results
+    _merge_ground_text_fragments(non_coco_results, cfg)
+    _dedupe_ground_text_only(non_coco_results, cfg)
+
+
+def _suppress_ground_arrow_text_overlaps(non_coco_results, cfg):
+    """Remove ground-arrow detections when they overlap confirmed ground_text detections."""
+    non_coco_cfg = cfg.get("perception", {}).get("non_coco_dart", {})
+    iou_thr = float(non_coco_cfg.get("ground_arrow_text_overlap_iou", 0.05))
+    ioa_thr = float(non_coco_cfg.get("ground_arrow_text_overlap_ioa", 0.35))
+
+    ground_text = [d for d in non_coco_results if getattr(d, "label", "") == "ground_text"]
+    if not ground_text:
+        return
+
+    filtered = []
+    for det in non_coco_results:
+        if getattr(det, "label", "") != "ground_arrow":
+            filtered.append(det)
+            continue
+
+        det_bbox = getattr(det, "bbox", None)
+        if det_bbox is None:
+            continue
+
+        suppress = False
+        for txt in ground_text:
+            txt_bbox = getattr(txt, "bbox", None)
+            if txt_bbox is None:
+                continue
+
+            iou = _bbox_iou(det_bbox, txt_bbox)
+            inter = _bbox_intersection(det_bbox, txt_bbox)
+            small_area = max(min(_bbox_area(det_bbox), _bbox_area(txt_bbox)), 1e-6)
+            ioa_small = inter / small_area
+            if iou >= iou_thr or ioa_small >= ioa_thr:
+                suppress = True
+                break
+
+        if not suppress:
+            filtered.append(det)
+
+    non_coco_results[:] = filtered
+
+
+def _filter_ground_arrows(frame_bgr, non_coco_results, cfg):
+    """Keep only road-like ground-arrow detections in lower image regions."""
+    non_coco_cfg = cfg.get("perception", {}).get("non_coco_dart", {})
+    min_center_y_ratio = float(non_coco_cfg.get("ground_arrow_min_center_y_ratio", 0.5))
+    min_bottom_y_ratio = float(non_coco_cfg.get("ground_arrow_min_bottom_y_ratio", 0.55))
+
+    frame_h = float(frame_bgr.shape[0])
+    min_center_y = frame_h * min_center_y_ratio
+    min_bottom_y = frame_h * min_bottom_y_ratio
+
+    filtered = []
+    for det in non_coco_results:
+        if getattr(det, "label", "") != "ground_arrow":
+            filtered.append(det)
+            continue
+
+        x1, y1, x2, y2 = [float(v) for v in getattr(det, "bbox", [0.0, 0.0, 0.0, 0.0])]
+        y_center = 0.5 * (y1 + y2)
+        if y_center < min_center_y or y2 < min_bottom_y:
+            continue
+        filtered.append(det)
+
+    non_coco_results[:] = filtered
+
+
+def _drop_aux_non_coco_labels(non_coco_results, cfg, non_coco_model=None):
+    """Remove internal helper labels that should never be exported or visualized."""
+    non_coco_cfg = cfg.get("perception", {}).get("non_coco_dart", {})
+    aux_labels = set(str(v).strip() for v in non_coco_cfg.get("aux_labels", ["arrow_sign"]))
+    if non_coco_model is not None and hasattr(non_coco_model, "get_aux_labels"):
+        aux_labels.update(str(v).strip() for v in non_coco_model.get_aux_labels())
+    if not aux_labels:
+        return
+
+    non_coco_results[:] = [
+        det for det in non_coco_results
+        if str(getattr(det, "label", "")).strip() not in aux_labels
+    ]
+
+
+def _restrict_ground_markings_to_scenes(non_coco_results, scene_name: str):
+    """Keep ground-arrow/ground-text classes only in configured scenes."""
+    allowed_scenes = {"scene3", "scene7", "scene11"}
+    scene_key = str(scene_name).strip().lower()
+    if scene_key in allowed_scenes:
+        return
+
+    blocked_labels = {"ground_arrow", "ground_text"}
+    non_coco_results[:] = [
+        det for det in non_coco_results
+        if str(getattr(det, "label", "")).strip() not in blocked_labels
+    ]
+
+
 def _bbox_iou(a, b) -> float:
     """Compute IoU for [x1, y1, x2, y2] boxes."""
     ix1 = max(float(a[0]), float(b[0]))
@@ -239,6 +514,116 @@ def _bbox_intersection(a, b) -> float:
 
 def _bbox_area(a) -> float:
     return max(0.0, float(a[2]) - float(a[0])) * max(0.0, float(a[3]) - float(a[1]))
+
+
+def _lane_points(lane):
+    if isinstance(lane, dict):
+        return lane.get("points", [])
+    return getattr(lane, "points", [])
+
+
+def _lane_overlaps_boxes(lane, boxes, pad_px: float, min_points: int, min_ratio: float) -> bool:
+    points = _lane_points(lane)
+    if not points:
+        return False
+
+    total = 0
+    hits = 0
+    for pt in points:
+        if not isinstance(pt, (list, tuple)) or len(pt) < 2:
+            continue
+        x = float(pt[0])
+        y = float(pt[1])
+        total += 1
+        for box in boxes:
+            x1 = float(box[0]) - pad_px
+            y1 = float(box[1]) - pad_px
+            x2 = float(box[2]) + pad_px
+            y2 = float(box[3]) + pad_px
+            if x1 <= x <= x2 and y1 <= y <= y2:
+                hits += 1
+                break
+
+    if total <= 0:
+        return False
+    if hits >= max(1, int(min_points)):
+        return True
+    return (hits / float(total)) >= float(min_ratio)
+
+
+def _suppress_lanes_near_ground_text(lanes, non_coco_results, cfg):
+    lanes_cfg = cfg.get("perception", {}).get("lanes", {})
+    if not bool(lanes_cfg.get("suppress_on_ground_text_only", True)):
+        return lanes
+
+    pad_px = float(lanes_cfg.get("ground_text_suppress_pad_px", 4.0))
+    min_points = int(lanes_cfg.get("ground_text_suppress_min_points", 2))
+    min_ratio = float(lanes_cfg.get("ground_text_suppress_point_ratio", 0.15))
+
+    ground_text_boxes = [
+        [float(v) for v in getattr(det, "bbox", [0.0, 0.0, 0.0, 0.0])]
+        for det in non_coco_results
+        if getattr(det, "label", "") == "ground_text"
+        and bool(getattr(det, "has_only_letters", False))
+        and getattr(det, "bbox", None) is not None
+    ]
+    if not ground_text_boxes:
+        return lanes
+
+    return [
+        lane for lane in lanes
+        if not _lane_overlaps_boxes(lane, ground_text_boxes, pad_px, min_points, min_ratio)
+    ]
+
+
+def _lane_raw_crosswalk_boxes(lane_raw, min_conf: float):
+    if not isinstance(lane_raw, dict):
+        return []
+
+    boxes = lane_raw.get("boxes")
+    scores = lane_raw.get("scores")
+    class_names = lane_raw.get("class_names", [])
+    if boxes is None or scores is None:
+        return []
+
+    min_conf = float(min_conf)
+    crosswalk_boxes = []
+    for i in range(len(scores)):
+        score = float(scores[i].item())
+        if score < min_conf:
+            continue
+
+        cls_name = class_names[i] if i < len(class_names) else ""
+        cls_name_norm = str(cls_name).strip().lower()
+        if "crosswalk" not in cls_name_norm:
+            continue
+
+        box_vals = boxes[i].detach().cpu().tolist()
+        if len(box_vals) < 4:
+            continue
+        crosswalk_boxes.append([float(v) for v in box_vals[:4]])
+
+    return crosswalk_boxes
+
+
+def _suppress_lanes_on_crosswalk_markings(lanes, lane_raw, cfg):
+    lanes_cfg = cfg.get("perception", {}).get("lanes", {})
+    if not bool(lanes_cfg.get("suppress_on_crosswalk_marking", True)):
+        return lanes
+
+    pad_px = float(lanes_cfg.get("crosswalk_suppress_pad_px", 4.0))
+    min_points = int(lanes_cfg.get("crosswalk_suppress_min_points", 2))
+    min_ratio = float(lanes_cfg.get("crosswalk_suppress_point_ratio", 0.15))
+    min_conf = float(lanes_cfg.get("crosswalk_suppress_min_confidence", 0.85))
+
+    crosswalk_boxes = _lane_raw_crosswalk_boxes(lane_raw, min_conf=min_conf)
+    if not crosswalk_boxes:
+        return lanes
+
+    return [
+        lane for lane in lanes
+        if not _lane_overlaps_boxes(lane, crosswalk_boxes, pad_px, min_points, min_ratio)
+    ]
 
 
 def _as_traffic_candidate(det, source: str = "unknown"):
@@ -450,9 +835,176 @@ def _lane_color_bgr(color_name: str):
     return (255, 255, 255)
 
 
-def draw_lane_debug_overlay(frame_bgr, lane_results, lane_raw=None):
+def _slugify_class_name(name: str) -> str:
+    clean = re.sub(r"[^a-z0-9]+", "_", str(name).strip().lower())
+    return clean.strip("_")
+
+
+def _lane_confidence(lane) -> float:
+    if isinstance(lane, dict):
+        return float(lane.get("confidence", 0.0))
+    return float(getattr(lane, "confidence", 0.0))
+
+
+def _lane_raw_index(lane) -> int:
+    if isinstance(lane, dict):
+        return int(lane.get("raw_index", -1))
+    return int(getattr(lane, "raw_index", -1))
+
+
+def _lane_color_name(lane) -> str:
+    if isinstance(lane, dict):
+        return str(lane.get("color", "white")).strip().lower()
+    return str(getattr(lane, "color", "white")).strip().lower()
+
+
+def _lane_min_confidence(lane, default_min_conf: float, yellow_min_conf: float, white_min_conf: float) -> float:
+    color = _lane_color_name(lane)
+    if color == "yellow":
+        return float(yellow_min_conf)
+    if color == "white":
+        return float(white_min_conf)
+    return float(default_min_conf)
+
+
+def _filter_lanes_by_confidence(
+    lanes,
+    default_min_confidence: float,
+    yellow_min_confidence: float,
+    white_min_confidence: float,
+):
+    kept = []
+    for lane in lanes:
+        score = _lane_confidence(lane)
+        min_conf = _lane_min_confidence(
+            lane,
+            default_min_conf=default_min_confidence,
+            yellow_min_conf=yellow_min_confidence,
+            white_min_conf=white_min_confidence,
+        )
+        if score >= min_conf:
+            kept.append(lane)
+    return kept
+
+
+def _raw_lane_class_min_confidence(class_name: str, default_min_conf: float, yellow_min_conf: float, white_min_conf: float) -> float:
+    cls = str(class_name).strip().lower()
+    if "yellow" in cls or "non-white" in cls:
+        return float(yellow_min_conf)
+    if "white" in cls:
+        return float(white_min_conf)
+    return float(default_min_conf)
+
+
+def _raw_box_has_lane_match(box_xyxy, lane_results, pad_px: float, min_points: int, min_ratio: float) -> bool:
+    box = [float(v) for v in box_xyxy]
+    for lane in lane_results:
+        if _lane_overlaps_boxes(lane, [box], pad_px=pad_px, min_points=min_points, min_ratio=min_ratio):
+            return True
+    return False
+
+
+def _lane_raw_index_set(lanes) -> set:
+    out = set()
+    for lane in lanes:
+        idx = _lane_raw_index(lane)
+        if idx >= 0:
+            out.add(idx)
+    return out
+
+
+def _build_lane_drop_reason_map(
+    lane_raw,
+    lane_results_detected,
+    lane_results_after_ground_text,
+    lane_results_after_crosswalk,
+    lane_results_after_conf,
+    detector_min_conf: float,
+    default_min_confidence: float,
+    yellow_min_confidence: float,
+    white_min_confidence: float,
+):
+    if not isinstance(lane_raw, dict) or "scores" not in lane_raw:
+        return {}
+
+    scores = lane_raw.get("scores")
+    names = lane_raw.get("class_names", [])
+    if scores is None:
+        return {}
+
+    detected_set = _lane_raw_index_set(lane_results_detected)
+    ground_set = _lane_raw_index_set(lane_results_after_ground_text)
+    crosswalk_set = _lane_raw_index_set(lane_results_after_crosswalk)
+    conf_set = _lane_raw_index_set(lane_results_after_conf)
+
+    reason_map = {}
+
+    for i in range(len(scores)):
+        score = float(scores[i].item())
+        cls_name = names[i] if i < len(names) else "lane"
+        cls_norm = str(cls_name).strip().lower()
+
+        if "lane" not in cls_norm:
+            continue
+
+        if score < float(detector_min_conf):
+            reason_map[i] = "below_detector_conf"
+            continue
+
+        if i not in detected_set:
+            reason_map[i] = "no_polyline_points"
+            continue
+
+        if i not in ground_set:
+            reason_map[i] = "suppressed_ground_text"
+            continue
+
+        if i not in crosswalk_set:
+            reason_map[i] = "suppressed_crosswalk"
+            continue
+
+        if i not in conf_set:
+            min_conf = _raw_lane_class_min_confidence(
+                cls_name,
+                default_min_conf=default_min_confidence,
+                yellow_min_conf=yellow_min_confidence,
+                white_min_conf=white_min_confidence,
+            )
+            reason_map[i] = f"below_export_conf<{min_conf:.2f}"
+            continue
+
+    for lane in lane_results_after_conf:
+        idx = _lane_raw_index(lane)
+        if idx < 0:
+            continue
+        if len(_lane_points(lane)) < 2:
+            reason_map[idx] = "dropped_export_points<2"
+
+    return reason_map
+
+
+def draw_lane_debug_overlay(
+    frame_bgr,
+    lane_results,
+    lane_raw=None,
+    lane_exclude_classes=None,
+    default_min_confidence: float = 0.85,
+    yellow_min_confidence: float = 0.65,
+    white_min_confidence: float = 0.85,
+    raw_match_pad_px: float = 6.0,
+    raw_match_min_points: int = 2,
+    raw_match_point_ratio: float = 0.10,
+    draw_unmatched_raw_boxes: bool = False,
+    raw_drop_reasons: dict = None,
+    show_drop_reasons: bool = True,
+):
     """Draw lane polylines and optional raw detector boxes on a frame."""
     vis = frame_bgr.copy()
+    exclude_keys = {
+        _slugify_class_name(v)
+        for v in (lane_exclude_classes or [])
+        if str(v).strip()
+    }
 
     for lane in lane_results:
         points = lane.get("points", []) if isinstance(lane, dict) else []
@@ -488,19 +1040,46 @@ def draw_lane_debug_overlay(frame_bgr, lane_results, lane_raw=None):
         boxes = lane_raw["boxes"]
         scores = lane_raw["scores"]
         names = lane_raw.get("class_names", [])
+        raw_drop_reasons = raw_drop_reasons or {}
         for i in range(len(scores)):
             box = boxes[i].detach().cpu().tolist()
             score = float(scores[i].item())
             cls_name = names[i] if i < len(names) else "lane"
+            if _slugify_class_name(cls_name) in exclude_keys:
+                continue
+            min_conf = _raw_lane_class_min_confidence(
+                cls_name,
+                default_min_conf=default_min_confidence,
+                yellow_min_conf=yellow_min_confidence,
+                white_min_conf=white_min_confidence,
+            )
+            if score < min_conf:
+                continue
+            matched_lane = _raw_box_has_lane_match(
+                box,
+                lane_results,
+                pad_px=raw_match_pad_px,
+                min_points=raw_match_min_points,
+                min_ratio=raw_match_point_ratio,
+            )
+            has_reason = i in raw_drop_reasons
+            if (not matched_lane) and (not draw_unmatched_raw_boxes) and not (show_drop_reasons and has_reason):
+                continue
+
+            draw_color = (50, 255, 50) if matched_lane else (0, 140, 255)
+            reason_suffix = ""
+            if (not matched_lane) and show_drop_reasons and has_reason:
+                reason_suffix = f" | {raw_drop_reasons[i]}"
+
             x1, y1, x2, y2 = map(int, box)
-            cv2.rectangle(vis, (x1, y1), (x2, y2), (50, 255, 50), 1)
+            cv2.rectangle(vis, (x1, y1), (x2, y2), draw_color, 1)
             cv2.putText(
                 vis,
-                f"{cls_name} {score:.2f}",
+                f"{cls_name} {score:.2f}{reason_suffix}",
                 (x1, max(y1 - 4, 10)),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.4,
-                (50, 255, 50),
+                draw_color,
                 1,
                 lineType=cv2.LINE_AA,
             )
@@ -659,6 +1238,16 @@ def process_sequence(
 ):
     """Run every active detector on every frame of one sequence and write JSONs."""
     vehicle_labels = {"bicycle", "car", "motorcycle", "bus", "truck", "sedan", "hatchback", "suv", "pickuptruck", "pickup_truck"}
+    lanes_cfg = cfg.get("perception", {}).get("lanes", {})
+    lane_export_min_conf = float(lanes_cfg.get("export_min_confidence", 0.85))
+    lane_export_min_conf_yellow = float(lanes_cfg.get("export_min_confidence_yellow", 0.65))
+    lane_export_min_conf_white = float(lanes_cfg.get("export_min_confidence_white", lane_export_min_conf))
+    lane_debug_raw_match_pad_px = float(lanes_cfg.get("debug_raw_match_pad_px", 6.0))
+    lane_debug_raw_match_min_points = int(lanes_cfg.get("debug_raw_match_min_points", 2))
+    lane_debug_raw_match_point_ratio = float(lanes_cfg.get("debug_raw_match_point_ratio", 0.10))
+    lane_debug_draw_unmatched_raw_boxes = bool(lanes_cfg.get("debug_draw_unmatched_raw_boxes", False))
+    lane_debug_show_drop_reasons = bool(lanes_cfg.get("debug_show_drop_reasons", True))
+    models["traffic"].set_scene_context(scene_name)
 
     # scene_dir is the root of this sequence, e.g. Data/Sequences/scene1/
     scene_dir = Path(cfg["paths"]["sequences_dir"]) / scene_name
@@ -703,12 +1292,15 @@ def process_sequence(
 
             lane_output = models["lanes"].detect(frame_bgr)
             non_coco_results = models["non_coco"].detect(frame_bgr) if models.get("non_coco") is not None else []
+            _restrict_ground_markings_to_scenes(non_coco_results, scene_name)
             traffic_candidates, non_coco_results = _build_traffic_candidates(
                 object_results,
                 non_coco_results,
                 cfg,
                 scene_name,
             )
+            _filter_ground_arrows(frame_bgr, non_coco_results, cfg)
+            _drop_aux_non_coco_labels(non_coco_results, cfg, models.get("non_coco"))
             _run_speed_limit_ocr(
                 frame_bgr,
                 non_coco_results,
@@ -716,6 +1308,15 @@ def process_sequence(
                 frame_idx=frame_idx,
                 debug_dir=ocr_debug_dir if debug else None,
             )
+            _run_ground_text_ocr(
+                frame_bgr,
+                non_coco_results,
+                models.get("speed_limit_ocr"),
+                cfg,
+                frame_idx=frame_idx,
+                debug_dir=ocr_debug_dir if debug else None,
+            )
+            _suppress_ground_arrow_text_overlaps(non_coco_results, cfg)
             depth_map = models["depth"].estimate(frame_bgr)
             object_results = models["depth"].lift_to_3d(object_results, depth_map)
             non_coco_results = models["depth"].lift_to_3d(non_coco_results, depth_map)
@@ -738,6 +1339,27 @@ def process_sequence(
                 # Backward compatibility if detect returns a plain list.
                 lane_results = lane_output
                 lane_raw = None
+
+        lane_results_detected = list(lane_results)
+        lane_results_after_ground_text = _suppress_lanes_near_ground_text(lane_results_detected, non_coco_results, cfg)
+        lane_results_after_crosswalk = _suppress_lanes_on_crosswalk_markings(lane_results_after_ground_text, lane_raw, cfg)
+        lane_results = _filter_lanes_by_confidence(
+            lane_results_after_crosswalk,
+            default_min_confidence=lane_export_min_conf,
+            yellow_min_confidence=lane_export_min_conf_yellow,
+            white_min_confidence=lane_export_min_conf_white,
+        )
+        lane_drop_reasons = _build_lane_drop_reason_map(
+            lane_raw,
+            lane_results_detected,
+            lane_results_after_ground_text,
+            lane_results_after_crosswalk,
+            lane_results,
+            detector_min_conf=float(lanes_cfg.get("confidence", 0.30)),
+            default_min_confidence=lane_export_min_conf,
+            yellow_min_confidence=lane_export_min_conf_yellow,
+            white_min_confidence=lane_export_min_conf_white,
+        )
 
         # --- Build and save JSON ---
         frame_dict = build_frame_dict(
@@ -762,9 +1384,24 @@ def process_sequence(
                 annotated_non_coco,
                 save_path=str(debug_dir / f"debug_frame_{frame_idx:06d}.png")
             )
+            lane_exclude_classes = cfg.get("perception", {}).get("lanes", {}).get("exclude_classes", [])
 
             if not person_only:
-                overlay = draw_lane_debug_overlay(frame_bgr, lane_results, lane_raw)
+                overlay = draw_lane_debug_overlay(
+                frame_bgr,
+                lane_results,
+                lane_raw,
+                lane_exclude_classes=lane_exclude_classes,
+                default_min_confidence=lane_export_min_conf,
+                yellow_min_confidence=lane_export_min_conf_yellow,
+                white_min_confidence=lane_export_min_conf_white,
+                raw_match_pad_px=lane_debug_raw_match_pad_px,
+                raw_match_min_points=lane_debug_raw_match_min_points,
+                raw_match_point_ratio=lane_debug_raw_match_point_ratio,
+                draw_unmatched_raw_boxes=lane_debug_draw_unmatched_raw_boxes,
+                raw_drop_reasons=lane_drop_reasons,
+                show_drop_reasons=lane_debug_show_drop_reasons,
+            )
                 debug_path = lane_debug_dir / f"frame_{frame_idx:06d}.jpg"
                 cv2.imwrite(str(debug_path), overlay)
 

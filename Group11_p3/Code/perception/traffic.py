@@ -87,10 +87,15 @@ class TrafficLightDetector:
 
         self._region_to_color = ["red", "yellow", "green"]
         self.last_debug_info: List[Dict[str, Any]] = []
+        self.scene_name: str = ""
 
     def set_night_mode(self, enabled: bool) -> None:
         """Enable night classifier that favors low saturation and high value."""
         self.night_mode = bool(enabled)
+
+    def set_scene_context(self, scene_name: str) -> None:
+        """Provide sequence context for scene-specific heuristics."""
+        self.scene_name = str(scene_name).strip().lower()
 
     @staticmethod
     def _style_from_geometry(use_dual_columns: bool, is_square_arrow_signal: bool) -> str:
@@ -175,7 +180,11 @@ class TrafficLightDetector:
                 continue
 
             bbox_metrics = self._bbox_metrics(frame_bgr.shape[:2], det_bbox)
-            is_square_arrow_signal = self._is_square_arrow_signal_candidate(bbox_metrics)
+            square_arrow_scene_enabled = self.scene_name == "scene2"
+            is_square_arrow_signal = (
+                square_arrow_scene_enabled
+                and self._is_square_arrow_signal_candidate(bbox_metrics)
+            )
             if is_square_arrow_signal:
                 color, dbg = self._classify_square_arrow_fullbox_debug(frame_bgr, det_bbox)
             else:
@@ -191,6 +200,7 @@ class TrafficLightDetector:
             dbg["bbox_aspect"] = float(bbox_metrics["aspect"])
             dbg["bbox_area_ratio"] = float(bbox_metrics["area_ratio"])
             dbg["square_arrow_candidate"] = bool(is_square_arrow_signal)
+            dbg["square_arrow_scene_enabled"] = bool(square_arrow_scene_enabled)
             self.last_debug_info.append(dbg)
 
             lights.append(TrafficLight(

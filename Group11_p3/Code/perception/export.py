@@ -173,14 +173,18 @@ def build_frame_dict(
             bucket_entry["speed_value"] = int(speed_value) if speed_value is not None else None
             bucket_entry["ocr_confidence"] = round(float(getattr(det, "ocr_confidence", 0.0)), 4)
             bucket_entry["ocr_raw_text"] = str(getattr(det, "ocr_raw_text", ""))
+        elif bucket == "ground_text_markings":
+            bucket_entry["ocr_confidence"] = round(float(getattr(det, "ocr_confidence", 0.0)), 4)
+            bucket_entry["ocr_raw_text"] = str(getattr(det, "ocr_raw_text", ""))
+            bucket_entry["has_only_letters"] = bool(getattr(det, "has_only_letters", False))
+            bucket_entry["only_letter_hits"] = str(getattr(det, "only_letter_hits", ""))
 
         bucket_map[bucket].append(bucket_entry)
 
     lanes_out = []
     for lane in lanes:
         lane_dict = _serialize_lane(lane)
-        if len(lane_dict["points"]) >= 2:
-            lanes_out.append(lane_dict)
+        lanes_out.append(lane_dict)
 
 
     return {
@@ -223,5 +227,7 @@ def build_frame_dict(
         "trash_cans": bucket_map.get("trash_cans", []),
         "traffic_poles": bucket_map.get("traffic_poles", []),
         "speed_limit_signs": bucket_map.get("speed_limit_signs", []),
+        "ground_arrows": bucket_map.get("ground_arrows", []),
+        "ground_text_markings": bucket_map.get("ground_text_markings", []),
         "non_coco_objects": non_coco_records,
     }

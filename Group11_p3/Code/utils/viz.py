@@ -281,6 +281,10 @@ def draw_non_coco_objects(frame_bgr: np.ndarray, detections: list) -> np.ndarray
     """Draw DART non-COCO object detections."""
     out = frame_bgr.copy()
     for det in detections:
+        if det.label == "ground_text" and not bool(getattr(det, "has_only_letters", False)):
+            # For debug overlays, only show ground text that matches ONLY-letter rule.
+            continue
+
         x1, y1, x2, y2 = [int(v) for v in det.bbox]
         color = _COLOR_CONE if det.label == "traffic_cone" else _COLOR_NON_COCO
         cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
@@ -290,6 +294,11 @@ def draw_non_coco_objects(frame_bgr: np.ndarray, detections: list) -> np.ndarray
             ocr_conf = float(getattr(det, "ocr_confidence", 0.0))
             speed_text = "null" if speed_value is None else str(speed_value)
             label = f"{det.label} v={speed_text} ocr={ocr_conf:.2f}"
+        elif det.label == "ground_text":
+            ocr_conf = float(getattr(det, "ocr_confidence", 0.0))
+            only_hit = bool(getattr(det, "has_only_letters", False))
+            hits = str(getattr(det, "only_letter_hits", ""))
+            label = f"{det.label} only={int(only_hit)} hits={hits or '-'} ocr={ocr_conf:.2f}"
         cv2.putText(out, label, (x1, y1 - 6),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
     return out

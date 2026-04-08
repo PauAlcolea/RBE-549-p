@@ -10,7 +10,7 @@ be added without creating one module per object type.
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 import re
 import sys
 
@@ -31,6 +31,8 @@ class NonCocoObject:
 	speed_value: Optional[int] = None
 	ocr_confidence: float = 0.0
 	ocr_raw_text: str = ""
+	has_only_letters: bool = False
+	only_letter_hits: str = ""
 
 
 def _compute_iou(a: List[float], b: List[float]) -> float:
@@ -81,6 +83,7 @@ class NonCocoDartDetector:
 		self.default_export_bucket = str(
 			self.detector_cfg.get("default_export_bucket", "non_coco_objects")
 		)
+		self._auto_aux_labels: Set[str] = set()
 
 		self.class_specs = self._parse_class_specs(self.detector_cfg)
 		self.prompt_to_spec = {
@@ -102,6 +105,9 @@ class NonCocoDartDetector:
 		self.active_runtime = "disabled"
 		if self.enabled and len(self.prompts) > 0:
 			self._load_predictor()
+
+		if self._auto_aux_labels:
+			print(f"[{self.log_prefix}] auto helper exclude labels: {sorted(self._auto_aux_labels)}")
 
 	@staticmethod
 	def _slugify(name: str) -> str:
@@ -126,18 +132,20 @@ class NonCocoDartDetector:
 					item.get("export_bucket", self._default_bucket(label))
 				).strip()
 				raw_excludes = item.get("exclude_labels", item.get("negative_prompts", []))
-				exclude_labels: List[str] = []
+				exclude_raw: List[str] = []
 				if isinstance(raw_excludes, (list, tuple)):
-					exclude_labels = [str(v).strip() for v in raw_excludes if str(v).strip()]
+					exclude_raw = [str(v).strip() for v in raw_excludes if str(v).strip()]
 				elif raw_excludes is not None:
-					exclude_labels = [str(raw_excludes).strip()]
-				exclude_labels = [self._slugify(v) for v in exclude_labels]
+					raw_excludes_str = str(raw_excludes).strip()
+					if raw_excludes_str:
+						exclude_raw = [raw_excludes_str]
 				specs.append(
 					{
 						"prompt": prompt,
 						"label": label,
 						"export_bucket": export_bucket or self.default_export_bucket,
-						"exclude_labels": exclude_labels,
+						"exclude_labels_raw": exclude_raw,
+						"exclude_labels": [],
 					}
 				)
 				continue
@@ -159,11 +167,62 @@ class NonCocoDartDetector:
 					"prompt": prompt,
 					"label": label,
 					"export_bucket": export_bucket,
+					"exclude_labels_raw": [],
 					"exclude_labels": [],
 				}
 			)
 
+		# Normalize exclude targets so ALL excludes map to real labels.
+		# If an exclude token does not map to any configured class label/prompt,
+		# auto-create an internal helper class using that prompt.
+		alias_to_label: Dict[str, str] = {}
+		for spec in specs:
+			label = str(spec.get("label", "")).strip()
+			if not label:
+				continue
+			alias_to_label[self._slugify(label)] = label
+			prompt = str(spec.get("prompt", "")).strip()
+			if prompt:
+				alias_to_label[self._slugify(prompt)] = label
+
+		helper_specs: List[Dict[str, Any]] = []
+		helper_label_set: Set[str] = set()
+
+		for spec in specs:
+			raw_excludes = spec.get("exclude_labels_raw", []) or []
+			resolved = []
+			for entry in raw_excludes:
+				tok = self._slugify(entry)
+				mapped = alias_to_label.get(tok)
+				if mapped is None:
+					helper_label = tok
+					if helper_label and helper_label not in alias_to_label and helper_label not in helper_label_set:
+						helper_specs.append(
+							{
+								"prompt": str(entry).strip(),
+								"label": helper_label,
+								"export_bucket": self.default_export_bucket,
+								"exclude_labels_raw": [],
+								"exclude_labels": [],
+							}
+						)
+						helper_label_set.add(helper_label)
+						alias_to_label[helper_label] = helper_label
+						self._auto_aux_labels.add(helper_label)
+					mapped = helper_label
+				if mapped:
+					resolved.append(mapped)
+			spec["exclude_labels"] = list(dict.fromkeys(resolved))
+			spec.pop("exclude_labels_raw", None)
+
+		for helper in helper_specs:
+			specs.append(helper)
+
 		return specs
+
+	def get_aux_labels(self) -> List[str]:
+		"""Helper-only labels auto-created from exclude lists."""
+		return sorted(self._auto_aux_labels)
 
 	def _normalize_device(self, device: str) -> str:
 		if device == "cuda" and torch.cuda.is_available():
