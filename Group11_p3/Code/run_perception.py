@@ -96,6 +96,13 @@ def parse_args():
         help="Enable night traffic-light mode (pick lowest-saturation ROI)."
     )
 
+    parser.add_argument(
+        "--frame_skip",
+        type=int,
+        default=None,
+        help="Override frame skip from config (process every Nth frame, N>=1)."
+    )
+
     
     
     return parser.parse_args()
@@ -1178,7 +1185,14 @@ def _camera_projection_matrix(cfg: dict) -> np.ndarray:
         dtype=np.float32,
     )
 
-def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debug: bool = False):
+def process_sequence(
+    scene_name: str,
+    camera: str,
+    cfg: dict,
+    models: dict,
+    debug: bool = False,
+    frame_skip: int = 30,
+):
     """Run every active detector on every frame of one sequence and write JSONs."""
     vehicle_labels = {"bicycle", "car", "motorcycle", "bus", "truck", "sedan", "hatchback", "suv", "pickuptruck", "pickup_truck"}
     lanes_cfg = cfg.get("perception", {}).get("lanes", {})
@@ -1213,7 +1227,7 @@ def process_sequence(scene_name: str, camera: str, cfg: dict, models: dict, debu
     print(f"[{scene_name}] Camera: {camera}")
     # Use the generator so we never load all frames into RAM at once
     for i, (frame_idx, frame_bgr) in enumerate(
-        frame_generator(scene_dir, camera=camera, frame_skip=cfg["perception"]["frame_skip"])
+        frame_generator(scene_dir, camera=camera, frame_skip=frame_skip)
 ):
         # --- Run detectors ---
         object_results = models["objects"].detect(frame_bgr)
@@ -1376,6 +1390,11 @@ def main():
     if args.device:
         device = args.device
 
+    cfg_frame_skip = int(cfg.get("perception", {}).get("frame_skip", 1))
+    frame_skip = cfg_frame_skip if args.frame_skip is None else int(args.frame_skip)
+    if frame_skip < 1:
+        raise ValueError("--frame_skip must be >= 1")
+
     # for the sequences, get all of them unless the argument just specified one
     scenes = cfg["sequences"] if args.all else [args.scene]
 
@@ -1395,6 +1414,7 @@ def main():
                 cfg,
                 models,
                 debug=args.debug,
+                frame_skip=frame_skip,
             )
 
     print("\n[done] All sequences processed.")
