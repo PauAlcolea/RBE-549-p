@@ -18,13 +18,225 @@ Coordinate system note:
 
 import math
 import re
+import pickle
+import copy
 from pathlib import Path
 from typing import Dict, List, Optional
 import bpy
 import bmesh
 from mathutils import Vector
 from .materials import MaterialLibrary
+import numpy as np
 
+class _SmplFKSolver:
+    """
+    Minimal CPU-only SMPL forward kinematics using numpy.
+    Reconstructs the 6890-vertex mesh from pose (72,) and betas (10,).
+    Loads once from SMPL_NEUTRAL.pkl; all data is cached as float32 numpy arrays.
+    """
+
+    class _CompatCSCMatrix:
+        """
+        Minimal scipy.sparse.csc_matrix compatibility shim.
+        Enough for loading legacy SMPL pickles and calling todense().
+        """
+
+        def todense(self):
+            shape = getattr(self, "_shape", None)
+            if shape is None:
+                raise ValueError("Invalid sparse matrix: missing _shape")
+            rows, cols = int(shape[0]), int(shape[1])
+            out = np.zeros((rows, cols), dtype=np.float32)
+
+            indptr = np.asarray(getattr(self, "indptr"), dtype=np.int64).ravel()
+            indices = np.asarray(getattr(self, "indices"), dtype=np.int64).ravel()
+            data = np.asarray(getattr(self, "data"), dtype=np.float32).ravel()
+
+            max_cols = min(cols, max(0, len(indptr) - 1))
+            for c in range(max_cols):
+                start = int(indptr[c])
+                end = int(indptr[c + 1])
+                if end <= start:
+                    continue
+                out[indices[start:end], c] = data[start:end]
+            return out
+
+    class _CompatCh:
+        """
+        Minimal chumpy.ch.Ch compatibility shim.
+        Exposes wrapped data through numpy conversion.
+        """
+
+        def __array__(self, dtype=None, copy=None):
+            x = np.asarray(getattr(self, "x"))
+            if dtype is not None:
+                x = x.astype(dtype, copy=False)
+            if copy:
+                x = x.copy()
+            return x
+
+    class _CompatUnpickler(pickle.Unpickler):
+        def find_class(self, module, name):
+            if module == "scipy.sparse.csc" and name == "csc_matrix":
+                return _SmplFKSolver._CompatCSCMatrix
+            if module == "chumpy.ch" and name == "Ch":
+                return _SmplFKSolver._CompatCh
+            return super().find_class(module, name)
+
+    @staticmethod
+    def _load_pickle_model(smpl_pkl_path: str):
+        """
+        Load SMPL pickle with no-scipy / no-chumpy fallbacks.
+        """
+        try:
+            with open(smpl_pkl_path, "rb") as f:
+                return pickle.load(f, encoding="latin1")
+        except ModuleNotFoundError as exc:
+            if exc.name not in {"scipy", "chumpy"}:
+                raise
+            with open(smpl_pkl_path, "rb") as f:
+                unpickler = _SmplFKSolver._CompatUnpickler(
+                    f, fix_imports=True, encoding="latin1"
+                )
+                return unpickler.load()
+
+    @staticmethod
+    def _normalize_shapedirs(raw_shapedirs, num_verts: int) -> np.ndarray:
+        sd = np.asarray(raw_shapedirs, dtype=np.float32)
+
+        # Common: (V, 3, num_betas)
+        if sd.ndim == 3 and sd.shape[0] == num_verts and sd.shape[1] == 3:
+            return sd
+
+        # Alternate: (3, V, num_betas)
+        if sd.ndim == 3 and sd.shape[0] == 3 and sd.shape[1] == num_verts:
+            return np.transpose(sd, (1, 0, 2))
+
+        # Flattened forms.
+        if sd.ndim == 2 and sd.shape[0] == num_verts * 3:
+            return sd.reshape(num_verts, 3, sd.shape[1])
+        if sd.ndim == 2 and sd.shape[1] == num_verts * 3:
+            return sd.T.reshape(num_verts, 3, sd.shape[0])
+
+        raise ValueError(f"Unexpected shapedirs shape: {sd.shape}")
+
+    @staticmethod
+    def _normalize_posedirs(raw_posedirs, num_verts: int) -> np.ndarray:
+        pd = np.asarray(raw_posedirs, dtype=np.float32)
+        expected_rows = num_verts * 3
+
+        # Common: (V, 3, 207) -> (V*3, 207)
+        if pd.ndim == 3 and pd.shape[0] == num_verts and pd.shape[1] == 3:
+            return pd.reshape(expected_rows, pd.shape[2])
+
+        # Alternate: (207, V, 3) -> (V*3, 207)
+        if pd.ndim == 3 and pd.shape[0] == 207 and pd.shape[1] == num_verts and pd.shape[2] == 3:
+            return np.transpose(pd, (1, 2, 0)).reshape(expected_rows, 207)
+
+        # Flattened forms.
+        if pd.ndim == 2 and pd.shape[0] == expected_rows:
+            return pd
+        if pd.ndim == 2 and pd.shape[1] == expected_rows:
+            return pd.T
+
+        raise ValueError(f"Unexpected posedirs shape: {pd.shape}")
+
+    def __init__(self, smpl_pkl_path: str):
+        m = self._load_pickle_model(smpl_pkl_path)
+
+        self.v_template  = np.array(m["v_template"],  dtype=np.float32)            # (V, 3)
+        nv = self.v_template.shape[0]
+        self.shapedirs   = self._normalize_shapedirs(m["shapedirs"], nv)           # (V, 3, num_betas)
+        self.weights     = np.array(m["weights"],     dtype=np.float32)            # (6890, 24)
+        self.faces       = np.array(m["f"],           dtype=np.int32)              # (13776, 3)
+
+        # J_regressor may be scipy sparse
+        Jr = m["J_regressor"]
+        self.J_regressor = np.array(
+            Jr.todense() if hasattr(Jr, "todense") else Jr, dtype=np.float32
+        )  # (24, 6890)
+
+        # posedirs shape varies by SMPL version: normalize to (V*3, 207)
+        self.posedirs = self._normalize_posedirs(m["posedirs"], nv)
+
+        kt = np.array(m["kintree_table"], dtype=np.int64)
+        self.parent = kt[0].copy()  # (24,)
+        # Some pickles store root parent as uint max.
+        if self.parent[0] > 1000:
+            self.parent[0] = -1
+
+    @staticmethod
+    def _rodrigues(r: np.ndarray) -> np.ndarray:
+        """Axis-angle (3,) → rotation matrix (3,3)."""
+        theta = float(np.linalg.norm(r))
+        if theta < 1e-8:
+            return np.eye(3, dtype=np.float32)
+        n = r / theta
+        c, s = np.cos(theta), np.sin(theta)
+        K = np.array([[0, -n[2], n[1]],
+                      [n[2], 0, -n[0]],
+                      [-n[1], n[0], 0]], dtype=np.float32)
+        return (c * np.eye(3, dtype=np.float32)
+                + (1.0 - c) * np.outer(n, n).astype(np.float32)
+                + s * K)
+
+    def forward(self, pose, betas):
+        """
+        pose  : array-like (72,) – axis-angle for 24 SMPL joints
+        betas : array-like (10,) – shape coefficients
+        Returns: verts (6890, 3) in SMPL local y-up space,
+                 faces (13776, 3) fixed topology
+        """
+        pose  = np.asarray(pose,  dtype=np.float32).reshape(24, 3)
+        betas = np.asarray(betas, dtype=np.float32).reshape(-1)
+        nv    = self.v_template.shape[0]   # 6890
+
+        # ── 1. Shape blend shapes ──────────────────────────────────────────
+        num_betas = min(self.shapedirs.shape[2], betas.shape[0])
+        if num_betas <= 0:
+            raise ValueError("SMPL betas are empty")
+        v_shaped = self.v_template + np.einsum(
+            "ijk,k->ij", self.shapedirs[:, :, :num_betas], betas[:num_betas]
+        )
+
+        # ── 2. Joint positions in rest pose ───────────────────────────────
+        J = self.J_regressor @ v_shaped    # (24, 3)
+
+        # ── 3. Pose rotation matrices ─────────────────────────────────────
+        Rs = np.stack([self._rodrigues(pose[j]) for j in range(24)])  # (24,3,3)
+
+        # ── 4. Pose blend shapes (exclude global orient, joints 1-23) ─────
+        pose_feat = (Rs[1:] - np.eye(3, dtype=np.float32)).ravel()    # (207,)
+        num_pose_coeff = min(self.posedirs.shape[1], pose_feat.shape[0])
+        if num_pose_coeff <= 0:
+            raise ValueError("SMPL posedirs has no pose coefficients")
+        v_posed = v_shaped + (
+            self.posedirs[:, :num_pose_coeff] @ pose_feat[:num_pose_coeff]
+        ).reshape(nv, 3)
+
+        # ── 5. Global joint transforms (forward kinematics) ───────────────
+        G = [None] * 24
+        for j in range(24):
+            t = J[j] if j == 0 else (J[j] - J[self.parent[j]])
+            Gj = np.eye(4, dtype=np.float32)
+            Gj[:3, :3] = Rs[j]
+            Gj[:3, 3]  = t
+            G[j] = Gj if j == 0 else (G[self.parent[j]] @ Gj)
+        G = np.stack(G)   # (24, 4, 4)
+
+        # ── 6. Remove rest-pose joint contribution ────────────────────────
+        rest          = np.tile(np.eye(4, dtype=np.float32), (24, 1, 1))
+        rest[:, :3, 3] = -J
+        G_star = G @ rest   # (24, 4, 4)
+
+        # ── 7. LBS – blend transforms per vertex ──────────────────────────
+        T      = np.einsum("vj,jkl->vkl", self.weights, G_star)  # (6890,4,4)
+        v_homo = np.ones((nv, 4), dtype=np.float32)
+        v_homo[:, :3] = v_posed
+        verts  = np.einsum("vij,vj->vi", T, v_homo)[:, :3]       # (6890, 3)
+
+        return verts, self.faces
+    
 
 class AssetLibrary:
     """
@@ -38,11 +250,101 @@ class AssetLibrary:
     lib.place_stop_sign(sign_dict)
     lib.clear_frame_objects()    # call before each new frame
     """
+    _SMPL24_BONES = (
+        (0, 1), (1, 4), (4, 7), (7, 10),
+        (0, 2), (2, 5), (5, 8), (8, 11),
+        (0, 3), (3, 6), (6, 9), (9, 12), (12, 15),
+        (12, 13), (13, 16), (16, 18), (18, 20), (20, 22),
+        (12, 14), (14, 17), (17, 19), (19, 21), (21, 23),
+    )
+
+    @staticmethod
+    def _resolve_path(value: str, base_dir: Path) -> Path:
+        p = Path(str(value)).expanduser()
+        if p.is_absolute():
+            return p
+        return (base_dir / p).resolve()
 
     def __init__(self, cfg: dict):
         self.cfg = cfg
-        self.assets_dir = Path(cfg["paths"]["assets_dir"])
+        self.config_dir = Path(cfg.get("_meta", {}).get("config_dir", Path.cwd()))
+        self.assets_dir = self._resolve_path(cfg["paths"]["assets_dir"], self.config_dir)
         self.ground_clearance_m = cfg["blender"].get("ground_clearance_m", 0.03)
+        blender_cfg = cfg.get("blender", {})
+        ped_cfg = blender_cfg.get("pedestrian")
+        if not isinstance(ped_cfg, dict):
+            ped_cfg = blender_cfg.get("pedestrians", {})
+            if isinstance(ped_cfg, dict) and ped_cfg:
+                print("[assets] WARNING: using deprecated config key 'blender.pedestrians'; "
+                      "please rename it to 'blender.pedestrian'.")
+            else:
+                ped_cfg = {}
+                print("[assets] WARNING: missing 'blender.pedestrian' config; "
+                      "defaulting to PyMAF skeleton mode.")
+        self.ped_mode = str(ped_cfg.get("mode", "pymaf")).strip().lower()
+        self.pymaf_target_height_m = float(ped_cfg.get("pymaf_target_height_m", 1.70))
+        self.pymaf_bone_radius_m = float(ped_cfg.get("pymaf_bone_radius_m", 0.018))
+        self.pymaf_joint_radius_m = float(ped_cfg.get("pymaf_joint_radius_m", 0.025))
+        self.pymaf_min_joint_count = int(ped_cfg.get("pymaf_min_joint_count", 24))
+        self.pymaf_use_last24 = bool(ped_cfg.get("pymaf_use_last24", True))
+        self.pymaf_y_up = bool(ped_cfg.get("pymaf_y_up", True))
+        self.pymaf_upright_hysteresis = float(ped_cfg.get("pymaf_upright_hysteresis", 0.15))
+        self.pymaf_flip_confirm_frames = max(1, int(ped_cfg.get("pymaf_flip_confirm_frames", 2)))
+        self.pymaf_reuse_previous_on_failure = bool(ped_cfg.get("pymaf_reuse_previous_on_failure", True))
+        self.pymaf_allow_asset_fallback = bool(ped_cfg.get("pymaf_allow_asset_fallback", False))
+        self.pymaf_pose_guard_enabled = bool(ped_cfg.get("pymaf_pose_guard_enabled", True))
+        self.pymaf_pose_guard_soft_joint_delta_rad = float(
+            ped_cfg.get("pymaf_pose_guard_soft_joint_delta_rad", 0.65)
+        )
+        self.pymaf_pose_guard_soft_joint_count = max(
+            1, int(ped_cfg.get("pymaf_pose_guard_soft_joint_count", 2))
+        )
+        self.pymaf_pose_guard_soft_max_joint_delta_rad = float(
+            ped_cfg.get("pymaf_pose_guard_soft_max_joint_delta_rad", 0.80)
+        )
+        self.pymaf_pose_guard_hard_joint_delta_rad = float(
+            ped_cfg.get("pymaf_pose_guard_hard_joint_delta_rad", 1.20)
+        )
+        self.pymaf_pose_guard_root_delta_rad = float(
+            ped_cfg.get("pymaf_pose_guard_root_delta_rad", 0.80)
+        )
+        self.pymaf_pose_clamp_enabled = bool(ped_cfg.get("pymaf_pose_clamp_enabled", False))
+        self.pymaf_pose_max_joint_delta_rad = float(
+            ped_cfg.get("pymaf_pose_max_joint_delta_rad", 0.55)
+        )
+        self.pymaf_pose_hold_max_fallback_frames = max(
+            1,
+            int(
+                ped_cfg.get(
+                    "pymaf_pose_hold_max_fallback_frames",
+                    ped_cfg.get("pymaf_pose_hold_min_frames", 3),
+                )
+            ),
+        )
+        self._ped_upright_state: Dict[str, dict] = {}
+        self._ped_last_valid_by_track: Dict[str, dict] = {}
+        self._ped_pose_hold_state: Dict[str, dict] = {}
+        self._ped_prev_pose_by_track: Dict[str, list] = {}
+        
+        # ── SMPL mesh mode ────────────────────────────────────────────────────
+        self.smpl_fk: "_SmplFKSolver | None" = None
+        if self.ped_mode in ("smpl_mesh", "mesh"):
+            default_smpl = self._resolve_path("../Weights/SMPL_NEUTRAL.pkl", self.config_dir)
+            smpl_pkl = ped_cfg.get(
+                "smpl_pkl",
+                str(default_smpl),
+            )
+            smpl_pkl = self._resolve_path(smpl_pkl, self.config_dir)
+            if smpl_pkl.exists():
+                try:
+                    self.smpl_fk = _SmplFKSolver(str(smpl_pkl))
+                    print(f"[assets] SMPL FK solver loaded from {smpl_pkl}")
+                except Exception as exc:
+                    print(f"[assets] WARNING: could not load SMPL FK solver: {exc}")
+            else:
+                print(f"[assets] WARNING: smpl_pkl not found at {smpl_pkl}; "
+                    f"falling back to skeleton mode")
+        
         self._scene_name = None
         self._camera_name = None
         self._frame_objects = []     # track objects placed this frame for cleanup
@@ -164,13 +466,505 @@ class AssetLibrary:
         )
 
     def place_pedestrian(self, ped: dict):
-        """Instantiate the pedestrian asset."""
+        """Instantiate a pedestrian using PyMAF skeleton when available."""
+        if self.ped_mode != "asset":
+            track_key = self._ped_track_key(ped)
+            track_id = ped.get("pymaf_track_id")
+            has_track_id = track_id is not None
+
+            # Always prefer current-frame PyMAF if valid.
+            ped_for_render = ped
+            used_pose_guard = False
+
+            if has_track_id and self.pymaf_pose_guard_enabled:
+                prev_pose = self._ped_prev_pose_by_track.get(track_key)
+                prev_ped = self._ped_last_valid_by_track.get(track_key)
+                if isinstance(prev_pose, list) and isinstance(prev_ped, dict):
+                    drastic, reason = self._is_pose_drastic_for_track(ped_for_render, prev_pose)
+                    if drastic:
+                        ped_for_render = self._ped_with_updated_position(prev_ped, ped_for_render)
+                        used_pose_guard = True
+                        print(
+                            f"[assets] pedestrian: pose_guard reused previous valid pose "
+                            f"for track={track_id} ({reason})"
+                        )
+
+            clipped_joints = 0
+            if has_track_id and self.pymaf_pose_clamp_enabled and not used_pose_guard:
+                ped_for_render, clipped_joints = self._clamp_pose_spike_for_track(
+                    ped_for_render, track_key
+                )
+                if clipped_joints > 0:
+                    print(
+                        f"[assets] pedestrian: clamped pose spike for track={track_id} "
+                        f"({clipped_joints} joints)"
+                    )
+
+            if self._place_pedestrian_pymaf(ped_for_render):
+                if has_track_id:
+                    self._ped_last_valid_by_track[track_key] = copy.deepcopy(ped_for_render)
+                    self._ped_pose_hold_state[track_key] = {"fallback_frames": 0}
+                    self._update_prev_pose_cache(track_key, ped_for_render)
+                return
+
+            if self.pymaf_reuse_previous_on_failure and has_track_id:
+                prev_ped = self._ped_last_valid_by_track.get(track_key)
+                hold_state = self._ped_pose_hold_state.get(track_key, {"fallback_frames": 0})
+                fallback_frames = int(hold_state.get("fallback_frames", 0))
+
+                if (
+                    isinstance(prev_ped, dict)
+                    and fallback_frames < self.pymaf_pose_hold_max_fallback_frames
+                ):
+                    candidate_with_live_pos = self._ped_with_updated_position(prev_ped, ped)
+                    if self._place_pedestrian_pymaf(candidate_with_live_pos):
+                        self._ped_pose_hold_state[track_key] = {
+                            "fallback_frames": fallback_frames + 1
+                        }
+                        self._update_prev_pose_cache(track_key, candidate_with_live_pos)
+                        print(
+                            f"[assets] pedestrian: reused previous PyMAF pose for track={track_id} "
+                            f"(fallback {fallback_frames + 1}/{self.pymaf_pose_hold_max_fallback_frames})"
+                        )
+                        return
+
+            if not self.pymaf_allow_asset_fallback:
+                print(
+                    f"[assets] pedestrian: skipped track={track_id if has_track_id else 'na'} "
+                    f"(no valid PyMAF and asset fallback disabled)"
+                )
+                return
+
         obj = self._instance("pedestrian")
         obj.location = self._json_to_blender(ped["position_3d"])
         obj.scale = (0.009, 0.009, 0.009)
         self._align_object_to_ground(obj, ground_z=0.0, clearance=self.ground_clearance_m)
         self._frame_objects.append(obj)
         print(f"[assets] pedestrian: json_pos={ped['position_3d']}  →  blender_pos={obj.location}")
+
+    @staticmethod
+    def _ped_with_updated_position(source_pose: dict, live_ped: dict) -> dict:
+        """
+        Reuse pose/shape from source_pose while updating dynamic fields from live_ped.
+        """
+        merged = copy.deepcopy(source_pose)
+        for key in ("position_3d", "depth_m", "bbox", "pymaf_track_id"):
+            if key in live_ped:
+                merged[key] = copy.deepcopy(live_ped[key])
+        return merged
+
+    @staticmethod
+    def _axis_angle_geodesic_delta_rad(prev_joint_aa, curr_joint_aa) -> float:
+        """
+        Rotation distance between two axis-angle joint rotations.
+        Uses SO(3) geodesic angle, robust to 2*pi wrapping artifacts.
+        """
+        prev = np.asarray(prev_joint_aa, dtype=np.float32).reshape(3)
+        curr = np.asarray(curr_joint_aa, dtype=np.float32).reshape(3)
+        r_prev = _SmplFKSolver._rodrigues(prev)
+        r_curr = _SmplFKSolver._rodrigues(curr)
+        r_delta = r_prev.T @ r_curr
+        cos_ang = float((np.trace(r_delta) - 1.0) * 0.5)
+        cos_ang = max(-1.0, min(1.0, cos_ang))
+        return float(np.arccos(cos_ang))
+
+    def _is_pose_drastic_for_track(self, ped: dict, prev_pose: list):
+        """
+        Guardrail for per-frame pose glitches.
+        Returns (is_drastic, reason_text).
+        """
+        pose = ped.get("smpl_pose")
+        if not isinstance(pose, list) or len(pose) != 72:
+            return False, "no_pose"
+        if not isinstance(prev_pose, list) or len(prev_pose) != 72:
+            return False, "no_prev_pose"
+
+        deltas = []
+        for j in range(24):
+            i0 = 3 * j
+            deltas.append(
+                self._axis_angle_geodesic_delta_rad(
+                    prev_pose[i0:i0 + 3], pose[i0:i0 + 3]
+                )
+            )
+
+        root_delta = float(deltas[0])
+        max_delta = float(max(deltas))
+        soft_count = int(sum(d > self.pymaf_pose_guard_soft_joint_delta_rad for d in deltas))
+
+        if root_delta > self.pymaf_pose_guard_root_delta_rad:
+            return True, f"root_delta={root_delta:.3f}"
+        if max_delta > self.pymaf_pose_guard_hard_joint_delta_rad:
+            return True, f"max_joint_delta={max_delta:.3f}"
+        if (
+            soft_count >= self.pymaf_pose_guard_soft_joint_count
+            and max_delta > self.pymaf_pose_guard_soft_max_joint_delta_rad
+        ):
+            return True, f"soft_spike count={soft_count} max={max_delta:.3f}"
+        return False, "ok"
+
+    def _update_prev_pose_cache(self, track_key: str, ped: dict):
+        pose = ped.get("smpl_pose")
+        if isinstance(pose, list) and len(pose) == 72:
+            self._ped_prev_pose_by_track[track_key] = [float(v) for v in pose]
+
+    def _clamp_pose_spike_for_track(self, ped: dict, track_key: str):
+        """
+        Clamp abrupt per-joint axis-angle jumps vs previous frame to prevent
+        one-frame arm/limb spikes while preserving overall motion.
+        """
+        pose = ped.get("smpl_pose")
+        if not isinstance(pose, list) or len(pose) != 72:
+            return ped, 0
+
+        prev_pose = self._ped_prev_pose_by_track.get(track_key)
+        if not isinstance(prev_pose, list) or len(prev_pose) != 72:
+            return ped, 0
+
+        max_delta = max(1e-4, float(self.pymaf_pose_max_joint_delta_rad))
+        filtered = [float(v) for v in pose]
+        clamped = 0
+
+        for j in range(24):
+            i0 = 3 * j
+            curr = np.array(filtered[i0:i0 + 3], dtype=np.float32)
+            prev = np.array(prev_pose[i0:i0 + 3], dtype=np.float32)
+            delta = curr - prev
+            dn = float(np.linalg.norm(delta))
+            if dn <= max_delta or dn <= 1e-8:
+                continue
+            curr = prev + delta * (max_delta / dn)
+            filtered[i0:i0 + 3] = [float(curr[0]), float(curr[1]), float(curr[2])]
+            clamped += 1
+
+        if clamped == 0:
+            return ped, 0
+
+        adjusted = copy.deepcopy(ped)
+        adjusted["smpl_pose"] = filtered
+        return adjusted, clamped
+
+    def _place_pedestrian_pymaf(self, ped: dict) -> bool:
+        """
+        Place a pedestrian using PyMAF data.
+        Prefers full SMPL mesh when smpl_fk solver is loaded and pose/betas exist.
+        Falls back to skeleton if mesh mode is unavailable.
+        """
+        # ── Mesh path ─────────────────────────────────────────────────────────
+        if self.smpl_fk is not None:
+            pose_raw  = ped.get("smpl_pose")
+            betas_raw = ped.get("smpl_betas")
+            if (isinstance(pose_raw, list) and len(pose_raw) == 72
+                    and isinstance(betas_raw, list) and len(betas_raw) >= 10):
+                return self._place_pedestrian_smpl_mesh(ped, pose_raw, betas_raw)
+
+        # ── Skeleton fallback ─────────────────────────────────────────────────
+        joints_raw = ped.get("smpl_joints3d")
+        if not isinstance(joints_raw, list) or len(joints_raw) < self.pymaf_min_joint_count:
+            return False
+
+        joints_smpl = self._select_smpl24_joints(joints_raw)
+        if joints_smpl is None:
+            return False
+
+        joints_local = []
+        for pt in joints_smpl:
+            if not isinstance(pt, (list, tuple)) or len(pt) < 3:
+                return False
+            joints_local.append(self._smpl_to_blender_local(pt))
+        if len(joints_local) < 24:
+            return False
+
+        joints_local, was_flipped = self._auto_fix_upside_down_pymaf(joints_local, ped=ped)
+        root_local   = joints_local[0]
+        local_heights = [v.z for v in joints_local]
+        local_height  = max(local_heights) - min(local_heights)
+        scale = 1.0
+        if local_height > 1e-6 and self.pymaf_target_height_m > 0.0:
+            scale = max(0.5, min(2.5, self.pymaf_target_height_m / local_height))
+
+        target_root   = Vector(self._json_to_blender(ped["position_3d"]))
+        joints_world  = [((v - root_local) * scale) + target_root for v in joints_local]
+        min_world_z   = min(v.z for v in joints_world)
+        lift          = (0.0 + self.ground_clearance_m) - min_world_z
+        if abs(lift) > 1e-6:
+            joints_world = [Vector((v.x, v.y, v.z + lift)) for v in joints_world]
+
+        track_id  = ped.get("pymaf_track_id", "na")
+        base_name = f"ped_pymaf_{track_id}_{len(self._frame_objects)}"
+        skel_obj  = self._create_pymaf_skeleton_curve(joints_world, name=base_name)
+        if skel_obj is None:
+            return False
+
+        ped_mat = self.Materials.get_pedestrian_material()
+        if ped_mat is not None:
+            skel_obj.data.materials.clear()
+            skel_obj.data.materials.append(ped_mat)
+
+        head_idx = 15 if len(joints_world) > 15 else max(
+            range(len(joints_world)), key=lambda i: joints_world[i].z
+        )
+        head_obj = self._create_sphere_mesh_object(
+            name=f"{base_name}_head",
+            location=joints_world[head_idx],
+            radius=max(0.005, self.pymaf_joint_radius_m),
+        )
+        if ped_mat is not None:
+            head_obj.data.materials.clear()
+            head_obj.data.materials.append(ped_mat)
+
+        self._frame_objects.extend([skel_obj, head_obj])
+        print(
+            f"[assets] pedestrian(skeleton): track={track_id} "
+            f"upright_fix={'on' if was_flipped else 'off'}"
+        )
+        return True
+    
+    def _place_pedestrian_smpl_mesh(self, ped: dict, pose_raw: list, betas_raw: list) -> bool:
+        """
+        Reconstruct the full SMPL body mesh from pose + betas and place it in the scene.
+        """
+        try:
+            verts_smpl, faces = self.smpl_fk.forward(pose_raw, betas_raw)
+        except Exception as exc:
+            print(f"[assets] SMPL FK failed: {exc}; falling back to skeleton")
+            return False
+
+        # ── Convert SMPL y-up → Blender space ────────────────────────────────
+        # SMPL: x=right, y=up, z=back  →  Blender: x=right, y=forward, z=up
+        # _smpl_to_blender_local maps (x,y,z) → Vector(x, z, y) for y-up mode.
+        verts_bl_arr = verts_smpl[:, [0, 2, 1]]       # numpy fast path: (6890,3)
+        if self.pymaf_y_up:
+            verts_bl_arr = verts_smpl[:, [0, 2, 1]]
+        else:
+            verts_bl_arr = verts_smpl * np.array([1, 1, -1], dtype=np.float32)
+            verts_bl_arr = verts_bl_arr[:, [0, 2, 1]]
+
+        # Apply the same upside-down detector used by skeleton mode.
+        # If mirrored across the ground plane, flip local Z for vertices.
+        # For meshes, also flip triangle winding to preserve outward normals.
+        mesh_upright_fix = False
+        joints_raw = ped.get("smpl_joints3d")
+        if isinstance(joints_raw, list) and len(joints_raw) >= self.pymaf_min_joint_count:
+            joints_smpl = self._select_smpl24_joints(joints_raw)
+            if joints_smpl is not None:
+                joints_local = []
+                valid = True
+                for pt in joints_smpl:
+                    if not isinstance(pt, (list, tuple)) or len(pt) < 3:
+                        valid = False
+                        break
+                    joints_local.append(self._smpl_to_blender_local(pt))
+                if valid and len(joints_local) >= 24:
+                    _, was_flipped = self._auto_fix_upside_down_pymaf(joints_local, ped=ped)
+                    if was_flipped:
+                        verts_bl_arr[:, 2] *= -1.0
+                        faces = faces[:, [0, 2, 1]]
+                        mesh_upright_fix = True
+
+        # ── Scale to target height ────────────────────────────────────────────
+        z_min, z_max = float(verts_bl_arr[:, 2].min()), float(verts_bl_arr[:, 2].max())
+        mesh_height  = z_max - z_min
+        scale = 1.0
+        if mesh_height > 1e-6 and self.pymaf_target_height_m > 0.0:
+            scale = max(0.5, min(2.5, self.pymaf_target_height_m / mesh_height))
+        verts_bl_arr = verts_bl_arr * scale
+
+        # ── Position: place at target root, then ground in world space ────────
+        # Find root joint (joint 0 = pelvis) for centering in XY
+        root_smpl = verts_smpl.mean(axis=0)   # approximate – or use joint 0 from FK
+        root_bl   = np.array([root_smpl[0], root_smpl[2], root_smpl[1]], dtype=np.float32) * scale
+        target    = np.array(self._json_to_blender(ped["position_3d"]), dtype=np.float32)
+        offset    = target - root_bl
+
+        final_verts = verts_bl_arr + offset   # (6890, 3)
+
+        # Match skeleton behavior: after translation, lift so lowest vertex
+        # sits exactly on the ground plane + clearance.
+        min_world_z = float(final_verts[:, 2].min())
+        lift = (0.0 + self.ground_clearance_m) - min_world_z
+        if abs(lift) > 1e-6:
+            final_verts[:, 2] += lift
+
+        # ── Build Blender mesh ────────────────────────────────────────────────
+        track_id  = ped.get("pymaf_track_id", "na")
+        mesh_name = f"ped_smpl_{track_id}_{len(self._frame_objects)}"
+        me = bpy.data.meshes.new(f"{mesh_name}_mesh")
+        bm = bmesh.new()
+
+        bm_verts = [bm.verts.new(final_verts[i].tolist()) for i in range(len(final_verts))]
+        bm.verts.ensure_lookup_table()
+
+        for tri in faces:
+            try:
+                bm.faces.new([bm_verts[tri[0]], bm_verts[tri[1]], bm_verts[tri[2]]])
+            except ValueError:
+                pass   # skip degenerate/duplicate faces
+
+        bm.normal_update()
+        bm.to_mesh(me)
+        bm.free()
+
+        obj = bpy.data.objects.new(mesh_name, me)
+        bpy.context.collection.objects.link(obj)
+
+        ped_mat = self.Materials.get_pedestrian_material()
+        if ped_mat is not None:
+            me.materials.clear()
+            me.materials.append(ped_mat)
+
+        self._frame_objects.append(obj)
+        print(
+            f"[assets] pedestrian(smpl_mesh): track={track_id} "
+            f"verts=6890 scale={scale:.3f} upright_fix={'on' if mesh_upright_fix else 'off'} "
+            f"json_pos={ped['position_3d']} → blender_pos={tuple(round(float(v), 3) for v in target)}"
+        )
+        return True
+
+    def _select_smpl24_joints(self, joints_raw: list):
+        if self.pymaf_use_last24 and len(joints_raw) >= 49:
+            return joints_raw[-24:]
+        if len(joints_raw) >= 24:
+            return joints_raw[:24]
+        return None
+
+    def _smpl_to_blender_local(self, pos) -> Vector:
+        x, y, z = [float(v) for v in pos[:3]]
+        if self.pymaf_y_up:
+            # PyMAF joints are typically SMPL local coordinates: y-up, z-forward.
+            return Vector((x, z, y))
+        # Fallback for camera-style coordinates (x-right, y-down, z-forward).
+        return Vector((x, z, -y))
+
+    def _ped_track_key(self, ped: dict) -> str:
+        track_id = ped.get("pymaf_track_id")
+        if track_id is not None:
+            return f"track:{track_id}"
+
+        pos = ped.get("position_3d")
+        if isinstance(pos, (list, tuple)) and len(pos) >= 3:
+            return f"anon:{float(pos[0]):.2f}:{float(pos[1]):.2f}:{float(pos[2]):.2f}"
+        return "anon:unknown"
+
+    def _stabilize_upright_flip(self, track_key: str, raw_flip: bool, score: float) -> bool:
+        """
+        Debounce orientation flips so single-frame PyMAF outliers do not invert
+        pedestrians. Changes are accepted only after enough consistent evidence.
+        """
+        if score >= self.pymaf_upright_hysteresis:
+            candidate_flip = False
+        elif score <= -self.pymaf_upright_hysteresis:
+            candidate_flip = True
+        else:
+            candidate_flip = None
+
+        state = self._ped_upright_state.get(track_key)
+        if state is None:
+            resolved = raw_flip if candidate_flip is None else candidate_flip
+            self._ped_upright_state[track_key] = {
+                "flip": resolved,
+                "pending": None,
+                "count": 0,
+            }
+            return resolved
+
+        current = bool(state.get("flip", raw_flip))
+        pending = state.get("pending")
+        pending_count = int(state.get("count", 0))
+
+        if candidate_flip is None:
+            state["pending"] = None
+            state["count"] = 0
+            return current
+
+        if candidate_flip == current:
+            state["pending"] = None
+            state["count"] = 0
+            return current
+
+        if pending == candidate_flip:
+            pending_count += 1
+        else:
+            pending = candidate_flip
+            pending_count = 1
+
+        if pending_count >= self.pymaf_flip_confirm_frames:
+            state["flip"] = candidate_flip
+            state["pending"] = None
+            state["count"] = 0
+            return candidate_flip
+
+        state["pending"] = pending
+        state["count"] = pending_count
+        return current
+
+    def _auto_fix_upside_down_pymaf(self, joints_local, ped: dict = None):
+        """
+        Detect and correct inverted skeletons by checking vertical ordering.
+
+        In SMPL24, joints 12/15 (upper torso/head area) should sit above
+        joints 10/11 (ankles) in upright poses.
+        """
+        if len(joints_local) < 16:
+            return joints_local, False
+
+        upper_ids = (12, 15)
+        lower_ids = (10, 11)
+        upper_z = [joints_local[i].z for i in upper_ids if i < len(joints_local)]
+        lower_z = [joints_local[i].z for i in lower_ids if i < len(joints_local)]
+
+        if not upper_z or not lower_z:
+            return joints_local, False
+
+        upper_avg = sum(upper_z) / len(upper_z)
+        lower_avg = sum(lower_z) / len(lower_z)
+        score = upper_avg - lower_avg
+        raw_flip = score < 0.0
+
+        if ped is None:
+            should_flip = raw_flip
+        else:
+            should_flip = self._stabilize_upright_flip(
+                track_key=self._ped_track_key(ped),
+                raw_flip=raw_flip,
+                score=score,
+            )
+
+        if not should_flip:
+            return joints_local, False
+
+        flipped = [Vector((v.x, v.y, -v.z)) for v in joints_local]
+        return flipped, True
+
+    def _create_pymaf_skeleton_curve(self, joints_world, name: str):
+        curve = bpy.data.curves.new(f"{name}_curve", type="CURVE")
+        curve.dimensions = "3D"
+        curve.bevel_depth = max(0.001, self.pymaf_bone_radius_m)
+        curve.bevel_resolution = 2
+        curve.use_fill_caps = True
+
+        num_bones = 0
+        for a, b in self._SMPL24_BONES:
+            if a >= len(joints_world) or b >= len(joints_world):
+                continue
+            p0 = joints_world[a]
+            p1 = joints_world[b]
+            if (p1 - p0).length <= 1e-4:
+                continue
+
+            spline = curve.splines.new("POLY")
+            spline.points.add(1)
+            spline.points[0].co = (p0.x, p0.y, p0.z, 1.0)
+            spline.points[1].co = (p1.x, p1.y, p1.z, 1.0)
+            num_bones += 1
+
+        if num_bones == 0:
+            bpy.data.curves.remove(curve, do_unlink=True)
+            return None
+
+        obj = bpy.data.objects.new(name, curve)
+        bpy.context.collection.objects.link(obj)
+        return obj
 
     def place_stop_sign(self, sign: dict):
         """

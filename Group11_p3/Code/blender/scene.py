@@ -57,6 +57,31 @@ def parse_args():
     return parser.parse_args(argv)
 
 
+def _resolve_cfg_path(value, base_dir: Path) -> str:
+    p = Path(str(value)).expanduser()
+    if p.is_absolute():
+        return str(p)
+    return str((base_dir / p).resolve())
+
+
+def _normalize_blender_cfg_paths(cfg: dict, config_path: Path):
+    """
+    Resolve relative paths in the loaded config against config file location.
+    Prevents cwd-dependent behavior when invoking run_blender.sh from anywhere.
+    """
+    base_dir = config_path.parent.resolve()
+    cfg.setdefault("_meta", {})["config_dir"] = str(base_dir)
+
+    for key, value in list(cfg.get("paths", {}).items()):
+        if isinstance(value, str):
+            cfg["paths"][key] = _resolve_cfg_path(value, base_dir)
+
+    ped_cfg = cfg.get("blender", {}).get("pedestrian", {})
+    smpl_pkl = ped_cfg.get("smpl_pkl")
+    if isinstance(smpl_pkl, str) and smpl_pkl.strip():
+        ped_cfg["smpl_pkl"] = _resolve_cfg_path(smpl_pkl, base_dir)
+
+
 def setup_scene(cfg: dict):
     """
     One-time Blender scene setup — call this once before the frame loop.
@@ -554,6 +579,7 @@ def main():
         config_path = code_dir / config_path
  
     cfg = load_config(str(config_path))
+    _normalize_blender_cfg_paths(cfg, config_path)
  
     setup_scene(cfg)
     asset_lib = AssetLibrary(cfg)

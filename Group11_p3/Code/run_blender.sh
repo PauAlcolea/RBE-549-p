@@ -22,6 +22,21 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BLENDER_SCRIPT="$SCRIPT_DIR/blender/scene.py"
 CONFIG="$SCRIPT_DIR/config.yaml"
 
+# Keep Blender's JSON sidecar in sync with YAML edits.
+# Blender's Python may not have PyYAML and can read config.json instead.
+python3 - <<PY
+from pathlib import Path
+import sys
+
+code_dir = Path("$SCRIPT_DIR")
+cfg_path = Path("$CONFIG")
+sys.path.insert(0, str(code_dir))
+
+from utils.io_utils import load_config
+load_config(str(cfg_path))
+print(f"[run_blender] Synced config sidecar: {cfg_path.with_suffix('.json')}")
+PY
+
 # Resolve Blender executable if not on PATH.
 if [[ "$BLENDER_BIN" == "~/"* ]]; then
     BLENDER_BIN="$HOME/${BLENDER_BIN#~/}"
