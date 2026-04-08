@@ -292,6 +292,26 @@ class AssetLibrary:
         self.pymaf_flip_confirm_frames = max(1, int(ped_cfg.get("pymaf_flip_confirm_frames", 2)))
         self.pymaf_reuse_previous_on_failure = bool(ped_cfg.get("pymaf_reuse_previous_on_failure", True))
         self.pymaf_allow_asset_fallback = bool(ped_cfg.get("pymaf_allow_asset_fallback", False))
+        self.pymaf_pose_guard_enabled = bool(ped_cfg.get("pymaf_pose_guard_enabled", True))
+        self.pymaf_pose_guard_soft_joint_delta_rad = float(
+            ped_cfg.get("pymaf_pose_guard_soft_joint_delta_rad", 0.65)
+        )
+        self.pymaf_pose_guard_soft_joint_count = max(
+            1, int(ped_cfg.get("pymaf_pose_guard_soft_joint_count", 2))
+        )
+        self.pymaf_pose_guard_soft_max_joint_delta_rad = float(
+            ped_cfg.get("pymaf_pose_guard_soft_max_joint_delta_rad", 0.80)
+        )
+        self.pymaf_pose_guard_hard_joint_delta_rad = float(
+            ped_cfg.get("pymaf_pose_guard_hard_joint_delta_rad", 1.20)
+        )
+        self.pymaf_pose_guard_root_delta_rad = float(
+            ped_cfg.get("pymaf_pose_guard_root_delta_rad", 0.80)
+        )
+        self.pymaf_pose_clamp_enabled = bool(ped_cfg.get("pymaf_pose_clamp_enabled", False))
+        self.pymaf_pose_max_joint_delta_rad = float(
+            ped_cfg.get("pymaf_pose_max_joint_delta_rad", 0.55)
+        )
         self.pymaf_pose_hold_max_fallback_frames = max(
             1,
             int(
@@ -304,6 +324,7 @@ class AssetLibrary:
         self._ped_upright_state: Dict[str, dict] = {}
         self._ped_last_valid_by_track: Dict[str, dict] = {}
         self._ped_pose_hold_state: Dict[str, dict] = {}
+        self._ped_prev_pose_by_track: Dict[str, list] = {}
         
         # ── SMPL mesh mode ────────────────────────────────────────────────────
         self.smpl_fk: "_SmplFKSolver | None" = None
@@ -450,10 +471,38 @@ class AssetLibrary:
             has_track_id = track_id is not None
 
             # Always prefer current-frame PyMAF if valid.
-            if self._place_pedestrian_pymaf(ped):
+            ped_for_render = ped
+            used_pose_guard = False
+
+            if has_track_id and self.pymaf_pose_guard_enabled:
+                prev_pose = self._ped_prev_pose_by_track.get(track_key)
+                prev_ped = self._ped_last_valid_by_track.get(track_key)
+                if isinstance(prev_pose, list) and isinstance(prev_ped, dict):
+                    drastic, reason = self._is_pose_drastic_for_track(ped_for_render, prev_pose)
+                    if drastic:
+                        ped_for_render = self._ped_with_updated_position(prev_ped, ped_for_render)
+                        used_pose_guard = True
+                        print(
+                            f"[assets] pedestrian: pose_guard reused previous valid pose "
+                            f"for track={track_id} ({reason})"
+                        )
+
+            clipped_joints = 0
+            if has_track_id and self.pymaf_pose_clamp_enabled and not used_pose_guard:
+                ped_for_render, clipped_joints = self._clamp_pose_spike_for_track(
+                    ped_for_render, track_key
+                )
+                if clipped_joints > 0:
+                    print(
+                        f"[assets] pedestrian: clamped pose spike for track={track_id} "
+                        f"({clipped_joints} joints)"
+                    )
+
+            if self._place_pedestrian_pymaf(ped_for_render):
                 if has_track_id:
-                    self._ped_last_valid_by_track[track_key] = copy.deepcopy(ped)
+                    self._ped_last_valid_by_track[track_key] = copy.deepcopy(ped_for_render)
                     self._ped_pose_hold_state[track_key] = {"fallback_frames": 0}
+                    self._update_prev_pose_cache(track_key, ped_for_render)
                 return
 
             if self.pymaf_reuse_previous_on_failure and has_track_id:
@@ -470,6 +519,7 @@ class AssetLibrary:
                         self._ped_pose_hold_state[track_key] = {
                             "fallback_frames": fallback_frames + 1
                         }
+                        self._update_prev_pose_cache(track_key, candidate_with_live_pos)
                         print(
                             f"[assets] pedestrian: reused previous PyMAF pose for track={track_id} "
                             f"(fallback {fallback_frames + 1}/{self.pymaf_pose_hold_max_fallback_frames})"
@@ -500,6 +550,97 @@ class AssetLibrary:
             if key in live_ped:
                 merged[key] = copy.deepcopy(live_ped[key])
         return merged
+
+    @staticmethod
+    def _axis_angle_geodesic_delta_rad(prev_joint_aa, curr_joint_aa) -> float:
+        """
+        Rotation distance between two axis-angle joint rotations.
+        Uses SO(3) geodesic angle, robust to 2*pi wrapping artifacts.
+        """
+        prev = np.asarray(prev_joint_aa, dtype=np.float32).reshape(3)
+        curr = np.asarray(curr_joint_aa, dtype=np.float32).reshape(3)
+        r_prev = _SmplFKSolver._rodrigues(prev)
+        r_curr = _SmplFKSolver._rodrigues(curr)
+        r_delta = r_prev.T @ r_curr
+        cos_ang = float((np.trace(r_delta) - 1.0) * 0.5)
+        cos_ang = max(-1.0, min(1.0, cos_ang))
+        return float(np.arccos(cos_ang))
+
+    def _is_pose_drastic_for_track(self, ped: dict, prev_pose: list):
+        """
+        Guardrail for per-frame pose glitches.
+        Returns (is_drastic, reason_text).
+        """
+        pose = ped.get("smpl_pose")
+        if not isinstance(pose, list) or len(pose) != 72:
+            return False, "no_pose"
+        if not isinstance(prev_pose, list) or len(prev_pose) != 72:
+            return False, "no_prev_pose"
+
+        deltas = []
+        for j in range(24):
+            i0 = 3 * j
+            deltas.append(
+                self._axis_angle_geodesic_delta_rad(
+                    prev_pose[i0:i0 + 3], pose[i0:i0 + 3]
+                )
+            )
+
+        root_delta = float(deltas[0])
+        max_delta = float(max(deltas))
+        soft_count = int(sum(d > self.pymaf_pose_guard_soft_joint_delta_rad for d in deltas))
+
+        if root_delta > self.pymaf_pose_guard_root_delta_rad:
+            return True, f"root_delta={root_delta:.3f}"
+        if max_delta > self.pymaf_pose_guard_hard_joint_delta_rad:
+            return True, f"max_joint_delta={max_delta:.3f}"
+        if (
+            soft_count >= self.pymaf_pose_guard_soft_joint_count
+            and max_delta > self.pymaf_pose_guard_soft_max_joint_delta_rad
+        ):
+            return True, f"soft_spike count={soft_count} max={max_delta:.3f}"
+        return False, "ok"
+
+    def _update_prev_pose_cache(self, track_key: str, ped: dict):
+        pose = ped.get("smpl_pose")
+        if isinstance(pose, list) and len(pose) == 72:
+            self._ped_prev_pose_by_track[track_key] = [float(v) for v in pose]
+
+    def _clamp_pose_spike_for_track(self, ped: dict, track_key: str):
+        """
+        Clamp abrupt per-joint axis-angle jumps vs previous frame to prevent
+        one-frame arm/limb spikes while preserving overall motion.
+        """
+        pose = ped.get("smpl_pose")
+        if not isinstance(pose, list) or len(pose) != 72:
+            return ped, 0
+
+        prev_pose = self._ped_prev_pose_by_track.get(track_key)
+        if not isinstance(prev_pose, list) or len(prev_pose) != 72:
+            return ped, 0
+
+        max_delta = max(1e-4, float(self.pymaf_pose_max_joint_delta_rad))
+        filtered = [float(v) for v in pose]
+        clamped = 0
+
+        for j in range(24):
+            i0 = 3 * j
+            curr = np.array(filtered[i0:i0 + 3], dtype=np.float32)
+            prev = np.array(prev_pose[i0:i0 + 3], dtype=np.float32)
+            delta = curr - prev
+            dn = float(np.linalg.norm(delta))
+            if dn <= max_delta or dn <= 1e-8:
+                continue
+            curr = prev + delta * (max_delta / dn)
+            filtered[i0:i0 + 3] = [float(curr[0]), float(curr[1]), float(curr[2])]
+            clamped += 1
+
+        if clamped == 0:
+            return ped, 0
+
+        adjusted = copy.deepcopy(ped)
+        adjusted["smpl_pose"] = filtered
+        return adjusted, clamped
 
     def _place_pedestrian_pymaf(self, ped: dict) -> bool:
         """

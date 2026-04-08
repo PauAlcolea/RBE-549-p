@@ -308,6 +308,14 @@ blender:
     pymaf_target_height_m: 1.70
     pymaf_reuse_previous_on_failure: true   # if current frame PyMAF is invalid, reuse last valid track pose
     pymaf_allow_asset_fallback: false       # disable legacy pedestrian asset fallback
+    pymaf_pose_guard_enabled: true                # reject drastic pose changes; reuse previous valid tracked pose
+    pymaf_pose_guard_soft_joint_delta_rad: 0.65  # "large" per-joint rotation change threshold
+    pymaf_pose_guard_soft_joint_count: 2         # require this many large-jump joints for soft guard trigger
+    pymaf_pose_guard_soft_max_joint_delta_rad: 0.80   # and max joint delta must also exceed this
+    pymaf_pose_guard_hard_joint_delta_rad: 1.20  # any joint above this is immediately rejected
+    pymaf_pose_guard_root_delta_rad: 0.80        # root orientation jump guard
+    pymaf_pose_clamp_enabled: false              # optional extra smoothing (off by default; guard is safer)
+    pymaf_pose_max_joint_delta_rad: 0.40         # used only when pymaf_pose_clamp_enabled=true
     pymaf_pose_hold_max_fallback_frames: 3  # only during fallback: reuse same pose for up to N consecutive frames
     pymaf_upright_hysteresis: 0.15          # deadband around upright score to avoid jitter flips
     pymaf_flip_confirm_frames: 2            # require N consistent frames before orientation flip
