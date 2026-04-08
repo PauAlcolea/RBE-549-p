@@ -9,7 +9,7 @@ instead of invoking the DART CLI scripts.
 
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 import sys
 import time
 
@@ -59,6 +59,7 @@ class LaneDetector:
 
         self.confidence = float(self.lanes_cfg.get("confidence", 0.35))
         self.nms = float(self.lanes_cfg.get("nms", 0.4))
+        self.cross_color_dedupe_iou = float(self.lanes_cfg.get("cross_color_dedupe_iou", 0.9))
         self.imgsz = int(self.lanes_cfg.get("imgsz", 1008))
         self.compile_mode = self.lanes_cfg.get("compile_mode", "max-autotune")
         self.runtime_mode = str(self.lanes_cfg.get("runtime", "auto")).lower()
@@ -290,8 +291,12 @@ class LaneDetector:
         class_names = results.get("class_names", [])
         h = int(frame_bgr.shape[0])
 
+        suppressed_indices = self._cross_color_box_dedupe_indices(scores, boxes, class_names)
+
         lanes: List[Lane] = []
         for i in range(len(scores)):
+            if i in suppressed_indices:
+                continue
             score = float(scores[i].item())
             if score < self.confidence:
                 continue
@@ -337,6 +342,99 @@ class LaneDetector:
 
         lanes.sort(key=lambda lane: lane.confidence, reverse=True)
         return lanes
+
+    def _cross_color_box_dedupe_indices(self, scores, boxes, class_names: Sequence[str]) -> Set[int]:
+        """Drop lower-confidence lane detections when white/yellow boxes are near-identical."""
+        if boxes is None or self.cross_color_dedupe_iou <= 0.0:
+            return set()
+
+        candidates = []
+        for i in range(len(scores)):
+            score = float(scores[i].item())
+            if score < self.confidence:
+                continue
+
+            cls_name = class_names[i] if i < len(class_names) else "lane line"
+            cls_lower = cls_name.lower()
+            if "lane" not in cls_lower:
+                continue
+            if "white" not in cls_lower and "yellow" not in cls_lower:
+                continue
+
+            box_xyxy = self._to_box_xyxy(boxes, i)
+            if box_xyxy is None:
+                continue
+
+            candidates.append((i, score, cls_lower, box_xyxy))
+
+        suppressed: Set[int] = set()
+        for ai in range(len(candidates)):
+            i, i_score, i_cls, i_box = candidates[ai]
+            if i in suppressed:
+                continue
+            for bi in range(ai + 1, len(candidates)):
+                j, j_score, j_cls, j_box = candidates[bi]
+                if j in suppressed:
+                    continue
+
+                # Apply only to white-vs-yellow duplicates.
+                i_white = "white" in i_cls
+                i_yellow = "yellow" in i_cls
+                j_white = "white" in j_cls
+                j_yellow = "yellow" in j_cls
+                different_colors = (i_white and j_yellow) or (i_yellow and j_white)
+                if not different_colors:
+                    continue
+
+                if self._box_iou(i_box, j_box) < self.cross_color_dedupe_iou:
+                    continue
+
+                if i_score >= j_score:
+                    suppressed.add(j)
+                else:
+                    suppressed.add(i)
+                    break
+
+        return suppressed
+
+    def _to_box_xyxy(self, boxes, index: int) -> Optional[Tuple[float, float, float, float]]:
+        if boxes is None or len(boxes) <= index:
+            return None
+
+        arr = boxes[index].detach().cpu().numpy().astype(float).reshape(-1)
+        if arr.size < 4:
+            return None
+
+        x1, y1, x2, y2 = [float(v) for v in arr[:4]]
+        if x2 <= x1 or y2 <= y1:
+            return None
+        return (x1, y1, x2, y2)
+
+    def _box_iou(
+        self,
+        a: Tuple[float, float, float, float],
+        b: Tuple[float, float, float, float],
+    ) -> float:
+        ax1, ay1, ax2, ay2 = a
+        bx1, by1, bx2, by2 = b
+
+        ix1 = max(ax1, bx1)
+        iy1 = max(ay1, by1)
+        ix2 = min(ax2, bx2)
+        iy2 = min(ay2, by2)
+
+        iw = max(0.0, ix2 - ix1)
+        ih = max(0.0, iy2 - iy1)
+        inter = iw * ih
+        if inter <= 0.0:
+            return 0.0
+
+        area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+        area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+        union = area_a + area_b - inter
+        if union <= 0.0:
+            return 0.0
+        return inter / union
 
     def _polyline_length(self, points: List[Tuple[float, float]]) -> float:
         """Calculate total Euclidean length of a polyline."""
