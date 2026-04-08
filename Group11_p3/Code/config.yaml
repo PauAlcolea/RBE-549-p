@@ -46,12 +46,13 @@ weights:
   depth:        ../Weights/depth_anything_v2_metric_vkitti_vitb.pth
   lanes:        ../Weights/sam3.pt
   orientation:  ../Weights/boundingbox.pkl
+  pymaf:        ../Weights/PyMAF_model_checkpoint.pt
 
 # ── Perception settings ────────────────────────────────────────────────────
 perception:
   # device: cuda          # cuda | cpu    # might not be needed because we specify it in main()
   batch_size: 1         # increase if GPU memory allows
-  frame_skip: 30         # process every Nth frame (30 = every frame)
+  frame_skip: 1         # process every Nth frame (30 = every frame)
 
   yolo:
     confidence: 0.25    # low on purpose
@@ -261,6 +262,26 @@ perception:
       traffic_pole: 3.0
       speed_limit_sign: 0.6
 
+  pymaf:
+    enabled: true
+    repo_dir: perception/PyMAF
+    checkpoint: ../Weights/PyMAF_model_checkpoint.pt
+    smpl_fallback_pkl: ../Weights/pymaf_male.pkl
+    output_dir: ../Outputs/PyMAF
+    cfg_file: configs/pymaf_config.yaml
+    python_exec: python3
+    detector: yolov8           # yolo | maskrcnn | yolov3 | yolov8
+    tracking_method: bbox      # bbox | pose
+    yolo_img_size: 416
+    tracker_batch_size: 12
+    model_batch_size: 8
+    no_render: true
+    reuse_cache: true
+    match_iou: 0.20            # IoU threshold to map PyMAF track bboxes to our person detections
+    min_bbox_side_px: 20.0     # ignore tiny person boxes when attaching SMPL fields
+    include_joints3d: true
+    strict_assets: false       # if true, fail hard when required PyMAF files are missing
+
   traffic_light:
     force_best_guess: true        # if true, return top-scoring state unless score is degenerate
     # HSV ranges for color classification (H in [0,179] for OpenCV)
@@ -330,6 +351,29 @@ blender:
   samples: 32            # lower = faster; 32 is a reasonable Phase 1 default
   output_format: PNG
   ground_clearance_m: 0.03
+  pedestrian:
+    mode: smpl_mesh          # was: pymaf (skeleton) | asset (generic mesh)
+    smpl_pkl: "../Weights/SMPL_NEUTRAL.pkl"   # path to your SMPL neutral model
+    pymaf_target_height_m: 1.70
+    pymaf_reuse_previous_on_failure: true   # if current frame PyMAF is invalid, reuse last valid track pose
+    pymaf_allow_asset_fallback: false       # disable legacy pedestrian asset fallback
+    pymaf_pose_guard_enabled: true                # reject drastic pose changes; reuse previous valid tracked pose
+    pymaf_pose_guard_soft_joint_delta_rad: 0.65  # "large" per-joint rotation change threshold
+    pymaf_pose_guard_soft_joint_count: 2         # require this many large-jump joints for soft guard trigger
+    pymaf_pose_guard_soft_max_joint_delta_rad: 0.80   # and max joint delta must also exceed this
+    pymaf_pose_guard_hard_joint_delta_rad: 1.20  # any joint above this is immediately rejected
+    pymaf_pose_guard_root_delta_rad: 0.80        # root orientation jump guard
+    pymaf_pose_clamp_enabled: false              # optional extra smoothing (off by default; guard is safer)
+    pymaf_pose_max_joint_delta_rad: 0.40         # used only when pymaf_pose_clamp_enabled=true
+    pymaf_pose_hold_max_fallback_frames: 3  # only during fallback: reuse same pose for up to N consecutive frames
+    pymaf_upright_hysteresis: 0.15          # deadband around upright score to avoid jitter flips
+    pymaf_flip_confirm_frames: 2            # require N consistent frames before orientation flip
+    # skeleton-mode settings below still apply as fallback
+    pymaf_bone_radius_m: 0.018
+    pymaf_joint_radius_m: 0.025
+    pymaf_min_joint_count: 24
+    pymaf_use_last24: true
+    pymaf_y_up: true          # PyMAF joints are generally y-up in local body space
 
   camera:
     mode: third_person   # first_person | third_person

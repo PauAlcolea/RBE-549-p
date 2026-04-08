@@ -65,6 +65,11 @@ def load_config(config_path: str) -> dict:
     except ImportError:
         # Running inside Blender's bundled Python — fall back to JSON sidecar
         if json_path.exists():
+            if config_path.exists() and json_path.stat().st_mtime < config_path.stat().st_mtime:
+                print(
+                    f"[io_utils] WARNING: {json_path.name} is older than {config_path.name}. "
+                    "Blender may use stale settings until config.json is regenerated."
+                )
             with open(json_path, "r") as f:
                 return json.load(f)
         raise RuntimeError(
