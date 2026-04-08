@@ -15,11 +15,14 @@
 
 ### Phase 2 Packages:
 
-5. [EasyOCR](https://github.com/JaidedAI/EasyOCR)
+5. [3D-BoundingBox](https://github.com/skhadem/3D-BoundingBox/)
+    We used 3D-BoundingBox to detect the orientation of vehicles.
+
+6. [EasyOCR](https://github.com/JaidedAI/EasyOCR)
     We used Easy OCR to read speed limit signs.
 
-6. [PyMAF](https://github.com/HongwenZhang/PyMAF)
+7. [PyMAF](https://github.com/HongwenZhang/PyMAF)
     We used <> to detect human poses.
 
-7. ["Tesla 3D" model by kaleankalin](https://skfb.ly/oLtrO)
+8. ["Tesla 3D" model by kaleankalin](https://skfb.ly/oLtrO)
     Tesla Blender model is licensed under [Creative Commons Attribution](http://creativecommons.org/licenses/by/4.0/).
