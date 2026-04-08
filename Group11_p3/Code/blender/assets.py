@@ -108,8 +108,6 @@ class AssetLibrary:
 
                 if len(meshes) > 1:
                     mesh_names = [m.name for m in meshes]
-                    chosen_names = [m.name for m in keep_meshes]
-                    print(f"[assets] trash_can mesh group: all={mesh_names} chosen={chosen_names}")
 
             if name == "tesla":
                 keep_meshes = sorted(list(meshes), key=lambda m: norm(m.name))
@@ -117,13 +115,52 @@ class AssetLibrary:
                 mesh_obj = keep_meshes[0]
                 if len(meshes) > 1:
                     mesh_names = [m.name for m in meshes]
-                    print(f"[assets] tesla mesh group: all={mesh_names}")
 
             if name == "traffic_pole":
-                iron_poles = [m for m in meshes if norm(m.name) == "iron_pole" or "iron_pole" in norm(m.name)]
-                if iron_poles:
-                    mesh_obj = iron_poles[0]
+                def has_iron_pole_ancestor(obj) -> bool:
+                    cur = obj
+                    while cur is not None:
+                        if "iron_pole" in norm(cur.name):
+                            return True
+                        cur = cur.parent
+                    return False
+
+                # Prefer Cylinder.001 under the iron_pole hierarchy when available.
+                preferred_cyl_with_ancestor = [
+                    m
+                    for m in meshes
+                    if (
+                        norm(m.name) in {"cylinder.001", "cylinder_001"}
+                        or "cylinder.001" in norm(m.name)
+                        or "cylinder_001" in norm(m.name)
+                    )
+                    and has_iron_pole_ancestor(m)
+                ]
+
+                # Fallback: still pick Cylinder.001 by name even if ancestry info is missing.
+                preferred_cyl_any = [
+                    m
+                    for m in meshes
+                    if (
+                        norm(m.name) in {"cylinder.001", "cylinder_001"}
+                        or "cylinder.001" in norm(m.name)
+                        or "cylinder_001" in norm(m.name)
+                    )
+                ]
+
+                if preferred_cyl_with_ancestor:
+                    mesh_obj = preferred_cyl_with_ancestor[0]
                     keep_meshes = [mesh_obj]
+                elif preferred_cyl_any:
+                    mesh_obj = preferred_cyl_any[0]
+                    keep_meshes = [mesh_obj]
+                else:
+                    iron_poles = [m for m in meshes if norm(m.name) == "iron_pole" or "iron_pole" in norm(m.name)]
+                    if iron_poles:
+                        mesh_obj = iron_poles[0]
+                        keep_meshes = [mesh_obj]
+                    else:
+                        print("[assets] WARNING: traffic_pole could not find Cylinder.001; using first mesh fallback")
                 if len(meshes) > 1:
                     mesh_names = [m.name for m in meshes]
                     print(f"[assets] traffic_pole mesh selection: chose '{mesh_obj.name}' from {mesh_names}")
@@ -167,7 +204,7 @@ class AssetLibrary:
 
         self._frame_objects.append(obj)
         print(
-            f"[assets] vehicle: class={vehicle_class} asset={asset_name} scale={tuple(vehicle_scale)} "
+            f"[assets] {vehicle_class}: scale={tuple(vehicle_scale)} "
             f"json_pos={vehicle['position_3d']}  →  blender_pos={bpos}  depth={vehicle['depth_m']:.1f}m"
         )
 
@@ -213,7 +250,7 @@ class AssetLibrary:
         self._frame_objects.append(obj)
         self._frame_objects.extend(children)
         print(
-            f"[assets] ego vehicle: asset={asset_name} scale={tuple(obj.scale)} "
+            f"[assets] tesla: scale={tuple(obj.scale)} "
             f"blender_pos={(obj.location.x, obj.location.y, obj.location.z)} "
             f"heading={yaw_rad:.3f} visual_offset={asset_yaw_offset_rad:.3f}"
         )
