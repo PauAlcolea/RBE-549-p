@@ -26,7 +26,7 @@ if str(code_dir) not in sys.path:
 
 from utils.io_utils import load_detection_json, list_frame_jsons, load_config
 from blender.render  import render_frame, frames_to_video
-from blender.camera import setup_camera
+from blender.camera import setup_camera, update_chase_camera
 from blender.assets import AssetLibrary
 from blender.lanes import LaneRenderer
 
@@ -476,8 +476,11 @@ def render_sequence(scene_name: str, camera: str, cfg: dict, debug: bool = False
     if asset_lib and hasattr(asset_lib, "set_render_context"):
         asset_lib.set_render_context(scene_name=scene_name, camera_name=camera)
     
-    # Camera is fixed for the entire sequence, the objects are the ones that move around
-    setup_camera(cfg)
+    # Initialize camera once, then update per-frame in third-person mode.
+    cam_obj = setup_camera(cfg)
+    camera_cfg = cfg.get("blender", {}).get("camera", {})
+    camera_mode = str(camera_cfg.get("mode", "first_person")).strip().lower()
+    use_third_person = camera_mode == "third_person"
 
     non_coco_cfg = cfg.get("perception", {}).get("non_coco_dart", {})
     nonCOCO_objects = non_coco_cfg.get("object_list", [])
@@ -516,7 +519,25 @@ def render_sequence(scene_name: str, camera: str, cfg: dict, debug: bool = False
 
         # go through all of the assets detected and place vehicles and pedestrians
         if asset_lib:
+            ego_obj = None
+            if use_third_person:
+                ego_obj = asset_lib.place_ego_vehicle()
+                if ego_obj is not None:
+                    ego_cfg = cfg.get("blender", {}).get("ego_vehicle", {})
+                    ego_heading_rad = float(ego_cfg.get("yaw_rad", 0.0))
+                    update_chase_camera(
+                        cam_obj,
+                        cfg,
+                        ego_location=(ego_obj.location.x, ego_obj.location.y, ego_obj.location.z),
+                        ego_heading_rad=ego_heading_rad,
+                    )
+                else:
+                    update_chase_camera(cam_obj, cfg)
+
             for v in frame_data.get("vehicles", []):
+                cls = str(v.get("class", "")).lower()
+                if bool(v.get("is_ego", False)) or cls in {"ego", "tesla"}:
+                    continue
                 asset_lib.place_vehicle(v)
             for p in frame_data.get("pedestrians", []):
                 asset_lib.place_pedestrian(p)

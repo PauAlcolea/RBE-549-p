@@ -22,20 +22,44 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BLENDER_SCRIPT="$SCRIPT_DIR/blender/scene.py"
 CONFIG="$SCRIPT_DIR/config.yaml"
 
-# Keep Blender's JSON sidecar in sync with YAML edits.
-# Blender's Python may not have PyYAML and can read config.json instead.
-python3 - <<PY
-from pathlib import Path
+# Keep config.json sidecar in sync for Blender's Python fallback path.
+SYNC_PY=""
+if [[ -x "$SCRIPT_DIR/../../.venv/bin/python3" ]]; then
+    SYNC_PY="$SCRIPT_DIR/../../.venv/bin/python3"
+elif [[ -x "$SCRIPT_DIR/../../.venv/bin/python" ]]; then
+    SYNC_PY="$SCRIPT_DIR/../../.venv/bin/python"
+elif command -v python3 >/dev/null 2>&1; then
+    SYNC_PY="$(command -v python3)"
+fi
+
+if [[ -n "$SYNC_PY" ]]; then
+    if ! (cd "$SCRIPT_DIR" && "$SYNC_PY" -c "from utils.io_utils import load_config; load_config('config.yaml')") >/dev/null 2>&1; then
+        echo "WARNING: Could not refresh config.json from config.yaml; Blender may use stale config sidecar." >&2
+    fi
+fi
+
+config_list_from_key() {
+    local key="$1"
+    if [[ -z "$SYNC_PY" ]]; then
+        echo "ERROR: Could not find a Python interpreter to read $CONFIG" >&2
+        echo "Set PYTHON on PATH or create ../../.venv first." >&2
+        exit 1
+    fi
+
+    (cd "$SCRIPT_DIR" && "$SYNC_PY" - "$key" <<'PY'
 import sys
 
-code_dir = Path("$SCRIPT_DIR")
-cfg_path = Path("$CONFIG")
-sys.path.insert(0, str(code_dir))
-
 from utils.io_utils import load_config
-load_config(str(cfg_path))
-print(f"[run_blender] Synced config sidecar: {cfg_path.with_suffix('.json')}")
+
+cfg = load_config("config.yaml")
+values = cfg.get(sys.argv[1], [])
+if not isinstance(values, list):
+    raise SystemExit(f"Expected a list for '{sys.argv[1]}' in config.yaml")
+
+print(" ".join(str(v) for v in values))
 PY
+)
+}
 
 # Resolve Blender executable if not on PATH.
 if [[ "$BLENDER_BIN" == "~/"* ]]; then
@@ -92,21 +116,13 @@ fi
 
 # ── Resolve scene and camera lists from config if --all / --allcam ────────────
 if $ALL_SCENES; then
-    SCENES=$(python3 -c "
-import yaml
-cfg = yaml.safe_load(open('$CONFIG'))
-print(' '.join(cfg['sequences']))
-")
+    SCENES="$(config_list_from_key "sequences")"
 else
     SCENES="$SCENE"
 fi
 
 if $ALL_CAMS; then
-    CAMERAS=$(python3 -c "
-import yaml
-cfg = yaml.safe_load(open('$CONFIG'))
-print(' '.join(cfg['cameras']))
-")
+    CAMERAS="$(config_list_from_key "cameras")"
 else
     CAMERAS="$CAM"
 fi
