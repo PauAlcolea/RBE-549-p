@@ -152,6 +152,13 @@ def parse_args():
         help="Override white-lane retention confidence threshold."
     )
 
+    parser.add_argument(
+        "--traffic_light_conf",
+        type=float,
+        default=None,
+        help="Override traffic-light retention confidence threshold (post YOLO/RT-DETR merge)."
+    )
+
     
     
     return parser.parse_args()
@@ -723,7 +730,13 @@ def _suppress_contained_candidates(candidates: list, ioa_thr: float) -> list:
     return [c for idx, c in enumerate(candidates) if idx not in drop]
 
 
-def _build_traffic_candidates(object_results: list, non_coco_results: list, cfg: dict, scene_name: str):
+def _build_traffic_candidates(
+    object_results: list,
+    non_coco_results: list,
+    cfg: dict,
+    scene_name: str,
+    traffic_light_min_conf: float = None,
+):
     """OR YOLO traffic lights with DART lane-control lights, then dedupe."""
     traffic_cfg = cfg.get("perception", {}).get("traffic_light", {})
     dart_lane_control_enabled = bool(traffic_cfg.get("dart_lane_control_enabled", True))
@@ -736,11 +749,16 @@ def _build_traffic_candidates(object_results: list, non_coco_results: list, cfg:
     scene_name_norm = str(scene_name).strip().lower()
     lane_control_scene_enabled = scene_name_norm == "scene2"
     dart_traffic_aux_labels = {"lane_control_light"}
+    default_tl_conf = float(cfg.get("perception", {}).get("rtdetr", {}).get("merged_confidence", 0.65))
+    effective_tl_conf = default_tl_conf if traffic_light_min_conf is None else float(traffic_light_min_conf)
 
     yolo_candidates = [
         _as_traffic_candidate(d, source="yolo_traffic_light")
         for d in object_results
-        if getattr(d, "label", "") == "traffic_light"
+        if (
+            getattr(d, "label", "") == "traffic_light"
+            and float(getattr(d, "confidence", 0.0)) >= effective_tl_conf
+        )
     ]
 
     if not dart_lane_control_enabled:
@@ -1198,6 +1216,7 @@ def process_sequence(
     start_frame: int = 0,
     lane_conf_yellow: float = None,
     lane_conf_white: float = None,
+    traffic_light_conf: float = None,
 ):
     """Run every active detector on every frame of one sequence and write JSONs."""
     vehicle_labels = {"bicycle", "car", "motorcycle", "bus", "truck", "sedan", "hatchback", "suv", "pickuptruck", "pickup_truck"}
@@ -1268,6 +1287,7 @@ def process_sequence(
                 non_coco_results,
                 cfg,
                 scene_name,
+                traffic_light_min_conf=traffic_light_conf,
             )
             _filter_ground_arrows(frame_bgr, non_coco_results, cfg)
             _drop_aux_non_coco_labels(non_coco_results, cfg, models.get("non_coco"))
@@ -1550,6 +1570,8 @@ def main():
         raise ValueError("--lane_conf_yellow must be >= 0")
     if args.lane_conf_white is not None and args.lane_conf_white < 0.0:
         raise ValueError("--lane_conf_white must be >= 0")
+    if args.traffic_light_conf is not None and not (0.0 <= args.traffic_light_conf <= 1.0):
+        raise ValueError("--traffic_light_conf must be between 0 and 1")
 
     # for the sequences, get all of them unless the argument just specified one
     scenes = cfg["sequences"] if args.all else [args.scene]
@@ -1576,6 +1598,8 @@ def main():
         print(f"[init] Override yellow lane retention confidence: {args.lane_conf_yellow:.3f}")
     if args.lane_conf_white is not None:
         print(f"[init] Override white lane retention confidence: {args.lane_conf_white:.3f}")
+    if args.traffic_light_conf is not None:
+        print(f"[init] Override traffic-light retention confidence: {args.traffic_light_conf:.3f}")
 
     # process the sequences
     for scene in scenes:
@@ -1600,6 +1624,7 @@ def main():
                     start_frame=args.start_frame,
                     lane_conf_yellow=args.lane_conf_yellow,
                     lane_conf_white=args.lane_conf_white,
+                    traffic_light_conf=args.traffic_light_conf,
             )
 
     print("\n[done] All sequences processed.")
