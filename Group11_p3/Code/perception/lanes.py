@@ -25,8 +25,8 @@ class Lane:
 
     points: List[Tuple[float, float]]
     color: str = "white"
-    
     confidence: float = 1.0
+    raw_index: int = -1
 
 
 class LaneDetector:
@@ -50,11 +50,12 @@ class LaneDetector:
 
         self.model_name = self.lanes_cfg.get("model", "DART")
         self.max_lanes = int(self.lanes_cfg.get("max_lanes", 8))
-        self.classes = list(
+        self.lane_classes = list(
             self.lanes_cfg.get(
-                "classes", ["white lane line", "yellow lane line"]
+                "classes", ["yellow lane line painted on road", "white lane line painted on road", "crosswalk marking on road"]
             )
         )
+        self.classes = list(self.lane_classes)
 
         self.confidence = float(self.lanes_cfg.get("confidence", 0.35))
         self.nms = float(self.lanes_cfg.get("nms", 0.4))
@@ -295,6 +296,12 @@ class LaneDetector:
             if score < self.confidence:
                 continue
 
+            cls_name = class_names[i] if i < len(class_names) else "lane line"
+            cls_name_lower = cls_name.lower()
+            is_lane = ("lane" in cls_name_lower)
+            if not is_lane:
+                continue
+
             points: List[Tuple[float, float]] = []
             if masks is not None and len(masks) > i:
                 mask = masks[i].detach().cpu().numpy().astype(np.uint8)
@@ -303,12 +310,12 @@ class LaneDetector:
             if not points and boxes is not None and len(boxes) > i:
                 points = self._box_to_polyline(boxes[i].detach().cpu().numpy())
 
-            if len(points) < 2:
-                continue
+            # if len(points) < 2:
+            #     continue
 
             # Filter by polyline length
-            if self._polyline_length(points) < self.min_length_px:
-                continue
+            # if self._polyline_length(points) < self.min_length_px:
+            #     continue
 
             cls_name = class_names[i] if i < len(class_names) else "lane line"
             cls_name_lower = cls_name.lower()
@@ -318,14 +325,13 @@ class LaneDetector:
                 color = "white"
             else:
                 color = self._classify_color(frame_bgr, points)
-            # style = self._classify_style(points, h)
 
             lanes.append(
                 Lane(
                     points=points,
                     color=color,
-                    # style=style,
                     confidence=score,
+                    raw_index=i,
                 )
             )
 
@@ -418,23 +424,3 @@ class LaneDetector:
         if white_fraction >= self.white_vote_ratio:
             return "white"
         return "yellow"
-
-    def _classify_style(
-        self,
-        points: List[Tuple[float, float]],
-        img_height: int,
-    ) -> str:
-        if len(points) < 3:
-            return "solid"
-
-        ys = sorted(set(float(p[1]) for p in points))
-        if len(ys) < 3:
-            return "solid"
-
-        gaps = np.diff(np.array(ys, dtype=np.float32))
-        max_gap = float(gaps.max()) if gaps.size else 0.0
-
-        adaptive_gap = max(self.dash_gap_px, 0.06 * float(img_height))
-        if max_gap > adaptive_gap:
-            return "dashed"
-        return "solid"
