@@ -74,6 +74,12 @@ class LaneDetector:
         self.polyline_smooth_window = int(self.lanes_cfg.get("polyline_smooth_window", 5))
         self.polyline_mask_close_kernel = int(self.lanes_cfg.get("polyline_mask_close_kernel", 3))
         self.polyline_mask_close_iters = int(self.lanes_cfg.get("polyline_mask_close_iters", 1))
+        self.polyline_spike_filter_enabled = bool(self.lanes_cfg.get("polyline_spike_filter_enabled", True))
+        self.polyline_spike_turn_deg = float(self.lanes_cfg.get("polyline_spike_turn_deg", 65.0))
+        self.polyline_spike_segment_ratio = float(self.lanes_cfg.get("polyline_spike_segment_ratio", 2.0))
+        self.polyline_spike_deviation_ratio = float(self.lanes_cfg.get("polyline_spike_deviation_ratio", 1.6))
+        self.polyline_spike_max_removed_ratio = float(self.lanes_cfg.get("polyline_spike_max_removed_ratio", 0.45))
+        self.polyline_spike_min_points = int(self.lanes_cfg.get("polyline_spike_min_points", 6))
         self.polyline_straighten_enabled = bool(self.lanes_cfg.get("polyline_straighten_enabled", True))
         self.polyline_straighten_min_points = int(self.lanes_cfg.get("polyline_straighten_min_points", 6))
         self.polyline_straighten_max_median_residual_px = float(
@@ -329,6 +335,7 @@ class LaneDetector:
             if not points and boxes is not None and len(boxes) > i:
                 points = self._box_to_polyline(boxes[i].detach().cpu().numpy())
 
+            # points = self._despike_polyline(points)
             points = self._straighten_near_linear_polyline(points)
             if len(points) < 2:
                 continue
@@ -464,6 +471,61 @@ class LaneDetector:
             x2, y2 = points[i + 1]
             total += ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
         return total
+
+    # def _despike_polyline(self, points: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
+    #     """Remove isolated spike vertices while preserving smooth lane curvature."""
+    #     if not self.polyline_spike_filter_enabled or len(points) < self.polyline_spike_min_points:
+    #         return points
+
+    #     arr = np.asarray(points, dtype=np.float32)
+    #     seg = arr[1:] - arr[:-1]
+    #     seg_len = np.linalg.norm(seg, axis=1)
+    #     valid_seg = seg_len[seg_len > 1e-3]
+    #     if valid_seg.size < 3:
+    #         return points
+
+    #     median_len = float(np.median(valid_seg))
+    #     if median_len <= 1e-3:
+    #         return points
+
+    #     remove_mask = np.zeros(len(points), dtype=bool)
+    #     turn_thr = np.deg2rad(self.polyline_spike_turn_deg)
+
+    #     for i in range(1, len(points) - 1):
+    #         prev_pt = arr[i - 1]
+    #         cur_pt = arr[i]
+    #         next_pt = arr[i + 1]
+
+    #         v1 = cur_pt - prev_pt
+    #         v2 = next_pt - cur_pt
+    #         l1 = float(np.linalg.norm(v1))
+    #         l2 = float(np.linalg.norm(v2))
+    #         if l1 <= 1e-3 or l2 <= 1e-3:
+    #             continue
+
+    #         cos_turn = float(np.dot(v1, v2) / (l1 * l2))
+    #         cos_turn = float(np.clip(cos_turn, -1.0, 1.0))
+    #         turn = float(np.arccos(cos_turn))
+
+    #         long_jump = max(l1, l2) > (self.polyline_spike_segment_ratio * median_len)
+    #         deviation = self._point_line_distance(cur_pt, prev_pt, next_pt)
+    #         big_deviation = deviation > (self.polyline_spike_deviation_ratio * median_len)
+
+    #         if turn >= turn_thr and long_jump and big_deviation:
+    #             remove_mask[i] = True
+
+    #     removed = int(remove_mask.sum())
+    #     if removed == 0:
+    #         return points
+
+    #     if removed / float(len(points)) > self.polyline_spike_max_removed_ratio:
+    #         return []
+
+    #     cleaned = arr[~remove_mask]
+    #     if len(cleaned) < 2:
+    #         return []
+
+    #     return [(float(x), float(y)) for x, y in cleaned]
 
     def _point_line_distance(self, p: np.ndarray, a: np.ndarray, b: np.ndarray) -> float:
         ab = b - a
