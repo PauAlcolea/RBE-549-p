@@ -103,6 +103,20 @@ def parse_args():
         help="Override frame skip from config (process every Nth frame, N>=1)."
     )
 
+    parser.add_argument(
+        "--lane_conf_yellow",
+        type=float,
+        default=None,
+        help="Override yellow-lane retention confidence threshold."
+    )
+
+    parser.add_argument(
+        "--lane_conf_white",
+        type=float,
+        default=None,
+        help="Override white-lane retention confidence threshold."
+    )
+
     
     
     return parser.parse_args()
@@ -1192,6 +1206,8 @@ def process_sequence(
     models: dict,
     debug: bool = False,
     frame_skip: int = 30,
+    lane_conf_yellow: float = None,
+    lane_conf_white: float = None,
 ):
     """Run every active detector on every frame of one sequence and write JSONs."""
     vehicle_labels = {"bicycle", "car", "motorcycle", "bus", "truck", "sedan", "hatchback", "suv", "pickuptruck", "pickup_truck"}
@@ -1199,6 +1215,10 @@ def process_sequence(
     lane_export_min_conf = float(lanes_cfg.get("export_min_confidence", 0.85))
     lane_export_min_conf_yellow = float(lanes_cfg.get("export_min_confidence_yellow", 0.65))
     lane_export_min_conf_white = float(lanes_cfg.get("export_min_confidence_white", lane_export_min_conf))
+    if lane_conf_yellow is not None:
+        lane_export_min_conf_yellow = float(lane_conf_yellow)
+    if lane_conf_white is not None:
+        lane_export_min_conf_white = float(lane_conf_white)
     lane_debug_raw_match_pad_px = float(lanes_cfg.get("debug_raw_match_pad_px", 6.0))
     lane_debug_raw_match_min_points = int(lanes_cfg.get("debug_raw_match_min_points", 2))
     lane_debug_raw_match_point_ratio = float(lanes_cfg.get("debug_raw_match_point_ratio", 0.10))
@@ -1394,6 +1414,10 @@ def main():
     frame_skip = cfg_frame_skip if args.frame_skip is None else int(args.frame_skip)
     if frame_skip < 1:
         raise ValueError("--frame_skip must be >= 1")
+    if args.lane_conf_yellow is not None and args.lane_conf_yellow < 0.0:
+        raise ValueError("--lane_conf_yellow must be >= 0")
+    if args.lane_conf_white is not None and args.lane_conf_white < 0.0:
+        raise ValueError("--lane_conf_white must be >= 0")
 
     # for the sequences, get all of them unless the argument just specified one
     scenes = cfg["sequences"] if args.all else [args.scene]
@@ -1404,6 +1428,10 @@ def main():
     models = load_models(cfg, device, night_mode=args.night)
     if args.night:
         print("[init] Night traffic-light mode enabled (--night).")
+    if args.lane_conf_yellow is not None:
+        print(f"[init] Override yellow lane retention confidence: {args.lane_conf_yellow:.3f}")
+    if args.lane_conf_white is not None:
+        print(f"[init] Override white lane retention confidence: {args.lane_conf_white:.3f}")
 
     # process the sequences
     for scene in scenes:
@@ -1415,6 +1443,8 @@ def main():
                 models,
                 debug=args.debug,
                 frame_skip=frame_skip,
+                lane_conf_yellow=args.lane_conf_yellow,
+                lane_conf_white=args.lane_conf_white,
             )
 
     print("\n[done] All sequences processed.")
