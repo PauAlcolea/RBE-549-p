@@ -1,0 +1,41 @@
+# EinsteinVision — Group 11
+# Install with: pip install -r requirements_pyXXX.txt
+#
+# NOTE: Do NOT install torch/torchvision via this file on the SSH cluster.
+# PyTorch with CUDA must be pre-installed. Verify with:
+#   python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+# If you need to install it fresh locally (CPU only, e.g. for testing):
+#   pip install torch torchvision
+# For CUDA on a fresh machine follow: https://pytorch.org/get-started/locally/
+
+
+# the requirments vary depending on the part of the perception that you are doing. for most of the perception pipeline,
+#   set up a virtual environment with python 3.13. Install requirments_py313.txt and also remember to build the TRT engine
+#   the building of the TRT engine has to be done in both circumstances, for that, follwo the following instructions
+#   https://github.com/benjaminorr/DART?tab=readme-ov-file#quick-start 
+#   in turing, you need more than 4096 of ram, i've been doing a big number like 200000 just in case 
+
+
+# for the second part of the perception, for the human poses you will have had to run the preview perception
+#   you need to be in a virtual environment running python 3.8, and install the requirements_py38 dependencies
+#       in this venv also build the TRT engine, I have found that only this line 
+#           PYTHONIOENCODING=utf-8 python scripts/export_hf_backbone.py --image x.jpg --imgsz 1008
+#       alone is sufficient. if not, try steps 2-4 of the installation in the README
+#   you will also need to module load ffmpeg. If nothing occurs when you run that, close the sinteractive terminal and start again
+#   you need fo first run the run_perception for the normal perception, as the human poses are added to those json files
+#   to get the human poses, you need to do the run_perception ... with the --pymaf-only argument
+
+
+
+# # ── Core perception ────────────────────────────────────────────────────────
+# ultralytics>=8.3.0          # YOLO models (downloads weights automatically on first run)
+# numpy>=1.24                 # arrays everywhere
+
+# # ── Config & utilities ─────────────────────────────────────────────────────
+# pyyaml>=6.0                 # config.yaml loading
+# tqdm>=4.66                  # progress bars
+# joblib>=1.2                 # load PyMAF output.pkl when pymaf integration is enabled
+
+# # ── Coming soon (uncomment as you implement each module) ───────────────────
+# # timm>=0.9                 # DepthAnything backbone
+# # scipy>=1.11               # geometry utils (sampson distance, Phase 3)
