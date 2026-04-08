@@ -104,6 +104,13 @@ def parse_args():
     )
 
     parser.add_argument(
+        "--start_frame",
+        type=int,
+        default=0,
+        help="Skip frames with frame_idx less than this value (must be >= 0)."
+    )
+
+    parser.add_argument(
         "--lane_conf_yellow",
         type=float,
         default=None,
@@ -1206,6 +1213,7 @@ def process_sequence(
     models: dict,
     debug: bool = False,
     frame_skip: int = 30,
+    start_frame: int = 0,
     lane_conf_yellow: float = None,
     lane_conf_white: float = None,
 ):
@@ -1249,6 +1257,9 @@ def process_sequence(
     for i, (frame_idx, frame_bgr) in enumerate(
         frame_generator(scene_dir, camera=camera, frame_skip=frame_skip)
 ):
+        if frame_idx < start_frame:
+            continue
+
         # --- Run detectors ---
         object_results = models["objects"].detect(frame_bgr)
         if models.get("vehicle_subtypes") is not None:
@@ -1414,6 +1425,8 @@ def main():
     frame_skip = cfg_frame_skip if args.frame_skip is None else int(args.frame_skip)
     if frame_skip < 1:
         raise ValueError("--frame_skip must be >= 1")
+    if args.start_frame < 0:
+        raise ValueError("--start_frame must be >= 0")
     if args.lane_conf_yellow is not None and args.lane_conf_yellow < 0.0:
         raise ValueError("--lane_conf_yellow must be >= 0")
     if args.lane_conf_white is not None and args.lane_conf_white < 0.0:
@@ -1428,6 +1441,8 @@ def main():
     models = load_models(cfg, device, night_mode=args.night)
     if args.night:
         print("[init] Night traffic-light mode enabled (--night).")
+    if args.start_frame > 0:
+        print(f"[init] Start frame set to: {args.start_frame}")
     if args.lane_conf_yellow is not None:
         print(f"[init] Override yellow lane retention confidence: {args.lane_conf_yellow:.3f}")
     if args.lane_conf_white is not None:
@@ -1443,6 +1458,7 @@ def main():
                 models,
                 debug=args.debug,
                 frame_skip=frame_skip,
+                start_frame=args.start_frame,
                 lane_conf_yellow=args.lane_conf_yellow,
                 lane_conf_white=args.lane_conf_white,
             )
