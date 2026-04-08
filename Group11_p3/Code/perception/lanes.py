@@ -68,6 +68,20 @@ class LaneDetector:
         self.trt_max_classes = int(self.lanes_cfg.get("trt_max_classes", 4))
 
         self.polyline_points = int(self.lanes_cfg.get("polyline_points", 20))
+        self.polyline_component_filter_enabled = bool(self.lanes_cfg.get("polyline_component_filter_enabled", True))
+        self.polyline_component_min_area = int(self.lanes_cfg.get("polyline_component_min_area", 20))
+        self.polyline_x_track_nearest = bool(self.lanes_cfg.get("polyline_x_track_nearest", True))
+        self.polyline_smooth_window = int(self.lanes_cfg.get("polyline_smooth_window", 5))
+        self.polyline_mask_close_kernel = int(self.lanes_cfg.get("polyline_mask_close_kernel", 3))
+        self.polyline_mask_close_iters = int(self.lanes_cfg.get("polyline_mask_close_iters", 1))
+        self.polyline_straighten_enabled = bool(self.lanes_cfg.get("polyline_straighten_enabled", True))
+        self.polyline_straighten_min_points = int(self.lanes_cfg.get("polyline_straighten_min_points", 6))
+        self.polyline_straighten_max_median_residual_px = float(
+            self.lanes_cfg.get("polyline_straighten_max_median_residual_px", 2.0)
+        )
+        self.polyline_straighten_max_residual_px = float(
+            self.lanes_cfg.get("polyline_straighten_max_residual_px", 6.0)
+        )
         self.color_samples = int(self.lanes_cfg.get("color_samples", 12))
         self.sample_patch = int(self.lanes_cfg.get("color_patch", 3))
         self.white_vote_ratio = float(self.lanes_cfg.get("white_vote_ratio", 0.5))
@@ -315,6 +329,10 @@ class LaneDetector:
             if not points and boxes is not None and len(boxes) > i:
                 points = self._box_to_polyline(boxes[i].detach().cpu().numpy())
 
+            points = self._straighten_near_linear_polyline(points)
+            if len(points) < 2:
+                continue
+
             # if len(points) < 2:
             #     continue
 
@@ -447,7 +465,53 @@ class LaneDetector:
             total += ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
         return total
 
+    def _point_line_distance(self, p: np.ndarray, a: np.ndarray, b: np.ndarray) -> float:
+        ab = b - a
+        denom = float(np.linalg.norm(ab))
+        if denom <= 1e-6:
+            return float(np.linalg.norm(p - a))
+        return float(abs(ab[0] * (a[1] - p[1]) - (a[0] - p[0]) * ab[1]) / denom)
+
+    def _straighten_near_linear_polyline(self, points: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
+        """Snap lanes to a straight line only when they are already near-linear."""
+        if not self.polyline_straighten_enabled:
+            return points
+        if len(points) < self.polyline_straighten_min_points:
+            return points
+
+        arr = np.asarray(points, dtype=np.float32)
+        ys = arr[:, 1]
+        xs = arr[:, 0]
+        y_span = float(ys.max() - ys.min())
+        if y_span < 1e-3:
+            return points
+
+        # Fit x as a function of y for mostly vertical lane lines in image space.
+        a, b = np.polyfit(ys, xs, 1)
+        x_fit = (a * ys) + b
+        residual = np.abs(xs - x_fit)
+
+        med_res = float(np.median(residual))
+        max_res = float(np.max(residual))
+        if med_res > self.polyline_straighten_max_median_residual_px:
+            return points
+        if max_res > self.polyline_straighten_max_residual_px:
+            return points
+
+        return [(float(x), float(y)) for x, y in zip(x_fit.tolist(), ys.tolist())]
+
     def _mask_to_polyline(self, mask: np.ndarray) -> List[Tuple[float, float]]:
+        if mask.dtype != np.uint8:
+            mask = mask.astype(np.uint8)
+        if self.polyline_mask_close_kernel > 1 and self.polyline_mask_close_iters > 0:
+            k = int(self.polyline_mask_close_kernel)
+            if k % 2 == 0:
+                k += 1
+            kernel = np.ones((k, k), dtype=np.uint8)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=int(self.polyline_mask_close_iters))
+        if self.polyline_component_filter_enabled:
+            mask = self._select_lane_component(mask)
+
         ys = np.where(mask > 0)[0]
         if ys.size == 0:
             return []
@@ -461,14 +525,101 @@ class LaneDetector:
         y_samples = np.linspace(y_min, y_max, num=samples).astype(np.int32)
 
         points: List[Tuple[float, float]] = []
+        prev_x: Optional[float] = None
         for y in y_samples:
             row_x = np.where(mask[y] > 0)[0]
             if row_x.size == 0:
                 continue
-            x_center = float(row_x.mean())
+            runs = self._row_runs(row_x)
+            if not runs:
+                continue
+
+            run_centers = [0.5 * (r0 + r1) for r0, r1 in runs]
+            if self.polyline_x_track_nearest and prev_x is not None:
+                nearest_idx = int(np.argmin(np.abs(np.asarray(run_centers, dtype=np.float32) - prev_x)))
+                x_center = float(run_centers[nearest_idx])
+            else:
+                widest_idx = int(np.argmax([(r1 - r0 + 1) for r0, r1 in runs]))
+                x_center = float(run_centers[widest_idx])
+            prev_x = x_center
             points.append((x_center, float(y)))
 
+        points = self._smooth_polyline_x(points)
+
         return points
+
+    def _select_lane_component(self, mask: np.ndarray) -> np.ndarray:
+        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        if num_labels <= 1:
+            return mask
+
+        best_label = 0
+        best_key = (-1.0, -1.0)
+        for label in range(1, num_labels):
+            area = float(stats[label, cv2.CC_STAT_AREA])
+            if area < float(self.polyline_component_min_area):
+                continue
+
+            top = float(stats[label, cv2.CC_STAT_TOP])
+            height = float(stats[label, cv2.CC_STAT_HEIGHT])
+            bottom = top + height
+
+            # Favor components that extend lower in the image, then larger area.
+            key = (bottom, area)
+            if key > best_key:
+                best_key = key
+                best_label = label
+
+        if best_label <= 0:
+            return mask
+
+        out = np.zeros_like(mask, dtype=np.uint8)
+        out[labels == best_label] = 1
+        return out
+
+    def _row_runs(self, row_x: np.ndarray) -> List[Tuple[int, int]]:
+        if row_x.size == 0:
+            return []
+
+        runs: List[Tuple[int, int]] = []
+        start = int(row_x[0])
+        prev = int(row_x[0])
+        for val in row_x[1:]:
+            cur = int(val)
+            if cur == prev + 1:
+                prev = cur
+                continue
+            runs.append((start, prev))
+            start = cur
+            prev = cur
+        runs.append((start, prev))
+        return runs
+
+    def _smooth_polyline_x(self, points: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
+        if len(points) < 3:
+            return points
+
+        k = max(1, int(self.polyline_smooth_window))
+        if k % 2 == 0:
+            k += 1
+        if k <= 1:
+            return points
+
+        arr = np.asarray(points, dtype=np.float32)
+        xs = arr[:, 0]
+        ys = arr[:, 1]
+
+        pad = k // 2
+        xs_pad = np.pad(xs, (pad, pad), mode="edge")
+        xs_smooth = np.empty_like(xs, dtype=np.float32)
+        center = k // 2
+        weights = np.array([center + 1 - abs(i - center) for i in range(k)], dtype=np.float32)
+        weights = weights / float(np.sum(weights))
+        for i in range(len(xs)):
+            window = xs_pad[i:i + k]
+            xs_smooth[i] = float(np.dot(window, weights))
+
+        return [(float(x), float(y)) for x, y in zip(xs_smooth.tolist(), ys.tolist())]
 
     def _box_to_polyline(self, box_xyxy: Sequence[float]) -> List[Tuple[float, float]]:
         x1, y1, x2, y2 = [float(v) for v in box_xyxy]

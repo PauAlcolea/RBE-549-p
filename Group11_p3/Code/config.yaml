@@ -84,6 +84,16 @@ perception:
     trt_enc_dec: perception/DART/enc_dec_fp16.engine
     text_cache: null
     polyline_points: 20
+    polyline_component_filter_enabled: true
+    polyline_component_min_area: 20
+    polyline_x_track_nearest: true
+    polyline_smooth_window: 5
+    polyline_mask_close_kernel: 3
+    polyline_mask_close_iters: 1
+    polyline_straighten_enabled: true
+    polyline_straighten_min_points: 6
+    polyline_straighten_max_median_residual_px: 1.5
+    polyline_straighten_max_residual_px: 6.0
     color_samples: 12
     color_patch: 3
     white_vote_ratio: 0.5
