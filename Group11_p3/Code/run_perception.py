@@ -473,7 +473,7 @@ def _drop_aux_non_coco_labels(non_coco_results, cfg, non_coco_model=None):
 
 def _restrict_ground_markings_to_scenes(non_coco_results, scene_name: str):
     """Keep ground-arrow/ground-text classes only in configured scenes."""
-    allowed_scenes = {"scene3", "scene7", "scene11"}
+    allowed_scenes = {"scene3", "scene7", "scene11", "scene51"}
     scene_key = str(scene_name).strip().lower()
     if scene_key in allowed_scenes:
         return
