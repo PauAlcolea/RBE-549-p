@@ -306,6 +306,11 @@ blender:
     mode: smpl_mesh          # was: pymaf (skeleton) | asset (generic mesh)
     smpl_pkl: "../Weights/SMPL_NEUTRAL.pkl"   # path to your SMPL neutral model
     pymaf_target_height_m: 1.70
+    pymaf_reuse_previous_on_failure: true   # if current frame PyMAF is invalid, reuse last valid track pose
+    pymaf_allow_asset_fallback: false       # disable legacy pedestrian asset fallback
+    pymaf_pose_hold_max_fallback_frames: 3  # only during fallback: reuse same pose for up to N consecutive frames
+    pymaf_upright_hysteresis: 0.15          # deadband around upright score to avoid jitter flips
+    pymaf_flip_confirm_frames: 2            # require N consistent frames before orientation flip
     # skeleton-mode settings below still apply as fallback
     pymaf_bone_radius_m: 0.018
     pymaf_joint_radius_m: 0.025

@@ -19,6 +19,7 @@ Coordinate system note:
 import math
 import re
 import pickle
+import copy
 from pathlib import Path
 from typing import Dict
 import bpy
@@ -287,6 +288,22 @@ class AssetLibrary:
         self.pymaf_min_joint_count = int(ped_cfg.get("pymaf_min_joint_count", 24))
         self.pymaf_use_last24 = bool(ped_cfg.get("pymaf_use_last24", True))
         self.pymaf_y_up = bool(ped_cfg.get("pymaf_y_up", True))
+        self.pymaf_upright_hysteresis = float(ped_cfg.get("pymaf_upright_hysteresis", 0.15))
+        self.pymaf_flip_confirm_frames = max(1, int(ped_cfg.get("pymaf_flip_confirm_frames", 2)))
+        self.pymaf_reuse_previous_on_failure = bool(ped_cfg.get("pymaf_reuse_previous_on_failure", True))
+        self.pymaf_allow_asset_fallback = bool(ped_cfg.get("pymaf_allow_asset_fallback", False))
+        self.pymaf_pose_hold_max_fallback_frames = max(
+            1,
+            int(
+                ped_cfg.get(
+                    "pymaf_pose_hold_max_fallback_frames",
+                    ped_cfg.get("pymaf_pose_hold_min_frames", 3),
+                )
+            ),
+        )
+        self._ped_upright_state: Dict[str, dict] = {}
+        self._ped_last_valid_by_track: Dict[str, dict] = {}
+        self._ped_pose_hold_state: Dict[str, dict] = {}
         
         # ── SMPL mesh mode ────────────────────────────────────────────────────
         self.smpl_fk: "_SmplFKSolver | None" = None
@@ -427,8 +444,44 @@ class AssetLibrary:
 
     def place_pedestrian(self, ped: dict):
         """Instantiate a pedestrian using PyMAF skeleton when available."""
-        if self.ped_mode != "asset" and self._place_pedestrian_pymaf(ped):
-            return
+        if self.ped_mode != "asset":
+            track_key = self._ped_track_key(ped)
+            track_id = ped.get("pymaf_track_id")
+            has_track_id = track_id is not None
+
+            # Always prefer current-frame PyMAF if valid.
+            if self._place_pedestrian_pymaf(ped):
+                if has_track_id:
+                    self._ped_last_valid_by_track[track_key] = copy.deepcopy(ped)
+                    self._ped_pose_hold_state[track_key] = {"fallback_frames": 0}
+                return
+
+            if self.pymaf_reuse_previous_on_failure and has_track_id:
+                prev_ped = self._ped_last_valid_by_track.get(track_key)
+                hold_state = self._ped_pose_hold_state.get(track_key, {"fallback_frames": 0})
+                fallback_frames = int(hold_state.get("fallback_frames", 0))
+
+                if (
+                    isinstance(prev_ped, dict)
+                    and fallback_frames < self.pymaf_pose_hold_max_fallback_frames
+                ):
+                    candidate_with_live_pos = self._ped_with_updated_position(prev_ped, ped)
+                    if self._place_pedestrian_pymaf(candidate_with_live_pos):
+                        self._ped_pose_hold_state[track_key] = {
+                            "fallback_frames": fallback_frames + 1
+                        }
+                        print(
+                            f"[assets] pedestrian: reused previous PyMAF pose for track={track_id} "
+                            f"(fallback {fallback_frames + 1}/{self.pymaf_pose_hold_max_fallback_frames})"
+                        )
+                        return
+
+            if not self.pymaf_allow_asset_fallback:
+                print(
+                    f"[assets] pedestrian: skipped track={track_id if has_track_id else 'na'} "
+                    f"(no valid PyMAF and asset fallback disabled)"
+                )
+                return
 
         obj = self._instance("pedestrian")
         obj.location = self._json_to_blender(ped["position_3d"])
@@ -436,6 +489,17 @@ class AssetLibrary:
         self._align_object_to_ground(obj, ground_z=0.0, clearance=self.ground_clearance_m)
         self._frame_objects.append(obj)
         print(f"[assets] pedestrian: json_pos={ped['position_3d']}  →  blender_pos={obj.location}")
+
+    @staticmethod
+    def _ped_with_updated_position(source_pose: dict, live_ped: dict) -> dict:
+        """
+        Reuse pose/shape from source_pose while updating dynamic fields from live_ped.
+        """
+        merged = copy.deepcopy(source_pose)
+        for key in ("position_3d", "depth_m", "bbox", "pymaf_track_id"):
+            if key in live_ped:
+                merged[key] = copy.deepcopy(live_ped[key])
+        return merged
 
     def _place_pedestrian_pymaf(self, ped: dict) -> bool:
         """
@@ -468,7 +532,7 @@ class AssetLibrary:
         if len(joints_local) < 24:
             return False
 
-        joints_local, was_flipped = self._auto_fix_upside_down_pymaf(joints_local)
+        joints_local, was_flipped = self._auto_fix_upside_down_pymaf(joints_local, ped=ped)
         root_local   = joints_local[0]
         local_heights = [v.z for v in joints_local]
         local_height  = max(local_heights) - min(local_heights)
@@ -549,7 +613,7 @@ class AssetLibrary:
                         break
                     joints_local.append(self._smpl_to_blender_local(pt))
                 if valid and len(joints_local) >= 24:
-                    _, was_flipped = self._auto_fix_upside_down_pymaf(joints_local)
+                    _, was_flipped = self._auto_fix_upside_down_pymaf(joints_local, ped=ped)
                     if was_flipped:
                         verts_bl_arr[:, 2] *= -1.0
                         faces = faces[:, [0, 2, 1]]
@@ -629,8 +693,69 @@ class AssetLibrary:
         # Fallback for camera-style coordinates (x-right, y-down, z-forward).
         return Vector((x, z, -y))
 
-    @staticmethod
-    def _auto_fix_upside_down_pymaf(joints_local):
+    def _ped_track_key(self, ped: dict) -> str:
+        track_id = ped.get("pymaf_track_id")
+        if track_id is not None:
+            return f"track:{track_id}"
+
+        pos = ped.get("position_3d")
+        if isinstance(pos, (list, tuple)) and len(pos) >= 3:
+            return f"anon:{float(pos[0]):.2f}:{float(pos[1]):.2f}:{float(pos[2]):.2f}"
+        return "anon:unknown"
+
+    def _stabilize_upright_flip(self, track_key: str, raw_flip: bool, score: float) -> bool:
+        """
+        Debounce orientation flips so single-frame PyMAF outliers do not invert
+        pedestrians. Changes are accepted only after enough consistent evidence.
+        """
+        if score >= self.pymaf_upright_hysteresis:
+            candidate_flip = False
+        elif score <= -self.pymaf_upright_hysteresis:
+            candidate_flip = True
+        else:
+            candidate_flip = None
+
+        state = self._ped_upright_state.get(track_key)
+        if state is None:
+            resolved = raw_flip if candidate_flip is None else candidate_flip
+            self._ped_upright_state[track_key] = {
+                "flip": resolved,
+                "pending": None,
+                "count": 0,
+            }
+            return resolved
+
+        current = bool(state.get("flip", raw_flip))
+        pending = state.get("pending")
+        pending_count = int(state.get("count", 0))
+
+        if candidate_flip is None:
+            state["pending"] = None
+            state["count"] = 0
+            return current
+
+        if candidate_flip == current:
+            state["pending"] = None
+            state["count"] = 0
+            return current
+
+        if pending == candidate_flip:
+            pending_count += 1
+        else:
+            pending = candidate_flip
+            pending_count = 1
+
+        if pending_count >= self.pymaf_flip_confirm_frames:
+            state["flip"] = candidate_flip
+            state["pending"] = None
+            state["count"] = 0
+            return candidate_flip
+
+        state["pending"] = pending
+        state["count"] = pending_count
+        return current
+
+    def _auto_fix_upside_down_pymaf(self, joints_local, ped: dict = None):
         """
         Detect and correct inverted skeletons by checking vertical ordering.
 
@@ -650,7 +775,19 @@ class AssetLibrary:
 
         upper_avg = sum(upper_z) / len(upper_z)
         lower_avg = sum(lower_z) / len(lower_z)
-        if upper_avg >= lower_avg:
+        score = upper_avg - lower_avg
+        raw_flip = score < 0.0
+
+        if ped is None:
+            should_flip = raw_flip
+        else:
+            should_flip = self._stabilize_upright_flip(
+                track_key=self._ped_track_key(ped),
+                raw_flip=raw_flip,
+                score=score,
+            )
+
+        if not should_flip:
             return joints_local, False
 
         flipped = [Vector((v.x, v.y, -v.z)) for v in joints_local]
