@@ -32,7 +32,7 @@
   "weights": {
     "yolo": "../Weights/yolov9c.pt",
     "rtdetr": "../Weights/rtdetr-x.pt",
-    "depth": "../Weights/depth_anything_v2_metric_vkitti_vitb.pth",
+    "depth": "../Weights/depth_anything_v2_metric_vkitti_vitl.pth",
     "lanes": "../Weights/sam3.pt",
     "orientation": "../Weights/boundingbox.pkl",
     "pymaf": "../Weights/PyMAF_model_checkpoint.pt"
@@ -322,17 +322,17 @@
     },
     "depth": {
       "model": {
-        "encoder": "vitb",
-        "features": 128,
+        "encoder": "vitl",
+        "features": 256,
         "out_channels": [
-          96,
-          192,
-          384,
-          768
+          256,
+          512,
+          1024,
+          1024
         ],
         "max_depth": 80
       },
-      "download_url": "https://huggingface.co/depth-anything/Depth-Anything-V2-Metric-VKITTI-Base/resolve/main/depth_anything_v2_metric_vkitti_vitb.pth?download=true",
+      "download_url": "https://huggingface.co/depth-anything/Depth-Anything-V2-Metric-VKITTI-Large/resolve/main/depth_anything_v2_metric_vkitti_vitl.pth?download=true",
       "known_heights": {
         "car": 1.5,
         "sedan": 1.45,
