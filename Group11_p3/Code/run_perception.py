@@ -22,6 +22,7 @@ Output
 
 import argparse
 from copy import deepcopy
+import math
 import torch
 from pathlib import Path
 import os
@@ -62,6 +63,7 @@ from perception.speed_limit_ocr import SpeedLimitOcr
 from perception.export import build_frame_dict
 from perception.vehicle_subtypes import VehicleSubtypeClassifier
 from perception.pymaf import PymafEstimator
+from perception.tracker import ByteTrackWrapper
 
 
 def parse_args():
@@ -194,6 +196,8 @@ def load_models(
     non_coco_enabled = bool(non_coco_cfg.get("enabled", False))
     vehicle_subtype_cfg = perception_cfg.get("vehicle_subtypes_dart", {})
     vehicle_subtypes_enabled = bool(vehicle_subtype_cfg.get("enabled", False))
+    tracker_cfg = perception_cfg.get("tracker", {})
+    tracker_enabled = bool(tracker_cfg.get("enabled", False))
     speed_ocr = SpeedLimitOcr(cfg, device=device)
     models = {
         "objects":     ObjectDetector(cfg, device),
@@ -205,6 +209,7 @@ def load_models(
         "non_coco": NonCocoDartDetector(cfg, device) if non_coco_enabled else None,
         "vehicle_subtypes": VehicleSubtypeClassifier(cfg, device) if vehicle_subtypes_enabled else None,
         "speed_limit_ocr": speed_ocr,
+        "tracker": ByteTrackWrapper(cfg) if tracker_enabled else None,
     }
     models["traffic"].set_night_mode(night_mode)
     print("[init] All models loaded in the process of instantializing detectors.")
@@ -551,6 +556,284 @@ def _bbox_area(a) -> float:
     return max(0.0, float(a[2]) - float(a[0])) * max(0.0, float(a[3]) - float(a[1]))
 
 
+def _wrap_angle_rad(angle_rad: float) -> float:
+    """Wrap angle to [-pi, pi)."""
+    return (float(angle_rad) + math.pi) % (2.0 * math.pi) - math.pi
+
+
+def _angle_delta_rad(prev_angle: float, curr_angle: float) -> float:
+    """Shortest signed angular delta from prev to curr in radians."""
+    return _wrap_angle_rad(float(curr_angle) - float(prev_angle))
+
+
+def _get_temporal_cfg(cfg: dict) -> dict:
+    perception_cfg = cfg.get("perception", {})
+    temporal_cfg = perception_cfg.get("temporal_stability", {})
+
+    class_cfg = temporal_cfg.get("class_smoothing", {})
+    heading_cfg = temporal_cfg.get("heading_smoothing", {})
+    hold_cfg = temporal_cfg.get("missing_frame_hold", {})
+
+    groups = class_cfg.get("groups", {})
+    group_lookup = {}
+    for _, labels in groups.items():
+        if not isinstance(labels, (list, tuple)):
+            continue
+        label_set = {str(v).strip().lower() for v in labels if str(v).strip()}
+        for label in label_set:
+            group_lookup[label] = label_set
+
+    return {
+        "enabled": bool(temporal_cfg.get("enabled", True)),
+        "class": {
+            "enabled": bool(class_cfg.get("enabled", True)),
+            "window": max(1, int(class_cfg.get("window_size", 5))),
+            "hysteresis": max(1, int(class_cfg.get("hysteresis_frames", 2))),
+            "min_vote_ratio": float(class_cfg.get("min_vote_ratio", 0.5)),
+            "confidence_margin": float(class_cfg.get("confidence_margin", 0.08)),
+            "restrict_groups": bool(class_cfg.get("restrict_to_groups", True)),
+            "group_lookup": group_lookup,
+        },
+        "heading": {
+            "enabled": bool(heading_cfg.get("enabled", True)),
+            "alpha": float(heading_cfg.get("ema_alpha", 0.45)),
+            "max_delta_deg": float(heading_cfg.get("max_delta_deg", 30.0)),
+            "all_with_heading": bool(heading_cfg.get("all_with_heading", True)),
+        },
+        "hold": {
+            "enabled": bool(hold_cfg.get("enabled", True)),
+            "max_frames": max(0, int(hold_cfg.get("max_frames", 2))),
+            "decay": float(hold_cfg.get("confidence_decay", 0.9)),
+            "cleanup_after": max(1, int(hold_cfg.get("cleanup_after_frames", 20))),
+        },
+    }
+
+
+def _labels_are_compatible(prev_label: str, new_label: str, class_cfg: dict) -> bool:
+    prev_key = str(prev_label).strip().lower()
+    new_key = str(new_label).strip().lower()
+    if prev_key == new_key:
+        return True
+    if not bool(class_cfg.get("restrict_groups", True)):
+        return True
+    lookup = class_cfg.get("group_lookup", {})
+    prev_group = lookup.get(prev_key)
+    new_group = lookup.get(new_key)
+    if prev_group is None or new_group is None:
+        return True
+    return bool(prev_group.intersection(new_group))
+
+
+def _apply_class_smoothing(detections: list, frame_idx: int, track_states: dict, class_cfg: dict) -> set:
+    seen_tracks = set()
+    enabled = bool(class_cfg.get("enabled", True))
+    window = int(class_cfg.get("window", 5))
+    hysteresis = int(class_cfg.get("hysteresis", 2))
+    min_vote_ratio = float(class_cfg.get("min_vote_ratio", 0.5))
+    confidence_margin = float(class_cfg.get("confidence_margin", 0.08))
+
+    for det in detections:
+        track_id = getattr(det, "track_id", None)
+        if track_id is None:
+            continue
+
+        track_key = int(track_id)
+        seen_tracks.add(track_key)
+        observed_label = str(getattr(det, "label", "")).strip().lower()
+        observed_conf = float(getattr(det, "confidence", 0.0))
+
+        state = track_states.setdefault(
+            track_key,
+            {
+                "label_history": [],
+                "stable_label": None,
+                "pending_label": None,
+                "pending_count": 0,
+                "last_seen": -1,
+                "last_det": None,
+                "last_heading": None,
+            },
+        )
+
+        state["last_seen"] = int(frame_idx)
+        state["label_history"].append((observed_label, observed_conf))
+        if len(state["label_history"]) > window:
+            state["label_history"] = state["label_history"][-window:]
+
+        stable_label = state.get("stable_label")
+        if not enabled or stable_label is None:
+            state["stable_label"] = observed_label
+            det.label = observed_label
+            det.is_class_smoothed = False
+            continue
+
+        votes = {}
+        total_vote = 0.0
+        for label, conf in state["label_history"]:
+            weight = max(0.01, float(conf))
+            votes[label] = votes.get(label, 0.0) + weight
+            total_vote += weight
+
+        candidate_label = max(votes, key=votes.get)
+        stable_vote = votes.get(stable_label, 0.0)
+        candidate_vote = votes.get(candidate_label, 0.0)
+        candidate_ratio = (candidate_vote / total_vote) if total_vote > 0.0 else 0.0
+        margin = ((candidate_vote - stable_vote) / total_vote) if total_vote > 0.0 else 0.0
+
+        if candidate_label == stable_label:
+            state["pending_label"] = None
+            state["pending_count"] = 0
+        else:
+            allowed = _labels_are_compatible(stable_label, candidate_label, class_cfg)
+            strong_enough = candidate_ratio >= min_vote_ratio and margin >= confidence_margin
+            if allowed and strong_enough:
+                if state.get("pending_label") == candidate_label:
+                    state["pending_count"] = int(state.get("pending_count", 0)) + 1
+                else:
+                    state["pending_label"] = candidate_label
+                    state["pending_count"] = 1
+
+                if int(state.get("pending_count", 0)) >= hysteresis:
+                    state["stable_label"] = candidate_label
+                    state["pending_label"] = None
+                    state["pending_count"] = 0
+            else:
+                state["pending_label"] = None
+                state["pending_count"] = 0
+
+        final_label = str(state.get("stable_label", observed_label))
+        was_smoothed = final_label != observed_label
+        det.label = final_label
+        det.is_class_smoothed = bool(was_smoothed)
+        if was_smoothed:
+            det.observed_label = observed_label
+
+    return seen_tracks
+
+
+def _apply_heading_smoothing(detections: list, track_states: dict, heading_cfg: dict) -> None:
+    if not bool(heading_cfg.get("enabled", True)):
+        return
+
+    alpha = float(heading_cfg.get("alpha", 0.45))
+    max_delta_deg = float(heading_cfg.get("max_delta_deg", 30.0))
+    max_delta_rad = max(0.0, math.radians(max_delta_deg))
+
+    for det in detections:
+        heading = getattr(det, "heading_rad", None)
+        track_id = getattr(det, "track_id", None)
+        if heading is None or track_id is None:
+            continue
+
+        track_key = int(track_id)
+        state = track_states.setdefault(
+            track_key,
+            {
+                "label_history": [],
+                "stable_label": None,
+                "pending_label": None,
+                "pending_count": 0,
+                "last_seen": -1,
+                "last_det": None,
+                "last_heading": None,
+            },
+        )
+
+        raw_heading = _wrap_angle_rad(float(heading))
+        prev_heading = state.get("last_heading")
+        if prev_heading is None:
+            state["last_heading"] = raw_heading
+            det.heading_rad = raw_heading
+            det.is_heading_smoothed = False
+            continue
+
+        delta = _angle_delta_rad(float(prev_heading), raw_heading)
+        if max_delta_rad > 0.0:
+            delta = max(-max_delta_rad, min(max_delta_rad, delta))
+        smoothed_heading = _wrap_angle_rad(float(prev_heading) + alpha * delta)
+
+        det.raw_heading_rad = raw_heading
+        det.heading_rad = smoothed_heading
+        det.is_heading_smoothed = abs(_angle_delta_rad(raw_heading, smoothed_heading)) > 1e-4
+        state["last_heading"] = smoothed_heading
+
+
+def _update_track_snapshots(detections: list, frame_idx: int, track_states: dict) -> None:
+    for det in detections:
+        track_id = getattr(det, "track_id", None)
+        if track_id is None:
+            continue
+        state = track_states.setdefault(
+            int(track_id),
+            {
+                "label_history": [],
+                "stable_label": None,
+                "pending_label": None,
+                "pending_count": 0,
+                "last_seen": -1,
+                "last_det": None,
+                "last_heading": None,
+            },
+        )
+        state["last_seen"] = int(frame_idx)
+        det.is_held = False
+        det.hold_age_frames = 0
+        state["last_det"] = deepcopy(det)
+
+
+def _inject_held_detections(detections: list, frame_idx: int, track_states: dict, hold_cfg: dict) -> int:
+    if not bool(hold_cfg.get("enabled", True)):
+        return 0
+
+    max_frames = int(hold_cfg.get("max_frames", 2))
+    decay = float(hold_cfg.get("decay", 0.9))
+    if max_frames <= 0:
+        return 0
+
+    added = 0
+    seen_tracks = {int(getattr(det, "track_id")) for det in detections if getattr(det, "track_id", None) is not None}
+    for track_id, state in track_states.items():
+        if track_id in seen_tracks:
+            continue
+
+        last_seen = int(state.get("last_seen", -1))
+        if last_seen < 0:
+            continue
+
+        gap = int(frame_idx) - last_seen
+        if gap <= 0 or gap > max_frames:
+            continue
+
+        last_det = state.get("last_det")
+        if last_det is None:
+            continue
+
+        held_det = deepcopy(last_det)
+        held_det.is_held = True
+        held_det.hold_age_frames = gap
+        held_det.track_id = int(track_id)
+        held_det.confidence = max(0.0, float(getattr(last_det, "confidence", 0.0)) * (decay ** gap))
+        detections.append(held_det)
+        added += 1
+
+    return added
+
+
+def _cleanup_track_states(track_states: dict, frame_idx: int, hold_cfg: dict) -> None:
+    cleanup_after = int(hold_cfg.get("cleanup_after", 20))
+    stale_ids = []
+    for track_id, state in track_states.items():
+        last_seen = int(state.get("last_seen", -1))
+        if last_seen < 0:
+            stale_ids.append(track_id)
+            continue
+        if int(frame_idx) - last_seen > cleanup_after:
+            stale_ids.append(track_id)
+
+    for track_id in stale_ids:
+        track_states.pop(track_id, None)
+
+
 def _lane_points(lane):
     if isinstance(lane, dict):
         return lane.get("points", [])
@@ -667,8 +950,44 @@ def _as_traffic_candidate(det, source: str = "unknown"):
         label="traffic_light",
         bbox=[float(v) for v in getattr(det, "bbox", [0.0, 0.0, 0.0, 0.0])],
         confidence=float(getattr(det, "confidence", 0.0)),
+        track_id=getattr(det, "track_id", None),
         source=str(source),
     )
+
+
+def _propagate_track_ids_by_iou(target_dets: list, source_dets: list, iou_thr: float = 0.2) -> None:
+    """Copy track IDs from source detections to target detections using IoU matching."""
+    candidates = [s for s in source_dets if getattr(s, "track_id", None) is not None]
+    if not candidates or not target_dets:
+        return
+
+    used = set()
+    for tgt in target_dets:
+        tgt_bbox = getattr(tgt, "bbox", None)
+        tgt_label = str(getattr(tgt, "label", ""))
+        if tgt_bbox is None:
+            continue
+
+        best_iou = 0.0
+        best_idx = -1
+        for idx, src in enumerate(candidates):
+            if idx in used:
+                continue
+            if str(getattr(src, "label", "")) != tgt_label:
+                continue
+            src_bbox = getattr(src, "bbox", None)
+            if src_bbox is None:
+                continue
+            iou = _bbox_iou(tgt_bbox, src_bbox)
+            if iou > best_iou:
+                best_iou = iou
+                best_idx = idx
+
+        if best_idx < 0 or best_iou < iou_thr:
+            continue
+
+        setattr(tgt, "track_id", int(getattr(candidates[best_idx], "track_id")))
+        used.add(best_idx)
 
 
 def _dedupe_traffic_candidates(candidates: list, iou_thr: float) -> list:
@@ -1233,7 +1552,15 @@ def process_sequence(
     lane_debug_raw_match_point_ratio = float(lanes_cfg.get("debug_raw_match_point_ratio", 0.10))
     lane_debug_draw_unmatched_raw_boxes = bool(lanes_cfg.get("debug_draw_unmatched_raw_boxes", False))
     lane_debug_show_drop_reasons = bool(lanes_cfg.get("debug_show_drop_reasons", True))
-    models["traffic"].set_scene_context(scene_name)
+    tracker_cfg = cfg.get("perception", {}).get("tracker", {})
+    specialized_track_iou = float(tracker_cfg.get("project_to_specialized_iou", 0.2))
+    temporal_cfg = _get_temporal_cfg(cfg)
+    object_track_states = {}
+    non_coco_track_states = {}
+    if models.get("traffic") is not None:
+        models["traffic"].set_scene_context(scene_name)
+    if models.get("tracker") is not None:
+        models["tracker"].reset()
 
     # scene_dir is the root of this sequence, e.g. Data/Sequences/scene1/
     scene_dir = Path(cfg["paths"]["sequences_dir"]) / scene_name
@@ -1310,17 +1637,50 @@ def process_sequence(
             depth_map = models["depth"].estimate(frame_bgr)
             object_results = models["depth"].lift_to_3d(object_results, depth_map)
             non_coco_results = models["depth"].lift_to_3d(non_coco_results, depth_map)
+
+            if models.get("tracker") is not None:
+                models["tracker"].update(object_results, non_coco_results)
+
             traffic_results = models["depth"].lift_to_3d(
                 models["traffic"].detect(frame_bgr, traffic_candidates),
                 depth_map,
             )
             sign_results = models["signs"].detect(frame_bgr, object_results)
 
+            traffic_track_sources = [d for d in object_results if d.label == "traffic_light"]
+            stop_track_sources = [d for d in object_results if d.label == "stop_sign"]
+            _propagate_track_ids_by_iou(traffic_results, traffic_track_sources, iou_thr=specialized_track_iou)
+            _propagate_track_ids_by_iou(sign_results, stop_track_sources, iou_thr=specialized_track_iou)
+
             _SPECIALIZED = {"traffic_light", "stop_sign"}
             object_results = [d for d in object_results if d.label not in _SPECIALIZED]
 
+            if temporal_cfg.get("enabled", True):
+                _apply_class_smoothing(
+                    object_results,
+                    frame_idx,
+                    object_track_states,
+                    temporal_cfg["class"],
+                )
+                _apply_class_smoothing(
+                    non_coco_results,
+                    frame_idx,
+                    non_coco_track_states,
+                    temporal_cfg["class"],
+                )
+
             vehicle_results = [d for d in object_results if d.label in vehicle_labels]
             orientation_estimates = models["orientation"].annotate_detections(frame_bgr, vehicle_results)
+
+            if temporal_cfg.get("enabled", True):
+                _apply_heading_smoothing(object_results, object_track_states, temporal_cfg["heading"])
+                _apply_heading_smoothing(non_coco_results, non_coco_track_states, temporal_cfg["heading"])
+
+                _update_track_snapshots(object_results, frame_idx, object_track_states)
+                _update_track_snapshots(non_coco_results, frame_idx, non_coco_track_states)
+
+                _cleanup_track_states(object_track_states, frame_idx, temporal_cfg["hold"])
+                _cleanup_track_states(non_coco_track_states, frame_idx, temporal_cfg["hold"])
 
             if isinstance(lane_output, dict) and "lanes" in lane_output:
                 lane_results = lane_output["lanes"]

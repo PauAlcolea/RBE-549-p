@@ -11,7 +11,7 @@ Color:      HSV thresholding on the top third of the detected bbox crop.
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import cv2
 
@@ -25,6 +25,7 @@ class TrafficLight:
     label: str = "traffic_light"   # for consistency with Detection
     position_3d: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])  # optional, can be filled in by DepthEstimator.lift_to_3d
     traffic_light_style: str = "standard_vertical"  # renderer hook: "standard_vertical" | "wide_green_arrow_candidate" | "square_arrow_signal_candidate"
+    track_id: Optional[int] = None
 
 class TrafficLightDetector:
     """
@@ -210,6 +211,7 @@ class TrafficLightDetector:
                 depth_m=float(getattr(det, "depth_m", 0.0)),
                 label=det_label,
                 traffic_light_style=traffic_light_style,
+                track_id=getattr(det, "track_id", None),
             ))
 
         return lights
