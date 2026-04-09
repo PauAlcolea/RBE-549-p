@@ -9,6 +9,7 @@
 #   bash run_blender.sh --all --cam front
 #   bash run_blender.sh --all --allcam
 #   bash run_blender.sh --scene scene1 --cam front --debug
+#   bash run_blender.sh --scene scene1 --cam front --start_frame 120
 #
 # Requirements:
 #   - Blender must be on PATH, or set BLENDER_BIN env var:
@@ -101,16 +102,17 @@ while [[ $# -gt 0 ]]; do
         --all)     ALL_SCENES=true; shift ;;
         --allcam)  ALL_CAMS=true;   shift ;;
         --debug)   EXTRA_ARGS="$EXTRA_ARGS --debug"; shift ;;
+        --start_frame) EXTRA_ARGS="$EXTRA_ARGS --start_frame $2"; shift 2 ;;
         *) echo "Unknown argument: $1"; exit 1 ;;
     esac
 done
 
 if [[ -z "$SCENE" && "$ALL_SCENES" == false ]]; then
-    echo "Usage: bash run_blender.sh (--scene <name> | --all) (--cam <name> | --allcam) [--debug]"
+    echo "Usage: bash run_blender.sh (--scene <name> | --all) (--cam <name> | --allcam) [--debug] [--start_frame <idx>]"
     exit 1
 fi
 if [[ -z "$CAM" && "$ALL_CAMS" == false ]]; then
-    echo "Usage: bash run_blender.sh (--scene <name> | --all) (--cam <name> | --allcam) [--debug]"
+    echo "Usage: bash run_blender.sh (--scene <name> | --all) (--cam <name> | --allcam) [--debug] [--start_frame <idx>]"
     exit 1
 fi
 

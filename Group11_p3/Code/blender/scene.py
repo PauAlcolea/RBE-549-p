@@ -18,6 +18,7 @@ After all frames: stitch PNGs → MP4.
 import sys
 import argparse
 from pathlib import Path
+import re
 
 # sys.path must include Code/ so our utils and blender packages are importable
 code_dir = Path(__file__).resolve().parent.parent
@@ -54,7 +55,21 @@ def parse_args():
     parser.add_argument("--cam",    required=True, help="Camera: front | back | left_repeater | right_repeater")
     parser.add_argument("--config", default="config.yaml", help="Path to config.yaml")
     parser.add_argument("--debug",  action="store_true",   help="Print extra diagnostics per frame")
+    parser.add_argument(
+        "--start_frame",
+        type=int,
+        default=0,
+        help="Skip detection JSONs with frame index less than this value (must be >= 0)",
+    )
     return parser.parse_args(argv)
+
+
+def _frame_idx_from_json_path(json_path: Path):
+    """Extract frame index from file names like frame_000123.json."""
+    match = re.search(r"frame_(\d+)\.json$", json_path.name)
+    if not match:
+        return None
+    return int(match.group(1))
 
 
 def _resolve_cfg_path(value, base_dir: Path) -> str:
@@ -450,7 +465,14 @@ def _only_render_bbox(marking: dict):
     return [render_left, y1, render_right, y2]
 
 
-def render_sequence(scene_name: str, camera: str, cfg: dict, debug: bool = False, asset_lib=None):
+def render_sequence(
+    scene_name: str,
+    camera: str,
+    cfg: dict,
+    debug: bool = False,
+    start_frame: int = 0,
+    asset_lib=None,
+):
     """
     Main loop: iterate over all detection JSONs for one scene+camera pair,
     update the scene per frame, and render each frame to PNG.
@@ -468,8 +490,32 @@ def render_sequence(scene_name: str, camera: str, cfg: dict, debug: bool = False
     if not jsons:
         print(f"[scene] WARNING: no JSONs found in {det_dir} — nothing to render")
         return
+
+    filtered_jsons = []
+    for json_path in jsons:
+        parsed_idx = _frame_idx_from_json_path(json_path)
+        if parsed_idx is not None:
+            if parsed_idx >= start_frame:
+                filtered_jsons.append(json_path)
+            continue
+
+        frame_data = load_detection_json(json_path)
+        frame_idx = int(frame_data.get("frame", -1))
+        if frame_idx >= start_frame:
+            filtered_jsons.append(json_path)
+
+    jsons = filtered_jsons
+    if not jsons:
+        print(
+            f"[scene] WARNING: no JSONs at or after start_frame={start_frame} "
+            f"in {det_dir} — nothing to render"
+        )
+        return
  
-    print(f"[scene] Rendering {len(jsons)} frames for {scene_name}/{camera}")
+    print(
+        f"[scene] Rendering {len(jsons)} frames for {scene_name}/{camera} "
+        f"(start_frame={start_frame})"
+    )
 
     # Provide current sequence context to asset renderer so it can apply
     # scene-specific rendering rules safely.
@@ -593,6 +639,8 @@ def render_sequence(scene_name: str, camera: str, cfg: dict, debug: bool = False
 
 def main():
     args = parse_args()
+    if args.start_frame < 0:
+        raise ValueError("--start_frame must be >= 0")
  
     # config path is relative to Code/ unless absolute
     config_path = Path(args.config)
@@ -604,7 +652,14 @@ def main():
  
     setup_scene(cfg)
     asset_lib = AssetLibrary(cfg)
-    render_sequence(args.scene, args.cam, cfg, debug=args.debug, asset_lib=asset_lib)
+    render_sequence(
+        args.scene,
+        args.cam,
+        cfg,
+        debug=args.debug,
+        start_frame=args.start_frame,
+        asset_lib=asset_lib,
+    )
  
  
 if __name__ == "__main__":
