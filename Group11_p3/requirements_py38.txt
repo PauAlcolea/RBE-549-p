@@ -37,8 +37,8 @@ Markdown==3.7
 MarkupSafe==2.1.5
 matplotlib==3.7.5
 matplotlib-inline==0.1.7
-mpmath==1.3.0
-multi-person-tracker==0.1
+mpmath==1.3.0 
+multi-person-tracker @ git+https://github.com/mkocabas/multi-person-tracker.git
 networkx==3.1
 numba==0.58.1
 numpy==1.24.4
@@ -114,5 +114,5 @@ urllib3==2.2.3
 wcwidth==0.6.0
 Werkzeug==3.0.6
 yacs==0.1.8
-yolov3==0.1
+yolov3 @ git+https://github.com/mkocabas/yolov3-pytorch.git
 zipp==3.20.2
