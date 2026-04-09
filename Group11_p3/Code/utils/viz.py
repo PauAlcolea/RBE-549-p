@@ -202,10 +202,12 @@ def draw_detections(
         cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
 
         # Label: show depth once DepthEstimator is wired in, otherwise just label + conf
+        track_id = getattr(det, "track_id", None)
+        track_prefix = f"#{int(track_id)} " if track_id is not None else ""
         if det.depth_m > 0:
-            text = f"{det.label} {det.depth_m:.1f}m"
+            text = f"{track_prefix}{det.label} {det.depth_m:.1f}m"
         else:
-            text = f"{det.label} {det.confidence:.2f}"
+            text = f"{track_prefix}{det.label} {det.confidence:.2f}"
 
         heading_rad = getattr(det, "heading_rad", None)
         if heading_rad is not None and det.label != "person":
@@ -288,7 +290,9 @@ def draw_non_coco_objects(frame_bgr: np.ndarray, detections: list) -> np.ndarray
         x1, y1, x2, y2 = [int(v) for v in det.bbox]
         color = _COLOR_CONE if det.label == "traffic_cone" else _COLOR_NON_COCO
         cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
-        label = f"{det.label} {det.confidence:.2f}"
+        track_id = getattr(det, "track_id", None)
+        track_prefix = f"#{int(track_id)} " if track_id is not None else ""
+        label = f"{track_prefix}{det.label} {det.confidence:.2f}"
         if det.label == "speed_limit_sign":
             speed_value = getattr(det, "speed_value", None)
             ocr_conf = float(getattr(det, "ocr_confidence", 0.0))

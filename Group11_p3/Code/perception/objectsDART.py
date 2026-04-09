@@ -27,6 +27,7 @@ class NonCocoObject:
 	confidence: float = 0.0
 	depth_m: float = 0.0
 	position_3d: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
+	track_id: Optional[int] = None
 	export_bucket: str = "non_coco_objects"
 	speed_value: Optional[int] = None
 	ocr_confidence: float = 0.0
