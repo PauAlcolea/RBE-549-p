@@ -22,7 +22,7 @@
     We used Easy OCR to read speed limit signs.
 
 7. [PyMAF](https://github.com/HongwenZhang/PyMAF)
-    We used <> to detect human poses.
+    We used PyMAF to detect human poses.
 
 8. ["Tesla 3D" model by kaleankalin](https://skfb.ly/oLtrO)
     Tesla Blender model is licensed under [Creative Commons Attribution](http://creativecommons.org/licenses/by/4.0/).
