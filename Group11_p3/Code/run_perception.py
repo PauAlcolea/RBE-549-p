@@ -50,6 +50,7 @@ from utils.viz import (
     draw_traffic_lights,
     draw_signs,
     draw_non_coco_objects,
+    draw_taillights,
     draw_pymaf_matches,
 )
 from perception.lanes import LaneDetector
@@ -64,6 +65,7 @@ from perception.export import build_frame_dict
 from perception.vehicle_subtypes import VehicleSubtypeClassifier
 from perception.pymaf import PymafEstimator
 from perception.tracker import ByteTrackWrapper
+from perception.taillights import TailLightDetector
 
 
 def parse_args():
@@ -207,6 +209,7 @@ def load_models(
         "traffic": TrafficLightDetector(cfg),
         "signs":   SignDetector(cfg),
         "non_coco": NonCocoDartDetector(cfg, device) if non_coco_enabled else None,
+        "taillights": TailLightDetector(cfg, device),
         "vehicle_subtypes": VehicleSubtypeClassifier(cfg, device) if vehicle_subtypes_enabled else None,
         "speed_limit_ocr": speed_ocr,
         "tracker": ByteTrackWrapper(cfg) if tracker_enabled else None,
@@ -1598,6 +1601,7 @@ def process_sequence(
         traffic_results = []
         sign_results = []
         vehicle_results = []
+        taillight_results = []
         orientation_estimates = []
 
         if person_only:
@@ -1671,6 +1675,9 @@ def process_sequence(
 
             vehicle_results = [d for d in object_results if d.label in vehicle_labels]
             orientation_estimates = models["orientation"].annotate_detections(frame_bgr, vehicle_results)
+            if models.get("taillights") is not None and vehicle_results:
+                taillight_results = models["taillights"].detect(frame_bgr, vehicle_results)
+                taillight_results = models["depth"].lift_to_3d(taillight_results, depth_map)
 
             if temporal_cfg.get("enabled", True):
                 _apply_heading_smoothing(object_results, object_track_states, temporal_cfg["heading"])
@@ -1720,6 +1727,7 @@ def process_sequence(
             traffic_lights=traffic_results,
             stop_signs=sign_results,
             non_coco_objects=non_coco_results,
+            taillights=taillight_results,
         )
         save_detection_json(frame_dict, out_dir / f"frame_{frame_idx:06d}.json")
 
@@ -1728,10 +1736,11 @@ def process_sequence(
             annotated_traffic = draw_traffic_lights(annotated, traffic_results)
             annotated_signs = draw_signs(annotated_traffic, sign_results)
             annotated_non_coco = draw_non_coco_objects(annotated_signs, non_coco_results)
+            annotated_taillights = draw_taillights(annotated_non_coco, taillight_results)
 
             # FIXME all these paths
             show_or_save(
-                annotated_non_coco,
+                annotated_taillights,
                 save_path=str(debug_dir / f"debug_frame_{frame_idx:06d}.png")
             )
             lane_exclude_classes = cfg.get("perception", {}).get("lanes", {}).get("exclude_classes", [])
@@ -1774,7 +1783,8 @@ def process_sequence(
                 f"  [{scene_name}/{camera}] {i+1} frames processed | "
                 f"lanes={len(lane_results)} raw_dets={raw_count} "
                 f"vehicles={len(vehicle_results)} oriented={len(orientation_estimates)} "
-                f"pedestrians={sum(1 for d in object_results if d.label == 'person')}"
+                f"pedestrians={sum(1 for d in object_results if d.label == 'person')} "
+                f"taillights={len(taillight_results)}"
             )
 
     print(f"[{scene_name}] Done. JSONs saved to {out_dir}")
