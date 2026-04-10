@@ -43,7 +43,7 @@ paths:
 weights:
   yolo:         ../Weights/yolov9c.pt
   rtdetr:       ../Weights/rtdetr-x.pt      # download: ultralytics rtdetr-x (COCO pretrained)
-  depth:        ../Weights/depth_anything_v2_metric_vkitti_vitb.pth
+  depth:        ../Weights/depth_anything_v2_metric_vkitti_vitl.pth
   lanes:        ../Weights/sam3.pt
   orientation:  ../Weights/boundingbox.pkl
   pymaf:        ../Weights/PyMAF_model_checkpoint.pt
@@ -69,6 +69,49 @@ perception:
                               # higher = stricter spatial agreement required
     merged_confidence: 0.65   # final gate: average of both scores must exceed this (0.65 if too many false positives, 0.45 if missing too many real objects)
 
+  tracker:
+    enabled: true
+    track_objects: true
+    track_non_coco: true
+    track_thresh: 0.5
+    match_thresh: 0.5
+    second_match_thresh: 0.4
+    lost_match_thresh: 0.3
+    max_time_lost: 30
+    min_hits: 3
+    duplicate_iou_thresh: 0.85
+    class_agnostic_nms_thresh: 1.0
+    assignment_iou: 0.10
+    project_to_specialized_iou: 0.20
+    include_labels: []
+    exclude_labels: []
+
+  temporal_stability:
+    enabled: true
+
+    class_smoothing:
+      enabled: true
+      window_size: 5
+      hysteresis_frames: 2
+      min_vote_ratio: 0.5
+      confidence_margin: 0.08
+      restrict_to_groups: true
+      groups:
+        vehicle_family: ["car", "sedan", "hatchback", "suv", "pickuptruck", "pickup_truck", "truck", "bus"]
+        two_wheeler_family: ["bicycle", "motorcycle"]
+
+    heading_smoothing:
+      enabled: true
+      all_with_heading: true
+      ema_alpha: 0.45
+      max_delta_deg: 30.0
+
+    missing_frame_hold:
+      enabled: true
+      max_frames: 2
+      confidence_decay: 0.9
+      cleanup_after_frames: 20
+
   lanes:
     model: DART
     max_lanes: 8
@@ -85,6 +128,22 @@ perception:
     trt_enc_dec: perception/DART/enc_dec_fp16.engine
     text_cache: null
     polyline_points: 20
+    polyline_component_filter_enabled: true
+    polyline_component_min_area: 20
+    polyline_x_track_nearest: true
+    polyline_smooth_window: 5
+    polyline_mask_close_kernel: 3
+    polyline_mask_close_iters: 1
+    polyline_spike_filter_enabled: true
+    polyline_spike_turn_deg: 65.0
+    polyline_spike_segment_ratio: 2.0
+    polyline_spike_deviation_ratio: 1.3
+    polyline_spike_max_removed_ratio: 0.45
+    polyline_spike_min_points: 6
+    polyline_straighten_enabled: true
+    polyline_straighten_min_points: 6
+    polyline_straighten_max_median_residual_px: 1.5
+    polyline_straighten_max_residual_px: 6.0
     color_samples: 12
     color_patch: 3
     white_vote_ratio: 0.5
@@ -149,10 +208,6 @@ perception:
       label: "lane_control_light"
       export_bucket: "non_coco_objects"
       exclude_labels: ["car turn signal", "tunnel ceiling lights", "car headlight", "car taillight"]
-    - prompt: "traffic light arrow signal"
-      label: "traffic_light_arrow_signal"
-      export_bucket: "non_coco_objects"
-      exclude_labels: ["car turn signal", "car taillight", "car headlight", "arrow on sign"]
     default_export_bucket: "non_coco_objects"
     negative_overlap_iou: 0.35   # suppress a class if it overlaps an excluded class at/above this IoU
     confidence: 0.35
@@ -228,12 +283,12 @@ perception:
 
   depth:
     model:
-      encoder: vitb        # vits | vitb | vitl
-      features: 128
-      out_channels: [96, 192, 384, 768]
+      encoder: vitl        # vits | vitb | vitl
+      features: 256
+      out_channels: [256, 512, 1024, 1024]
       max_depth: 80        
 
-    download_url: "https://huggingface.co/depth-anything/Depth-Anything-V2-Metric-VKITTI-Base/resolve/main/depth_anything_v2_metric_vkitti_vitb.pth?download=true"
+    download_url: "https://huggingface.co/depth-anything/Depth-Anything-V2-Metric-VKITTI-Large/resolve/main/depth_anything_v2_metric_vkitti_vitl.pth?download=true"
     # Scale normalization: use known real-world heights (meters)
     known_heights:
       car: 1.5
@@ -247,7 +302,7 @@ perception:
       traffic_light: 5
       traffic_cone: 0.7
       trash_can: 1.0
-      traffic_pole: 3.0
+      traffic_pole: 0.9
       speed_limit_sign: 0.6
 
   pymaf:
@@ -316,11 +371,7 @@ perception:
     dart_lane_control_enabled: true
     dart_lane_control_min_confidence: 0.30
     dart_lane_control_dedupe_iou: 0.45
-    arrow_overlap_iou: 0.35              # if arrow-signal and regular traffic-light boxes coincide, keep only one
-    arrow_overlap_ioa: 0.65              # also suppress when one box is mostly contained inside the other
     nested_overlap_ioa: 0.80             # generic containment suppression for nested whole-light/arrow boxes
-    dart_arrow_signal_aspect_min: 0.70   # scene6 DART arrow-signal aspect filter
-    dart_arrow_signal_aspect_max: 1.35   # throw out wide arrow-signal boxes like ~1.94
 
   stop_sign:
     min_contour_area: 800       # fallback: ignore red shapes smaller than this (px²)

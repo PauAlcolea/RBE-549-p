@@ -13,7 +13,7 @@ and ground arrows (segmentation or homography-based detection).
 """
 
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Optional
 import numpy as np
 import cv2
 
@@ -25,6 +25,7 @@ class Sign:
     confidence: float
     depth_m: float = 0.0
     position_3d: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
+    track_id: Optional[int] = None
 
 class SignDetector:
     """
@@ -88,6 +89,7 @@ class SignDetector:
                     confidence=det.confidence,
                     depth_m=det.depth_m,
                     position_3d=det.position_3d,
+                    track_id=getattr(det, "track_id", None),
                 ))
                 yolo_bboxes.add(tuple(int(v) for v in det.bbox))
                 yolo_found = True

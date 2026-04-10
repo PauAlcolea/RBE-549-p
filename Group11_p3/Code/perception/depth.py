@@ -97,8 +97,6 @@ class DepthEstimator:
         if not detections:
             return detections
 
-        scale = self._estimate_scale(detections, depth_map)
-
         H_map, W_map = depth_map.shape
 
         for det in detections:
@@ -133,9 +131,7 @@ class DepthEstimator:
             roi = depth_map[y1i:y2i, x1i:x2i]
             Z_raw = float(np.median(roi)) if roi.size > 0 else float(np.median(depth_map))
 
-            # Apply domain-shift correction (1.0 if no known-height objects found)
-            Z = Z_raw * scale
-            Z = max(Z, 0.1)  # sanity floor: nothing closer than 10 cm
+            Z = max(Z_raw, 0.1)  # sanity floor: nothing closer than 10 cm
 
             # Pinhole back-projection
             X = (u - self.cx) / self.fx * Z
@@ -146,56 +142,3 @@ class DepthEstimator:
 
         return detections
 
-    def _estimate_scale(self, detections: list, depth_map: np.ndarray) -> float:
-        """
-        Compute a multiplicative scale correction for the metric depth map.
-
-        Even though the model outputs metric depth, there is often a scale bias
-        when the training domain (VKITTI) differs from the target footage.
-        We recover a correction factor using objects of known real-world height:
-
-            expected_Z  = fy * known_height_m / bbox_height_px   (pinhole model)
-            measured_Z  = median depth inside bbox               (model output)
-            correction  = expected_Z / measured_Z
-
-        Corrections are clamped per-detection to [0.5, 2.0] before averaging
-        to limit the impact of a single bad detection. Falls back to 1.0 if no
-        known-height objects are present.
-        """
-        H_map, W_map = depth_map.shape
-        corrections = []
-
-        for det in detections:
-            known_h = self.known_heights.get(det.label)
-            if known_h is None:
-                continue
-
-            x1, y1, x2, y2 = det.bbox
-            bbox_height_px = y2 - y1
-            if bbox_height_px < 10:
-                # Too small — pinhole estimate noisy and ROI unreliable
-                continue
-
-            # Expected metric depth from pinhole geometry
-            expected_Z = self.fy * known_h / bbox_height_px
-
-            # Measured depth: median over the full bbox ROI
-            y1i = max(0,       min(int(y1), H_map - 1))
-            y2i = max(y1i + 1, min(int(y2), H_map))
-            x1i = max(0,       min(int(x1), W_map - 1))
-            x2i = max(x1i + 1, min(int(x2), W_map))
-            roi = depth_map[y1i:y2i, x1i:x2i]
-            if roi.size == 0:
-                continue
-            measured_Z = float(np.median(roi))
-            if measured_Z < 0.01:
-                continue  # degenerate model output, skip
-
-            corrections.append(expected_Z / measured_Z)
-
-        if not corrections:
-            return 1.0
-
-        # Clamp each correction before averaging to reduce outlier impact
-        corrections = [max(0.5, min(c, 2.0)) for c in corrections]
-        return float(np.mean(corrections))

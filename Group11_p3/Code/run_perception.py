@@ -22,6 +22,7 @@ Output
 
 import argparse
 from copy import deepcopy
+import math
 import torch
 from pathlib import Path
 import os
@@ -62,6 +63,7 @@ from perception.speed_limit_ocr import SpeedLimitOcr
 from perception.export import build_frame_dict
 from perception.vehicle_subtypes import VehicleSubtypeClassifier
 from perception.pymaf import PymafEstimator
+from perception.tracker import ByteTrackWrapper
 
 
 def parse_args():
@@ -124,6 +126,41 @@ def parse_args():
         help="Run only PyMAF and update existing detection JSONs in-place."
     )
 
+    parser.add_argument(
+        "--frame_skip",
+        type=int,
+        default=None,
+        help="Override frame skip from config (process every Nth frame, N>=1)."
+    )
+
+    parser.add_argument(
+        "--start_frame",
+        type=int,
+        default=0,
+        help="Skip frames with frame_idx less than this value (must be >= 0)."
+    )
+
+    parser.add_argument(
+        "--lane_conf_yellow",
+        type=float,
+        default=None,
+        help="Override yellow-lane retention confidence threshold."
+    )
+
+    parser.add_argument(
+        "--lane_conf_white",
+        type=float,
+        default=None,
+        help="Override white-lane retention confidence threshold."
+    )
+
+    parser.add_argument(
+        "--traffic_light_conf",
+        type=float,
+        default=None,
+        help="Override traffic-light retention confidence threshold (post YOLO/RT-DETR merge)."
+    )
+
     
     
     return parser.parse_args()
@@ -159,6 +196,8 @@ def load_models(
     non_coco_enabled = bool(non_coco_cfg.get("enabled", False))
     vehicle_subtype_cfg = perception_cfg.get("vehicle_subtypes_dart", {})
     vehicle_subtypes_enabled = bool(vehicle_subtype_cfg.get("enabled", False))
+    tracker_cfg = perception_cfg.get("tracker", {})
+    tracker_enabled = bool(tracker_cfg.get("enabled", False))
     speed_ocr = SpeedLimitOcr(cfg, device=device)
     models = {
         "objects":     ObjectDetector(cfg, device),
@@ -170,6 +209,7 @@ def load_models(
         "non_coco": NonCocoDartDetector(cfg, device) if non_coco_enabled else None,
         "vehicle_subtypes": VehicleSubtypeClassifier(cfg, device) if vehicle_subtypes_enabled else None,
         "speed_limit_ocr": speed_ocr,
+        "tracker": ByteTrackWrapper(cfg) if tracker_enabled else None,
     }
     models["traffic"].set_night_mode(night_mode)
     print("[init] All models loaded in the process of instantializing detectors.")
@@ -516,6 +556,284 @@ def _bbox_area(a) -> float:
     return max(0.0, float(a[2]) - float(a[0])) * max(0.0, float(a[3]) - float(a[1]))
 
 
+def _wrap_angle_rad(angle_rad: float) -> float:
+    """Wrap angle to [-pi, pi)."""
+    return (float(angle_rad) + math.pi) % (2.0 * math.pi) - math.pi
+
+
+def _angle_delta_rad(prev_angle: float, curr_angle: float) -> float:
+    """Shortest signed angular delta from prev to curr in radians."""
+    return _wrap_angle_rad(float(curr_angle) - float(prev_angle))
+
+
+def _get_temporal_cfg(cfg: dict) -> dict:
+    perception_cfg = cfg.get("perception", {})
+    temporal_cfg = perception_cfg.get("temporal_stability", {})
+
+    class_cfg = temporal_cfg.get("class_smoothing", {})
+    heading_cfg = temporal_cfg.get("heading_smoothing", {})
+    hold_cfg = temporal_cfg.get("missing_frame_hold", {})
+
+    groups = class_cfg.get("groups", {})
+    group_lookup = {}
+    for _, labels in groups.items():
+        if not isinstance(labels, (list, tuple)):
+            continue
+        label_set = {str(v).strip().lower() for v in labels if str(v).strip()}
+        for label in label_set:
+            group_lookup[label] = label_set
+
+    return {
+        "enabled": bool(temporal_cfg.get("enabled", True)),
+        "class": {
+            "enabled": bool(class_cfg.get("enabled", True)),
+            "window": max(1, int(class_cfg.get("window_size", 5))),
+            "hysteresis": max(1, int(class_cfg.get("hysteresis_frames", 2))),
+            "min_vote_ratio": float(class_cfg.get("min_vote_ratio", 0.5)),
+            "confidence_margin": float(class_cfg.get("confidence_margin", 0.08)),
+            "restrict_groups": bool(class_cfg.get("restrict_to_groups", True)),
+            "group_lookup": group_lookup,
+        },
+        "heading": {
+            "enabled": bool(heading_cfg.get("enabled", True)),
+            "alpha": float(heading_cfg.get("ema_alpha", 0.45)),
+            "max_delta_deg": float(heading_cfg.get("max_delta_deg", 30.0)),
+            "all_with_heading": bool(heading_cfg.get("all_with_heading", True)),
+        },
+        "hold": {
+            "enabled": bool(hold_cfg.get("enabled", True)),
+            "max_frames": max(0, int(hold_cfg.get("max_frames", 2))),
+            "decay": float(hold_cfg.get("confidence_decay", 0.9)),
+            "cleanup_after": max(1, int(hold_cfg.get("cleanup_after_frames", 20))),
+        },
+    }
+
+
+def _labels_are_compatible(prev_label: str, new_label: str, class_cfg: dict) -> bool:
+    prev_key = str(prev_label).strip().lower()
+    new_key = str(new_label).strip().lower()
+    if prev_key == new_key:
+        return True
+    if not bool(class_cfg.get("restrict_groups", True)):
+        return True
+    lookup = class_cfg.get("group_lookup", {})
+    prev_group = lookup.get(prev_key)
+    new_group = lookup.get(new_key)
+    if prev_group is None or new_group is None:
+        return True
+    return bool(prev_group.intersection(new_group))
+
+
+def _apply_class_smoothing(detections: list, frame_idx: int, track_states: dict, class_cfg: dict) -> set:
+    seen_tracks = set()
+    enabled = bool(class_cfg.get("enabled", True))
+    window = int(class_cfg.get("window", 5))
+    hysteresis = int(class_cfg.get("hysteresis", 2))
+    min_vote_ratio = float(class_cfg.get("min_vote_ratio", 0.5))
+    confidence_margin = float(class_cfg.get("confidence_margin", 0.08))
+
+    for det in detections:
+        track_id = getattr(det, "track_id", None)
+        if track_id is None:
+            continue
+
+        track_key = int(track_id)
+        seen_tracks.add(track_key)
+        observed_label = str(getattr(det, "label", "")).strip().lower()
+        observed_conf = float(getattr(det, "confidence", 0.0))
+
+        state = track_states.setdefault(
+            track_key,
+            {
+                "label_history": [],
+                "stable_label": None,
+                "pending_label": None,
+                "pending_count": 0,
+                "last_seen": -1,
+                "last_det": None,
+                "last_heading": None,
+            },
+        )
+
+        state["last_seen"] = int(frame_idx)
+        state["label_history"].append((observed_label, observed_conf))
+        if len(state["label_history"]) > window:
+            state["label_history"] = state["label_history"][-window:]
+
+        stable_label = state.get("stable_label")
+        if not enabled or stable_label is None:
+            state["stable_label"] = observed_label
+            det.label = observed_label
+            det.is_class_smoothed = False
+            continue
+
+        votes = {}
+        total_vote = 0.0
+        for label, conf in state["label_history"]:
+            weight = max(0.01, float(conf))
+            votes[label] = votes.get(label, 0.0) + weight
+            total_vote += weight
+
+        candidate_label = max(votes, key=votes.get)
+        stable_vote = votes.get(stable_label, 0.0)
+        candidate_vote = votes.get(candidate_label, 0.0)
+        candidate_ratio = (candidate_vote / total_vote) if total_vote > 0.0 else 0.0
+        margin = ((candidate_vote - stable_vote) / total_vote) if total_vote > 0.0 else 0.0
+
+        if candidate_label == stable_label:
+            state["pending_label"] = None
+            state["pending_count"] = 0
+        else:
+            allowed = _labels_are_compatible(stable_label, candidate_label, class_cfg)
+            strong_enough = candidate_ratio >= min_vote_ratio and margin >= confidence_margin
+            if allowed and strong_enough:
+                if state.get("pending_label") == candidate_label:
+                    state["pending_count"] = int(state.get("pending_count", 0)) + 1
+                else:
+                    state["pending_label"] = candidate_label
+                    state["pending_count"] = 1
+
+                if int(state.get("pending_count", 0)) >= hysteresis:
+                    state["stable_label"] = candidate_label
+                    state["pending_label"] = None
+                    state["pending_count"] = 0
+            else:
+                state["pending_label"] = None
+                state["pending_count"] = 0
+
+        final_label = str(state.get("stable_label", observed_label))
+        was_smoothed = final_label != observed_label
+        det.label = final_label
+        det.is_class_smoothed = bool(was_smoothed)
+        if was_smoothed:
+            det.observed_label = observed_label
+
+    return seen_tracks
+
+
+def _apply_heading_smoothing(detections: list, track_states: dict, heading_cfg: dict) -> None:
+    if not bool(heading_cfg.get("enabled", True)):
+        return
+
+    alpha = float(heading_cfg.get("alpha", 0.45))
+    max_delta_deg = float(heading_cfg.get("max_delta_deg", 30.0))
+    max_delta_rad = max(0.0, math.radians(max_delta_deg))
+
+    for det in detections:
+        heading = getattr(det, "heading_rad", None)
+        track_id = getattr(det, "track_id", None)
+        if heading is None or track_id is None:
+            continue
+
+        track_key = int(track_id)
+        state = track_states.setdefault(
+            track_key,
+            {
+                "label_history": [],
+                "stable_label": None,
+                "pending_label": None,
+                "pending_count": 0,
+                "last_seen": -1,
+                "last_det": None,
+                "last_heading": None,
+            },
+        )
+
+        raw_heading = _wrap_angle_rad(float(heading))
+        prev_heading = state.get("last_heading")
+        if prev_heading is None:
+            state["last_heading"] = raw_heading
+            det.heading_rad = raw_heading
+            det.is_heading_smoothed = False
+            continue
+
+        delta = _angle_delta_rad(float(prev_heading), raw_heading)
+        if max_delta_rad > 0.0:
+            delta = max(-max_delta_rad, min(max_delta_rad, delta))
+        smoothed_heading = _wrap_angle_rad(float(prev_heading) + alpha * delta)
+
+        det.raw_heading_rad = raw_heading
+        det.heading_rad = smoothed_heading
+        det.is_heading_smoothed = abs(_angle_delta_rad(raw_heading, smoothed_heading)) > 1e-4
+        state["last_heading"] = smoothed_heading
+
+
+def _update_track_snapshots(detections: list, frame_idx: int, track_states: dict) -> None:
+    for det in detections:
+        track_id = getattr(det, "track_id", None)
+        if track_id is None:
+            continue
+        state = track_states.setdefault(
+            int(track_id),
+            {
+                "label_history": [],
+                "stable_label": None,
+                "pending_label": None,
+                "pending_count": 0,
+                "last_seen": -1,
+                "last_det": None,
+                "last_heading": None,
+            },
+        )
+        state["last_seen"] = int(frame_idx)
+        det.is_held = False
+        det.hold_age_frames = 0
+        state["last_det"] = deepcopy(det)
+
+
+def _inject_held_detections(detections: list, frame_idx: int, track_states: dict, hold_cfg: dict) -> int:
+    if not bool(hold_cfg.get("enabled", True)):
+        return 0
+
+    max_frames = int(hold_cfg.get("max_frames", 2))
+    decay = float(hold_cfg.get("decay", 0.9))
+    if max_frames <= 0:
+        return 0
+
+    added = 0
+    seen_tracks = {int(getattr(det, "track_id")) for det in detections if getattr(det, "track_id", None) is not None}
+    for track_id, state in track_states.items():
+        if track_id in seen_tracks:
+            continue
+
+        last_seen = int(state.get("last_seen", -1))
+        if last_seen < 0:
+            continue
+
+        gap = int(frame_idx) - last_seen
+        if gap <= 0 or gap > max_frames:
+            continue
+
+        last_det = state.get("last_det")
+        if last_det is None:
+            continue
+
+        held_det = deepcopy(last_det)
+        held_det.is_held = True
+        held_det.hold_age_frames = gap
+        held_det.track_id = int(track_id)
+        held_det.confidence = max(0.0, float(getattr(last_det, "confidence", 0.0)) * (decay ** gap))
+        detections.append(held_det)
+        added += 1
+
+    return added
+
+
+def _cleanup_track_states(track_states: dict, frame_idx: int, hold_cfg: dict) -> None:
+    cleanup_after = int(hold_cfg.get("cleanup_after", 20))
+    stale_ids = []
+    for track_id, state in track_states.items():
+        last_seen = int(state.get("last_seen", -1))
+        if last_seen < 0:
+            stale_ids.append(track_id)
+            continue
+        if int(frame_idx) - last_seen > cleanup_after:
+            stale_ids.append(track_id)
+
+    for track_id in stale_ids:
+        track_states.pop(track_id, None)
+
+
 def _lane_points(lane):
     if isinstance(lane, dict):
         return lane.get("points", [])
@@ -632,8 +950,44 @@ def _as_traffic_candidate(det, source: str = "unknown"):
         label="traffic_light",
         bbox=[float(v) for v in getattr(det, "bbox", [0.0, 0.0, 0.0, 0.0])],
         confidence=float(getattr(det, "confidence", 0.0)),
+        track_id=getattr(det, "track_id", None),
         source=str(source),
     )
+
+
+def _propagate_track_ids_by_iou(target_dets: list, source_dets: list, iou_thr: float = 0.2) -> None:
+    """Copy track IDs from source detections to target detections using IoU matching."""
+    candidates = [s for s in source_dets if getattr(s, "track_id", None) is not None]
+    if not candidates or not target_dets:
+        return
+
+    used = set()
+    for tgt in target_dets:
+        tgt_bbox = getattr(tgt, "bbox", None)
+        tgt_label = str(getattr(tgt, "label", ""))
+        if tgt_bbox is None:
+            continue
+
+        best_iou = 0.0
+        best_idx = -1
+        for idx, src in enumerate(candidates):
+            if idx in used:
+                continue
+            if str(getattr(src, "label", "")) != tgt_label:
+                continue
+            src_bbox = getattr(src, "bbox", None)
+            if src_bbox is None:
+                continue
+            iou = _bbox_iou(tgt_bbox, src_bbox)
+            if iou > best_iou:
+                best_iou = iou
+                best_idx = idx
+
+        if best_idx < 0 or best_iou < iou_thr:
+            continue
+
+        setattr(tgt, "track_id", int(getattr(candidates[best_idx], "track_id")))
+        used.add(best_idx)
 
 
 def _dedupe_traffic_candidates(candidates: list, iou_thr: float) -> list:
@@ -651,60 +1005,6 @@ def _dedupe_traffic_candidates(candidates: list, iou_thr: float) -> list:
             continue
         kept.append(cand)
     return kept
-
-
-def _suppress_arrow_signal_overlaps(candidates: list, iou_thr: float, ioa_thr: float) -> list:
-    """Resolve overlaps between DART arrow-signal boxes and other traffic-light boxes."""
-    if len(candidates) <= 1:
-        return candidates
-
-    arrow_idxs = [
-        i for i, c in enumerate(candidates)
-        if str(getattr(c, "source", "")) == "traffic_light_arrow_signal"
-    ]
-    if not arrow_idxs:
-        return candidates
-
-    drop = set()
-    for i in arrow_idxs:
-        if i in drop:
-            continue
-        a = candidates[i]
-        a_bbox = getattr(a, "bbox", None)
-        if a_bbox is None:
-            continue
-
-        for j, b in enumerate(candidates):
-            if i == j or j in drop:
-                continue
-            if str(getattr(b, "source", "")) == "traffic_light_arrow_signal":
-                continue
-
-            b_bbox = getattr(b, "bbox", None)
-            if b_bbox is None:
-                continue
-
-            iou = _bbox_iou(a_bbox, b_bbox)
-            inter = _bbox_intersection(a_bbox, b_bbox)
-            a_area = _bbox_area(a_bbox)
-            b_area = _bbox_area(b_bbox)
-            min_area = max(min(a_area, b_area), 1e-6)
-            ioa_small = inter / min_area
-
-            # Handle both near-equal overlap (IoU) and containment (IoA of smaller box).
-            if (iou < iou_thr) and (ioa_small < ioa_thr):
-                continue
-
-            a_conf = float(getattr(a, "confidence", 0.0))
-            b_conf = float(getattr(b, "confidence", 0.0))
-            # Remove one: keep the higher-confidence candidate on overlap.
-            if a_conf >= b_conf:
-                drop.add(j)
-            else:
-                drop.add(i)
-                break
-
-    return [c for idx, c in enumerate(candidates) if idx not in drop]
 
 
 def _suppress_contained_candidates(candidates: list, ioa_thr: float) -> list:
@@ -749,29 +1049,35 @@ def _suppress_contained_candidates(candidates: list, ioa_thr: float) -> list:
     return [c for idx, c in enumerate(candidates) if idx not in drop]
 
 
-def _build_traffic_candidates(object_results: list, non_coco_results: list, cfg: dict, scene_name: str):
+def _build_traffic_candidates(
+    object_results: list,
+    non_coco_results: list,
+    cfg: dict,
+    scene_name: str,
+    traffic_light_min_conf: float = None,
+):
     """OR YOLO traffic lights with DART lane-control lights, then dedupe."""
     traffic_cfg = cfg.get("perception", {}).get("traffic_light", {})
     dart_lane_control_enabled = bool(traffic_cfg.get("dart_lane_control_enabled", True))
     dart_lane_control_min_conf = float(traffic_cfg.get("dart_lane_control_min_confidence", 0.30))
     dedupe_iou = float(traffic_cfg.get("dart_lane_control_dedupe_iou", 0.45))
-    arrow_overlap_iou = float(traffic_cfg.get("arrow_overlap_iou", 0.35))
-    arrow_overlap_ioa = float(traffic_cfg.get("arrow_overlap_ioa", 0.65))
     nested_overlap_ioa = float(traffic_cfg.get("nested_overlap_ioa", 0.80))
     square_aspect_min = float(traffic_cfg.get("square_arrow_aspect_min", 0.75))
     square_aspect_max = float(traffic_cfg.get("square_arrow_aspect_max", 1.35))
-    dart_arrow_aspect_min = float(traffic_cfg.get("dart_arrow_signal_aspect_min", 0.70))
-    dart_arrow_aspect_max = float(traffic_cfg.get("dart_arrow_signal_aspect_max", 1.35))
     max_lane_control_side_px = 90.0
     scene_name_norm = str(scene_name).strip().lower()
     lane_control_scene_enabled = scene_name_norm == "scene2"
-    arrow_signal_scene_enabled = scene_name_norm == "scene6"
-    dart_traffic_aux_labels = {"lane_control_light", "traffic_light_arrow_signal"}
+    dart_traffic_aux_labels = {"lane_control_light"}
+    default_tl_conf = float(cfg.get("perception", {}).get("rtdetr", {}).get("merged_confidence", 0.65))
+    effective_tl_conf = default_tl_conf if traffic_light_min_conf is None else float(traffic_light_min_conf)
 
     yolo_candidates = [
         _as_traffic_candidate(d, source="yolo_traffic_light")
         for d in object_results
-        if getattr(d, "label", "") == "traffic_light"
+        if (
+            getattr(d, "label", "") == "traffic_light"
+            and float(getattr(d, "confidence", 0.0)) >= effective_tl_conf
+        )
     ]
 
     if not dart_lane_control_enabled:
@@ -811,18 +1117,8 @@ def _build_traffic_candidates(object_results: list, non_coco_results: list, cfg:
             dart_traffic_candidates.append(_as_traffic_candidate(det, source=det_label))
             continue
 
-        if det_label == "traffic_light_arrow_signal":
-            if not arrow_signal_scene_enabled:
-                continue
-            aspect = width / height
-            if not (dart_arrow_aspect_min <= aspect <= dart_arrow_aspect_max):
-                continue
-            dart_traffic_candidates.append(_as_traffic_candidate(det, source=det_label))
-            continue
-
     merged = list(yolo_candidates)
     merged.extend(dart_traffic_candidates)
-    merged = _suppress_arrow_signal_overlaps(merged, iou_thr=arrow_overlap_iou, ioa_thr=arrow_overlap_ioa)
     merged = _suppress_contained_candidates(merged, ioa_thr=nested_overlap_ioa)
     deduped = _dedupe_traffic_candidates(merged, iou_thr=dedupe_iou)
     return deduped, non_coco_filtered
@@ -1235,6 +1531,11 @@ def process_sequence(
     models: dict,
     debug: bool = False,
     person_only: bool = False,
+    frame_skip: int = 30,
+    start_frame: int = 0,
+    lane_conf_yellow: float = None,
+    lane_conf_white: float = None,
+    traffic_light_conf: float = None,
 ):
     """Run every active detector on every frame of one sequence and write JSONs."""
     vehicle_labels = {"bicycle", "car", "motorcycle", "bus", "truck", "sedan", "hatchback", "suv", "pickuptruck", "pickup_truck"}
@@ -1242,12 +1543,24 @@ def process_sequence(
     lane_export_min_conf = float(lanes_cfg.get("export_min_confidence", 0.85))
     lane_export_min_conf_yellow = float(lanes_cfg.get("export_min_confidence_yellow", 0.65))
     lane_export_min_conf_white = float(lanes_cfg.get("export_min_confidence_white", lane_export_min_conf))
+    if lane_conf_yellow is not None:
+        lane_export_min_conf_yellow = float(lane_conf_yellow)
+    if lane_conf_white is not None:
+        lane_export_min_conf_white = float(lane_conf_white)
     lane_debug_raw_match_pad_px = float(lanes_cfg.get("debug_raw_match_pad_px", 6.0))
     lane_debug_raw_match_min_points = int(lanes_cfg.get("debug_raw_match_min_points", 2))
     lane_debug_raw_match_point_ratio = float(lanes_cfg.get("debug_raw_match_point_ratio", 0.10))
     lane_debug_draw_unmatched_raw_boxes = bool(lanes_cfg.get("debug_draw_unmatched_raw_boxes", False))
     lane_debug_show_drop_reasons = bool(lanes_cfg.get("debug_show_drop_reasons", True))
-    models["traffic"].set_scene_context(scene_name)
+    tracker_cfg = cfg.get("perception", {}).get("tracker", {})
+    specialized_track_iou = float(tracker_cfg.get("project_to_specialized_iou", 0.2))
+    temporal_cfg = _get_temporal_cfg(cfg)
+    object_track_states = {}
+    non_coco_track_states = {}
+    if models.get("traffic") is not None:
+        models["traffic"].set_scene_context(scene_name)
+    if models.get("tracker") is not None:
+        models["tracker"].reset()
 
     # scene_dir is the root of this sequence, e.g. Data/Sequences/scene1/
     scene_dir = Path(cfg["paths"]["sequences_dir"]) / scene_name
@@ -1272,8 +1585,11 @@ def process_sequence(
 
     # Use the generator so we never load all frames into RAM at once
     for i, (frame_idx, frame_bgr) in enumerate(
-        frame_generator(scene_dir, camera=camera, frame_skip=cfg["perception"]["frame_skip"])
-    ):
+        frame_generator(scene_dir, camera=camera, frame_skip=frame_skip)
+):
+        if frame_idx < start_frame:
+            continue
+
         # --- Run detectors ---
         object_results = models["objects"].detect(frame_bgr)
         lane_results = []
@@ -1298,6 +1614,7 @@ def process_sequence(
                 non_coco_results,
                 cfg,
                 scene_name,
+                traffic_light_min_conf=traffic_light_conf,
             )
             _filter_ground_arrows(frame_bgr, non_coco_results, cfg)
             _drop_aux_non_coco_labels(non_coco_results, cfg, models.get("non_coco"))
@@ -1320,17 +1637,50 @@ def process_sequence(
             depth_map = models["depth"].estimate(frame_bgr)
             object_results = models["depth"].lift_to_3d(object_results, depth_map)
             non_coco_results = models["depth"].lift_to_3d(non_coco_results, depth_map)
+
+            if models.get("tracker") is not None:
+                models["tracker"].update(object_results, non_coco_results)
+
             traffic_results = models["depth"].lift_to_3d(
                 models["traffic"].detect(frame_bgr, traffic_candidates),
                 depth_map,
             )
             sign_results = models["signs"].detect(frame_bgr, object_results)
 
+            traffic_track_sources = [d for d in object_results if d.label == "traffic_light"]
+            stop_track_sources = [d for d in object_results if d.label == "stop_sign"]
+            _propagate_track_ids_by_iou(traffic_results, traffic_track_sources, iou_thr=specialized_track_iou)
+            _propagate_track_ids_by_iou(sign_results, stop_track_sources, iou_thr=specialized_track_iou)
+
             _SPECIALIZED = {"traffic_light", "stop_sign"}
             object_results = [d for d in object_results if d.label not in _SPECIALIZED]
 
+            if temporal_cfg.get("enabled", True):
+                _apply_class_smoothing(
+                    object_results,
+                    frame_idx,
+                    object_track_states,
+                    temporal_cfg["class"],
+                )
+                _apply_class_smoothing(
+                    non_coco_results,
+                    frame_idx,
+                    non_coco_track_states,
+                    temporal_cfg["class"],
+                )
+
             vehicle_results = [d for d in object_results if d.label in vehicle_labels]
             orientation_estimates = models["orientation"].annotate_detections(frame_bgr, vehicle_results)
+
+            if temporal_cfg.get("enabled", True):
+                _apply_heading_smoothing(object_results, object_track_states, temporal_cfg["heading"])
+                _apply_heading_smoothing(non_coco_results, non_coco_track_states, temporal_cfg["heading"])
+
+                _update_track_snapshots(object_results, frame_idx, object_track_states)
+                _update_track_snapshots(non_coco_results, frame_idx, non_coco_track_states)
+
+                _cleanup_track_states(object_track_states, frame_idx, temporal_cfg["hold"])
+                _cleanup_track_states(non_coco_track_states, frame_idx, temporal_cfg["hold"])
 
             if isinstance(lane_output, dict) and "lanes" in lane_output:
                 lane_results = lane_output["lanes"]
@@ -1570,6 +1920,19 @@ def main():
     if args.device:
         device = args.device
 
+    cfg_frame_skip = int(cfg.get("perception", {}).get("frame_skip", 1))
+    frame_skip = cfg_frame_skip if args.frame_skip is None else int(args.frame_skip)
+    if frame_skip < 1:
+        raise ValueError("--frame_skip must be >= 1")
+    if args.start_frame < 0:
+        raise ValueError("--start_frame must be >= 0")
+    if args.lane_conf_yellow is not None and args.lane_conf_yellow < 0.0:
+        raise ValueError("--lane_conf_yellow must be >= 0")
+    if args.lane_conf_white is not None and args.lane_conf_white < 0.0:
+        raise ValueError("--lane_conf_white must be >= 0")
+    if args.traffic_light_conf is not None and not (0.0 <= args.traffic_light_conf <= 1.0):
+        raise ValueError("--traffic_light_conf must be between 0 and 1")
+
     # for the sequences, get all of them unless the argument just specified one
     scenes = cfg["sequences"] if args.all else [args.scene]
 
@@ -1589,6 +1952,14 @@ def main():
         print("[init] Person-only debug mode enabled (--person).")
     if args.pymaf_only:
         print("[init] PyMAF-only mode enabled (--pymaf-only).")
+    if args.start_frame > 0:
+        print(f"[init] Start frame set to: {args.start_frame}")
+    if args.lane_conf_yellow is not None:
+        print(f"[init] Override yellow lane retention confidence: {args.lane_conf_yellow:.3f}")
+    if args.lane_conf_white is not None:
+        print(f"[init] Override white lane retention confidence: {args.lane_conf_white:.3f}")
+    if args.traffic_light_conf is not None:
+        print(f"[init] Override traffic-light retention confidence: {args.traffic_light_conf:.3f}")
 
     # process the sequences
     for scene in scenes:
@@ -1609,7 +1980,12 @@ def main():
                     models,
                     debug=args.debug,
                     person_only=args.person,
-                )
+                    frame_skip=frame_skip,
+                    start_frame=args.start_frame,
+                    lane_conf_yellow=args.lane_conf_yellow,
+                    lane_conf_white=args.lane_conf_white,
+                    traffic_light_conf=args.traffic_light_conf,
+            )
 
     print("\n[done] All sequences processed.")
     return

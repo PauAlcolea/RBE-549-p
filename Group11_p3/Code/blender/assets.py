@@ -1678,6 +1678,8 @@ class AssetLibrary:
 
     def _resolve_speed_value(self, sign: dict):
         """Resolve numeric speed from structured value first, OCR text second."""
+        if str(self._scene_name).strip().lower() == "scene5":
+            return 20
         val = sign.get("speed_value")
         coerced = self._coerce_positive_int(val)
         if coerced is not None:

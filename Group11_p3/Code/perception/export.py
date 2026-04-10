@@ -47,6 +47,26 @@ possible JSON schema (one file per frame):
 _VEHICLE_LABELS = {"bicycle", "car", "motorcycle", "bus", "truck", "sedan", "hatchback", "suv", "pickuptruck", "pickup_truck"}
 
 
+def _attach_temporal_fields(src, out: dict) -> None:
+    """Attach optional temporal-stability metadata when available."""
+    is_held = bool(getattr(src, "is_held", False))
+    if is_held:
+        out["is_held"] = True
+        out["hold_age_frames"] = int(getattr(src, "hold_age_frames", 0))
+
+    if bool(getattr(src, "is_class_smoothed", False)):
+        out["is_class_smoothed"] = True
+        observed_label = getattr(src, "observed_label", None)
+        if observed_label:
+            out["observed_label"] = str(observed_label)
+
+    if bool(getattr(src, "is_heading_smoothed", False)):
+        out["is_heading_smoothed"] = True
+        raw_heading = getattr(src, "raw_heading_rad", None)
+        if raw_heading is not None:
+            out["raw_heading_rad"] = round(float(raw_heading), 4)
+
+
 def _serialize_lane(lane) -> dict:
     """Normalize lane objects/dicts to the JSON lane schema."""
     if isinstance(lane, dict):
@@ -89,6 +109,12 @@ def _serialize_vehicle(det) -> dict:
     if heading_rad is not None:
         vehicle["heading_rad"] = round(float(heading_rad), 4)
 
+    track_id = getattr(det, "track_id", None)
+    if track_id is not None:
+        vehicle["track_id"] = int(track_id)
+
+    _attach_temporal_fields(det, vehicle)
+
     return vehicle
 
 
@@ -104,6 +130,10 @@ def _serialize_pedestrian(det) -> dict:
         ped["pymaf_track_id"] = int(pymaf_track_id)
         ped["pymaf_match_iou"] = round(float(getattr(det, "pymaf_match_iou", 0.0)), 4)
 
+    track_id = getattr(det, "track_id", None)
+    if track_id is not None:
+        ped["track_id"] = int(track_id)
+
     smpl_pose = getattr(det, "smpl_pose", None)
     if smpl_pose is not None:
         ped["smpl_pose"] = [round(float(v), 6) for v in smpl_pose]
@@ -118,6 +148,8 @@ def _serialize_pedestrian(det) -> dict:
             [round(float(coord), 6) for coord in joint]
             for joint in smpl_joints3d
         ]
+
+    _attach_temporal_fields(det, ped)
 
     return ped
 
@@ -158,6 +190,10 @@ def build_frame_dict(
             "depth_m": round(det.depth_m, 3),
             "position_3d": [round(v, 3) for v in det.position_3d],
         }
+        track_id = getattr(det, "track_id", None)
+        if track_id is not None:
+            entry["track_id"] = int(track_id)
+        _attach_temporal_fields(det, entry)
         non_coco_records.append(entry)
 
         bucket = getattr(det, "export_bucket", "non_coco_objects")
@@ -168,6 +204,11 @@ def build_frame_dict(
             "depth_m": entry["depth_m"],
             "position_3d": entry["position_3d"],
         }
+        if track_id is not None:
+            bucket_entry["track_id"] = int(track_id)
+        if bool(getattr(det, "is_held", False)):
+            bucket_entry["is_held"] = True
+            bucket_entry["hold_age_frames"] = int(getattr(det, "hold_age_frames", 0))
         if bucket == "speed_limit_signs":
             speed_value = getattr(det, "speed_value", None)
             bucket_entry["speed_value"] = int(speed_value) if speed_value is not None else None
@@ -210,6 +251,7 @@ def build_frame_dict(
                 "depth_m": round(tl.depth_m, 3),
                 "position_3d": [round(v, 3) for v in tl.position_3d],
                 "traffic_light_style": str(getattr(tl, "traffic_light_style", "standard_vertical")),
+                **({"track_id": int(getattr(tl, "track_id", None))} if getattr(tl, "track_id", None) is not None else {}),
             }
             for tl in traffic_lights
         ],
@@ -219,6 +261,7 @@ def build_frame_dict(
                 "bbox":        [round(v, 2) for v in sign.bbox],
                 "depth_m":     round(sign.depth_m, 3),
                 "position_3d": [round(v, 3) for v in sign.position_3d],
+                **({"track_id": int(getattr(sign, "track_id", None))} if getattr(sign, "track_id", None) is not None else {}),
             }
             for sign in stop_signs
         ],
