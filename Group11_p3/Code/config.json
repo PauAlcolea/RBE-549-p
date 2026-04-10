@@ -35,7 +35,8 @@
     "depth": "../Weights/depth_anything_v2_metric_vkitti_vitl.pth",
     "lanes": "../Weights/sam3.pt",
     "orientation": "../Weights/boundingbox.pkl",
-    "pymaf": "../Weights/PyMAF_model_checkpoint.pt"
+    "pymaf": "../Weights/PyMAF_model_checkpoint.pt",
+    "flow": "../Weights/FA-C-T-Mixed-TSKH432x960.pth"
   },
   "perception": {
     "batch_size": 1,

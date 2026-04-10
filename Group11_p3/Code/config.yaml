@@ -47,6 +47,7 @@ weights:
   lanes:        ../Weights/sam3.pt
   orientation:  ../Weights/boundingbox.pkl
   pymaf:        ../Weights/PyMAF_model_checkpoint.pt
+  flow:         ../Weights/FA-C-T-Mixed-TSKH432x960.pth
 
 # ── Perception settings ────────────────────────────────────────────────────
 perception:
