@@ -364,20 +364,29 @@ def draw_pymaf_matches(frame_bgr: np.ndarray, detections: list) -> np.ndarray:
     return out
 
 
-def draw_taillights(frame_bgr: np.ndarray, taillights: list) -> np.ndarray:
-    """Draw taillight detections and associated vehicle ID/class when present."""
+def draw_taillights(frame_bgr: np.ndarray, taillights: list, status_only_text: bool = False) -> np.ndarray:
+    """Draw taillight detections, optionally rendering only HSV status text."""
     out = frame_bgr.copy()
     for det in taillights:
         x1, y1, x2, y2 = [int(v) for v in det.bbox]
         cv2.rectangle(out, (x1, y1), (x2, y2), _COLOR_TAILLIGHT, 2)
 
+        status = str(getattr(det, "status", "off")).strip().lower()
+        if status not in {"on", "off"}:
+            status = "off"
+
+        if status_only_text:
+            txt = status
+        else:
+            txt = f"taillight {status}"
         vehicle_track_id = getattr(det, "vehicle_track_id", None)
         vehicle_class = str(getattr(det, "vehicle_class", "vehicle"))
         side = str(getattr(det, "side", "unknown"))
-        if vehicle_track_id is None:
-            txt = f"taillight {det.confidence:.2f} {side} ({vehicle_class})"
-        else:
-            txt = f"taillight {det.confidence:.2f} {side} #{int(vehicle_track_id)} {vehicle_class}"
+        if not status_only_text:
+            if vehicle_track_id is None:
+                txt = f"{txt} {det.confidence:.2f} {side} ({vehicle_class})"
+            else:
+                txt = f"{txt} {det.confidence:.2f} {side} #{int(vehicle_track_id)} {vehicle_class}"
         cv2.putText(
             out,
             txt,

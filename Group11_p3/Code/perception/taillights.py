@@ -32,6 +32,7 @@ class TailLightDetection:
     side: str = "unknown"  # left | right | unknown
     prompt: str = "taillight"
     activation_score: float = 0.0
+    status: str = "off"  # on | off (HSV-based)
 
 
 def _clamp_bbox_xyxy(box: List[float], w: int, h: int) -> Optional[Tuple[int, int, int, int]]:
@@ -338,6 +339,9 @@ class TailLightDetector:
             return "right indicator", float(right_score)
         return "off", float(max(left_score, right_score))
 
+    def _light_status_from_activation(self, activation_score: float) -> str:
+        return "on" if float(activation_score) >= self.state_lit_score_threshold else "off"
+
     def _set_vehicle_state(self, vehicle, state: str, score: float) -> None:
         final_state = state if state in _VALID_STATES else "off"
         setattr(vehicle, "brake_light_state", final_state)
@@ -431,6 +435,7 @@ class TailLightDetector:
                             side=side,
                             prompt=prompt,
                             activation_score=round(float(activation), 4),
+                            status=self._light_status_from_activation(activation),
                         )
                     )
 

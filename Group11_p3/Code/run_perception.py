@@ -129,6 +129,13 @@ def parse_args():
     )
 
     parser.add_argument(
+        "--brakelight-only",
+        dest="brakelight_only",
+        action="store_true",
+        help="Debug visualization mode: draw only brakelight boxes with HSV on/off status text."
+    )
+
+    parser.add_argument(
         "--frame_skip",
         type=int,
         default=None,
@@ -1539,6 +1546,7 @@ def process_sequence(
     lane_conf_yellow: float = None,
     lane_conf_white: float = None,
     traffic_light_conf: float = None,
+    brakelight_only: bool = False,
 ):
     """Run every active detector on every frame of one sequence and write JSONs."""
     vehicle_labels = {"bicycle", "car", "motorcycle", "bus", "truck", "sedan", "hatchback", "suv", "pickuptruck", "pickup_truck"}
@@ -1578,7 +1586,7 @@ def process_sequence(
     ocr_debug_dir = out_dir / "../ocr_debug"
     if debug:
         debug_dir.mkdir(parents=True, exist_ok=True)
-        if not person_only:
+        if not person_only and not brakelight_only:
             lane_debug_dir.mkdir(parents=True, exist_ok=True)
             traffic_algo_dir.mkdir(parents=True, exist_ok=True)
             ocr_debug_dir.mkdir(parents=True, exist_ok=True)
@@ -1732,11 +1740,18 @@ def process_sequence(
         save_detection_json(frame_dict, out_dir / f"frame_{frame_idx:06d}.json")
 
         if debug:
-            annotated = draw_detections(frame_bgr, object_results, proj_matrix=debug_proj_matrix)
-            annotated_traffic = draw_traffic_lights(annotated, traffic_results)
-            annotated_signs = draw_signs(annotated_traffic, sign_results)
-            annotated_non_coco = draw_non_coco_objects(annotated_signs, non_coco_results)
-            annotated_taillights = draw_taillights(annotated_non_coco, taillight_results)
+            if brakelight_only:
+                annotated_taillights = draw_taillights(
+                    frame_bgr,
+                    taillight_results,
+                    status_only_text=True,
+                )
+            else:
+                annotated = draw_detections(frame_bgr, object_results, proj_matrix=debug_proj_matrix)
+                annotated_traffic = draw_traffic_lights(annotated, traffic_results)
+                annotated_signs = draw_signs(annotated_traffic, sign_results)
+                annotated_non_coco = draw_non_coco_objects(annotated_signs, non_coco_results)
+                annotated_taillights = draw_taillights(annotated_non_coco, taillight_results)
 
             # FIXME all these paths
             show_or_save(
@@ -1745,7 +1760,7 @@ def process_sequence(
             )
             lane_exclude_classes = cfg.get("perception", {}).get("lanes", {}).get("exclude_classes", [])
 
-            if not person_only:
+            if not person_only and not brakelight_only:
                 overlay = draw_lane_debug_overlay(
                 frame_bgr,
                 lane_results,
@@ -1790,7 +1805,7 @@ def process_sequence(
     print(f"[{scene_name}] Done. JSONs saved to {out_dir}")
     if debug:
         print(f"[{scene_name}] Debug overlays saved to {debug_dir}")
-        if not person_only:
+        if not person_only and not brakelight_only:
             print(f"[{scene_name}] Lane overlays saved to {lane_debug_dir}")
             print(f"[{scene_name}] Traffic algorithm figures saved to {traffic_algo_dir}")
     return
@@ -1962,6 +1977,10 @@ def main():
         print("[init] Person-only debug mode enabled (--person).")
     if args.pymaf_only:
         print("[init] PyMAF-only mode enabled (--pymaf-only).")
+    if args.brakelight_only:
+        print("[init] Taillight-only debug mode enabled (--tailight-only).")
+        if not args.debug:
+            print("[init] Note: --tailight-only affects only debug overlay rendering; add --debug to save visuals.")
     if args.start_frame > 0:
         print(f"[init] Start frame set to: {args.start_frame}")
     if args.lane_conf_yellow is not None:
@@ -1995,6 +2014,7 @@ def main():
                     lane_conf_yellow=args.lane_conf_yellow,
                     lane_conf_white=args.lane_conf_white,
                     traffic_light_conf=args.traffic_light_conf,
+                    brakelight_only=args.brakelight_only,
             )
 
     print("\n[done] All sequences processed.")

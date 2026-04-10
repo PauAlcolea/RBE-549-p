@@ -163,6 +163,9 @@ def _serialize_pedestrian(det) -> dict:
 
 
 def _serialize_taillight(det) -> dict:
+    status = str(getattr(det, "status", "off")).strip().lower()
+    if status not in {"on", "off"}:
+        status = "off"
     out = {
         "bbox": [round(v, 2) for v in det.bbox],
         "confidence": round(float(getattr(det, "confidence", 0.0)), 4),
@@ -172,6 +175,7 @@ def _serialize_taillight(det) -> dict:
         "side": str(getattr(det, "side", "unknown")),
         "prompt": str(getattr(det, "prompt", "taillight")),
         "activation_score": round(float(getattr(det, "activation_score", 0.0)), 4),
+        "status": status,
     }
     vehicle_track_id = getattr(det, "vehicle_track_id", None)
     if vehicle_track_id is not None:
