@@ -294,7 +294,7 @@ perception:
     night:
       # Applied only when --night is passed to run_perception.
       # Uses anti-reflector gates to reduce false "on" at night.
-      # Keep HSV near daytime defaults unless you specifically need tighter color cuts.
+      # Keep HSV near daytime defaults unless you specifically need tightegr color cuts.
       state_lit_score_threshold: 0.06
       hsv_red_low1: [0, 40, 40]
       hsv_red_high1: [20, 255, 255]
