@@ -113,64 +113,6 @@ def _serialize_vehicle(det) -> dict:
     if track_id is not None:
         vehicle["track_id"] = int(track_id)
 
-    motion_confidence = getattr(det, "motion_confidence", None)
-    if motion_confidence is not None:
-        vehicle["motion_confidence"] = round(float(motion_confidence), 4)
-        vehicle["is_moving"] = bool(getattr(det, "is_moving", False))
-        vehicle["is_parked"] = bool(getattr(det, "is_parked", False))
-
-    motion_state = getattr(det, "motion_state", None)
-    if motion_state:
-        vehicle["motion_state"] = str(motion_state)
-
-    motion_source = getattr(det, "motion_source", None)
-    if motion_source:
-        vehicle["motion_source"] = str(motion_source)
-
-    motion_age = getattr(det, "motion_age_frames", None)
-    if motion_age is not None:
-        vehicle["motion_age_frames"] = int(motion_age)
-
-    motion_evidence = getattr(det, "motion_evidence", None)
-    if motion_evidence is not None:
-        vehicle["motion_evidence"] = round(float(motion_evidence), 4)
-
-    ring_flow_med = getattr(det, "motion_ring_flow_med", None)
-    if ring_flow_med is not None:
-        vehicle["motion_ring_flow_med"] = round(float(ring_flow_med), 4)
-
-    bg_flow_med = getattr(det, "motion_bg_flow_med", None)
-    if bg_flow_med is not None:
-        vehicle["motion_bg_flow_med"] = round(float(bg_flow_med), 4)
-
-    inlier_ratio = getattr(det, "motion_inlier_ratio", None)
-    if inlier_ratio is not None:
-        vehicle["motion_inlier_ratio"] = round(float(inlier_ratio), 4)
-
-    track_speed_px = getattr(det, "motion_track_speed_px", None)
-    if track_speed_px is not None:
-        vehicle["motion_track_speed_px"] = round(float(track_speed_px), 4)
-
-    track_reliability = getattr(det, "motion_track_reliability", None)
-    if track_reliability is not None:
-        vehicle["motion_track_reliability"] = round(float(track_reliability), 4)
-
-    state_source = getattr(det, "motion_state_source", None)
-    if state_source:
-        vehicle["motion_state_source"] = str(state_source)
-
-    edge_strength = getattr(det, "motion_edge_strength", None)
-    if edge_strength is not None:
-        vehicle["motion_edge_strength"] = round(float(edge_strength), 4)
-
-    edge_side = getattr(det, "motion_edge_side", None)
-    if edge_side:
-        vehicle["motion_edge_side"] = str(edge_side)
-
-    depth_weight = getattr(det, "motion_depth_weight", None)
-    if depth_weight is not None:
-        vehicle["motion_depth_weight"] = round(float(depth_weight), 4)
-
     _attach_temporal_fields(det, vehicle)
 
     return vehicle

@@ -113,41 +113,6 @@ perception:
       confidence_decay: 0.9
       cleanup_after_frames: 20
 
-    motion_detection:
-      enabled: true
-      flow_cfg: perception/Flow_Anything/config/train/Tartan-C-T-TSKH432x960-M.json
-      history_frames: 8
-      switch_hysteresis_frames: 4
-      min_track_age_frames: 3
-      parked_threshold: 0.25
-      moving_threshold: 0.50
-      allow_unknown_state: false
-      flow_mag_moving_px: 1.5
-      sampson_moving_threshold: 1.5
-      local_ring_scale: 1.45
-      min_ring_points: 30
-      local_baseline_blend: 0.75
-      comoving_delta_px: 0.10
-      sampson_ransac_thresh: 1.0
-      weak_geometry_inlier_ratio: 0.35
-      force_unknown_on_weak_geometry: true
-      track_velocity_moving_px: 0.9
-      tracker_reliability_min: 0.35
-      track_gap_penalty_frames: 2
-      track_prior_weight: 0.35
-      track_jitter_max_px: 4.0
-      edge_margin_ratio: 0.18
-      edge_flow_attenuation: 0.45
-      edge_unknown_if_low_ring: true
-      edge_min_ring_points: 20
-      use_depth_attenuation: true
-      depth_ref_m: 20.0
-      depth_attenuation_strength: 0.35
-      bg_sample_step: 10
-      box_sample_step: 4
-      min_bg_points: 200
-      min_points_per_box: 40
-
   lanes:
     model: DART
     max_lanes: 8

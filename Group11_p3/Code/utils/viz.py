@@ -36,8 +36,6 @@ _COLOR_3D_FRONT = (255, 120, 40)
 _COLOR_CONE  = (  0, 140, 255)   # orange
 _COLOR_NON_COCO = (180, 120, 255)
 _COLOR_PYMAF = (255, 255, 0)     # cyan-yellow for pymaf overlays
-_COLOR_MOVING = (40, 60, 230)     # red-ish for moving vehicles
-_COLOR_PARKED = (60, 220, 60)     # green for parked vehicles
 
 
 def _rotation_matrix_y(yaw_rad: float) -> np.ndarray:
@@ -200,11 +198,6 @@ def draw_detections(
 
         x1, y1, x2, y2 = [int(v) for v in det.bbox]
         color = _COLOR_PED if det.label == "person" else _COLOR_CAR
-        if det.label != "person":
-            if bool(getattr(det, "is_moving", False)):
-                color = _COLOR_MOVING
-            elif bool(getattr(det, "is_parked", False)):
-                color = _COLOR_PARKED
 
         cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
 
@@ -219,18 +212,6 @@ def draw_detections(
         heading_rad = getattr(det, "heading_rad", None)
         if heading_rad is not None and det.label != "person":
             text = f"{text} yaw={np.degrees(float(heading_rad)):.0f}deg"
-
-        if det.label != "person":
-            motion_conf = getattr(det, "motion_confidence", None)
-            if motion_conf is not None:
-                if bool(getattr(det, "is_moving", False)):
-                    motion_state = "moving"
-                elif bool(getattr(det, "is_parked", False)):
-                    motion_state = "parked"
-                else:
-                    motion_state = "unknown"
-                motion_source = str(getattr(det, "motion_source", "n/a"))
-                text = f"{text} motion={motion_state} c={float(motion_conf):.2f}"
 
         # Draw a filled background behind the text so it's readable on any frame
         (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
