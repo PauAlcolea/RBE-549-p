@@ -530,6 +530,115 @@ def _heading_to_blender_forward(heading_rad):
     return (math.sin(yaw), math.cos(yaw))
 
 
+def _vehicle_dedupe_cfg(cfg: dict) -> dict:
+    dedupe_cfg = cfg.get("blender", {}).get("vehicle_dedupe", {})
+    return {
+        "enabled": bool(dedupe_cfg.get("enabled", True)),
+        "max_xy_dist_m": max(0.0, float(dedupe_cfg.get("max_xy_dist_m", 0.85))),
+        "max_depth_delta_m": max(0.0, float(dedupe_cfg.get("max_depth_delta_m", 2.5))),
+        "bbox_iou_thresh": max(0.0, min(1.0, float(dedupe_cfg.get("bbox_iou_thresh", 0.92)))),
+    }
+
+
+def _bbox_area(bbox):
+    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        return 0.0
+    try:
+        x1, y1, x2, y2 = [float(v) for v in bbox]
+    except Exception:
+        return 0.0
+    w = max(0.0, x2 - x1)
+    h = max(0.0, y2 - y1)
+    return w * h
+
+
+def _bbox_iou(b0, b1) -> float:
+    if not isinstance(b0, (list, tuple)) or not isinstance(b1, (list, tuple)):
+        return 0.0
+    if len(b0) != 4 or len(b1) != 4:
+        return 0.0
+    try:
+        ax1, ay1, ax2, ay2 = [float(v) for v in b0]
+        bx1, by1, bx2, by2 = [float(v) for v in b1]
+    except Exception:
+        return 0.0
+
+    ix1 = max(ax1, bx1)
+    iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2)
+    iy2 = min(ay2, by2)
+    iw = max(0.0, ix2 - ix1)
+    ih = max(0.0, iy2 - iy1)
+    inter = iw * ih
+    if inter <= 0.0:
+        return 0.0
+
+    a_area = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    b_area = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    union = a_area + b_area - inter
+    if union <= 1e-9:
+        return 0.0
+    return inter / union
+
+
+def _vehicle_keep_score(vehicle: dict) -> float:
+    score = 0.0
+    if vehicle.get("track_id") is not None:
+        score += 100.0
+    if not bool(vehicle.get("is_held", False)):
+        score += 20.0
+    if vehicle.get("is_class_smoothed", False):
+        score += 8.0
+
+    cls = str(vehicle.get("class", "")).lower()
+    if cls and cls not in {"car", "truck", "bus"}:
+        score += 5.0
+
+    score += min(4.0, _bbox_area(vehicle.get("bbox")) / 12000.0)
+    return score
+
+
+def _vehicles_are_duplicate(v0: dict, v1: dict, dedupe_cfg: dict) -> bool:
+    xy_z0 = _json_to_blender_xy(v0.get("position_3d"))
+    xy_z1 = _json_to_blender_xy(v1.get("position_3d"))
+    close_in_3d = False
+    if xy_z0 is not None and xy_z1 is not None:
+        (x0, y0), z0 = xy_z0
+        (x1, y1), z1 = xy_z1
+        d_xy = math.hypot(x0 - x1, y0 - y1)
+        d_z = abs(z0 - z1)
+        close_in_3d = (
+            d_xy <= dedupe_cfg["max_xy_dist_m"]
+            and d_z <= dedupe_cfg["max_depth_delta_m"]
+        )
+
+    bbox_iou = _bbox_iou(v0.get("bbox"), v1.get("bbox"))
+    return close_in_3d or (bbox_iou >= dedupe_cfg["bbox_iou_thresh"])
+
+
+def _dedupe_vehicles_for_render(vehicles: list, cfg: dict):
+    dedupe_cfg = _vehicle_dedupe_cfg(cfg)
+    if not dedupe_cfg["enabled"] or len(vehicles) <= 1:
+        return vehicles, 0
+
+    ranked = sorted(vehicles, key=_vehicle_keep_score, reverse=True)
+    kept = []
+    dropped = 0
+
+    for v in ranked:
+        is_dup = False
+        for prev in kept:
+            if _vehicles_are_duplicate(v, prev, dedupe_cfg):
+                is_dup = True
+                break
+        if is_dup:
+            dropped += 1
+            continue
+        kept.append(v)
+
+    return kept, dropped
+
+
 def _associate_anonymous_track_ids(vehicles: list, frame_idx: int, motion_ctx: dict) -> None:
     cfg = motion_ctx["cfg"]
     anon_max_dist = cfg["anon_assoc_max_dist_m"]
@@ -906,6 +1015,10 @@ def render_sequence(
                 if bool(v.get("is_ego", False)) or cls in {"ego", "tesla"}:
                     continue
                 vehicles.append(v)
+
+            vehicles, dropped_dupes = _dedupe_vehicles_for_render(vehicles, cfg)
+            if dropped_dupes > 0 and (debug or motion_cfg["debug"]):
+                print(f"[scene] frame={frame_idx:06d} removed duplicate vehicles={dropped_dupes}")
 
             motion_summary = _annotate_vehicle_motion_state(
                 vehicles=vehicles,

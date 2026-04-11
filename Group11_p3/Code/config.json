@@ -599,6 +599,12 @@
       "anon_assoc_max_dist_m": 1.6,
       "debug": false
     },
+    "vehicle_dedupe": {
+      "enabled": true,
+      "max_xy_dist_m": 0.85,
+      "max_depth_delta_m": 2.5,
+      "bbox_iou_thresh": 0.92
+    },
     "style": {
       "lane_solid_white": [
         1.0,
