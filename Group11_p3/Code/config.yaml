@@ -291,6 +291,17 @@ perception:
     hsv_red_high1: [20, 255, 255]
     hsv_red_low2: [160, 40, 40]
     hsv_red_high2: [180, 255, 255]
+    night:
+      # Applied only when --night is passed to run_perception.
+      # Uses anti-reflector gates to reduce false "on" at night.
+      # Keep HSV near daytime defaults unless you specifically need tighter color cuts.
+      state_lit_score_threshold: 0.06
+      hsv_red_low1: [0, 40, 40]
+      hsv_red_high1: [20, 255, 255]
+      hsv_red_low2: [160, 40, 40]
+      hsv_red_high2: [180, 255, 255]
+      min_lit_value_mean: 185.0
+      max_red_ratio: 0.45
     # Prompt set can include both side-specific indicators and generic taillights
     prompts:
     - "left rear turn indicator"

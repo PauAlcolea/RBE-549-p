@@ -368,8 +368,8 @@
       "weights": "../Weights/Detic.pth",
       "confidence": 0.3,
       "max_per_vehicle": 4,
-      "min_width_px": 1,
-      "min_height_px": 1,
+      "min_width_px": 2,
+      "min_height_px": 2,
       "min_vehicle_crop_side_px": 16,
       "side_center_margin_ratio": 0.1,
       "state_lit_score_threshold": 0.035,
@@ -399,6 +399,31 @@
         255,
         255
       ],
+      "night": {
+        "state_lit_score_threshold": 0.06,
+        "hsv_red_low1": [
+          0,
+          40,
+          40
+        ],
+        "hsv_red_high1": [
+          20,
+          255,
+          255
+        ],
+        "hsv_red_low2": [
+          160,
+          40,
+          40
+        ],
+        "hsv_red_high2": [
+          180,
+          255,
+          255
+        ],
+        "min_lit_value_mean": 185.0,
+        "max_red_ratio": 0.45
+      },
       "prompts": [
         "left rear turn indicator",
         "right rear turn indicator",

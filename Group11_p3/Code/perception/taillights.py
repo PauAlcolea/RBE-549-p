@@ -88,11 +88,37 @@ class TailLightDetector:
         self.state_detection_conf_floor = max(0.0, min(self.state_detection_conf_floor, 1.0))
         self.state_detection_conf_gamma = max(0.05, self.state_detection_conf_gamma)
         self.state_roi_margin_ratio = max(0.0, min(self.state_roi_margin_ratio, 0.45))
+        self.night_mode = False
 
         self.red_low1 = np.array(taillight_cfg.get("hsv_red_low1", [0, 80, 80]), dtype=np.uint8)
         self.red_high1 = np.array(taillight_cfg.get("hsv_red_high1", [12, 255, 255]), dtype=np.uint8)
         self.red_low2 = np.array(taillight_cfg.get("hsv_red_low2", [170, 80, 80]), dtype=np.uint8)
         self.red_high2 = np.array(taillight_cfg.get("hsv_red_high2", [180, 255, 255]), dtype=np.uint8)
+        night_cfg = taillight_cfg.get("night", {})
+        self.night_state_lit_score_threshold = float(
+            night_cfg.get("state_lit_score_threshold", self.state_lit_score_threshold)
+        )
+        self.night_red_low1 = np.array(
+            night_cfg.get("hsv_red_low1", self.red_low1.tolist()),
+            dtype=np.uint8,
+        )
+        self.night_red_high1 = np.array(
+            night_cfg.get("hsv_red_high1", self.red_high1.tolist()),
+            dtype=np.uint8,
+        )
+        self.night_red_low2 = np.array(
+            night_cfg.get("hsv_red_low2", self.red_low2.tolist()),
+            dtype=np.uint8,
+        )
+        self.night_red_high2 = np.array(
+            night_cfg.get("hsv_red_high2", self.red_high2.tolist()),
+            dtype=np.uint8,
+        )
+        # Night-specific anti-reflector controls (used only when --night).
+        self.night_min_lit_value_mean = float(night_cfg.get("min_lit_value_mean", 185.0))
+        self.night_max_red_ratio = float(night_cfg.get("max_red_ratio", 0.45))
+        self.night_min_lit_value_mean = max(0.0, min(self.night_min_lit_value_mean, 255.0))
+        self.night_max_red_ratio = max(0.01, min(self.night_max_red_ratio, 1.0))
 
         prompts = taillight_cfg.get(
             "prompts",
@@ -123,6 +149,12 @@ class TailLightDetector:
 
     def is_active(self) -> bool:
         return bool(self.active and self.predictor is not None)
+
+    def set_night_mode(self, enabled: bool) -> None:
+        self.night_mode = bool(enabled)
+
+    def _lit_threshold(self) -> float:
+        return self.night_state_lit_score_threshold if self.night_mode else self.state_lit_score_threshold
 
     def _resolve_path(self, value: Optional[str]) -> Optional[str]:
         if value is None:
@@ -320,8 +352,19 @@ class TailLightDetector:
         if roi.size == 0:
             return 0.0
 
-        mask1 = cv2.inRange(roi, self.red_low1, self.red_high1)
-        mask2 = cv2.inRange(roi, self.red_low2, self.red_high2)
+        if self.night_mode:
+            red_low1 = self.night_red_low1
+            red_high1 = self.night_red_high1
+            red_low2 = self.night_red_low2
+            red_high2 = self.night_red_high2
+        else:
+            red_low1 = self.red_low1
+            red_high1 = self.red_high1
+            red_low2 = self.red_low2
+            red_high2 = self.red_high2
+
+        mask1 = cv2.inRange(roi, red_low1, red_high1)
+        mask2 = cv2.inRange(roi, red_low2, red_high2)
         mask = cv2.bitwise_or(mask1, mask2)
         area = float(mask.shape[0] * mask.shape[1])
         if area <= 0.0:
@@ -336,6 +379,14 @@ class TailLightDetector:
             value_term = 0.0
         else:
             value_term = float(np.mean(lit_vals)) / 255.0
+
+        # Night mode: suppress passive red reflectors that occupy too much area
+        # and are not bright enough to be active lamps.
+        if self.night_mode:
+            if red_ratio > self.night_max_red_ratio:
+                return 0.0
+            if lit_vals.size == 0 or float(np.mean(lit_vals)) < self.night_min_lit_value_mean:
+                return 0.0
 
         prompt_boost = 1.0
         low_prompt = str(prompt).lower()
@@ -429,7 +480,7 @@ class TailLightDetector:
           - both detected and both on: on
           - both detected and both off: off
         """
-        thr = self.state_lit_score_threshold
+        thr = self._lit_threshold()
         left_on = left_detected and (left_score >= thr)
         right_on = right_detected and (right_score >= thr)
 
@@ -453,7 +504,7 @@ class TailLightDetector:
         return "off", detected_score
 
     def _light_status_from_activation(self, activation_score: float) -> str:
-        return "on" if float(activation_score) >= self.state_lit_score_threshold else "off"
+        return "on" if float(activation_score) >= self._lit_threshold() else "off"
 
     def _set_vehicle_state(self, vehicle, state: str, score: float) -> None:
         final_state = state if state in _VALID_STATES else "off"
@@ -463,7 +514,7 @@ class TailLightDetector:
     def _side_status(self, detected: bool, score: float) -> str:
         if not detected:
             return "not_detected"
-        return "on" if float(score) >= self.state_lit_score_threshold else "off"
+        return "on" if float(score) >= self._lit_threshold() else "off"
 
     def _set_vehicle_side_states(
         self,

@@ -114,7 +114,7 @@ def parse_args():
     parser.add_argument(
         "--night",
         action="store_true",
-        help="Enable night traffic-light mode (pick lowest-saturation ROI)."
+        help="Enable night mode for traffic lights and taillight activation thresholds."
     )
 
     parser.add_argument(
@@ -223,6 +223,8 @@ def load_models(
         "tracker": ByteTrackWrapper(cfg) if tracker_enabled else None,
     }
     models["traffic"].set_night_mode(night_mode)
+    if models.get("taillights") is not None:
+        models["taillights"].set_night_mode(night_mode)
     print("[init] All models loaded in the process of instantializing detectors.")
     return models
 
@@ -1973,7 +1975,7 @@ def main():
         pymaf_only=args.pymaf_only,
     )
     if args.night:
-        print("[init] Night traffic-light mode enabled (--night).")
+        print("[init] Night mode enabled for traffic lights and taillights (--night).")
     if args.person:
         print("[init] Person-only debug mode enabled (--person).")
     if args.pymaf_only:
