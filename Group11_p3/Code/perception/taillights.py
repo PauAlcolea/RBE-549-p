@@ -18,6 +18,7 @@ import numpy as np
 
 
 _VALID_STATES = {"on", "off", "left indicator", "right indicator"}
+_VALID_SIDE_STATES = {"on", "off", "not_detected"}
 
 
 @dataclass
@@ -72,6 +73,21 @@ class TailLightDetector:
         self.state_lit_score_threshold = float(taillight_cfg.get("state_lit_score_threshold", 0.05))
         self.state_indicator_ratio = float(taillight_cfg.get("state_indicator_ratio", 1.7))
         self.side_center_margin_ratio = float(taillight_cfg.get("side_center_margin_ratio", 0.10))
+        self.state_red_ratio_weight = float(taillight_cfg.get("state_red_ratio_weight", 0.80))
+        self.state_value_weight = float(taillight_cfg.get("state_value_weight", 0.20))
+        weights_sum = self.state_red_ratio_weight + self.state_value_weight
+        if weights_sum <= 1e-6:
+            self.state_red_ratio_weight = 0.80
+            self.state_value_weight = 0.20
+        else:
+            self.state_red_ratio_weight /= weights_sum
+            self.state_value_weight /= weights_sum
+        self.state_detection_conf_floor = float(taillight_cfg.get("state_detection_conf_floor", 0.60))
+        self.state_detection_conf_gamma = float(taillight_cfg.get("state_detection_conf_gamma", 0.50))
+        self.state_roi_margin_ratio = float(taillight_cfg.get("state_roi_margin_ratio", 0.12))
+        self.state_detection_conf_floor = max(0.0, min(self.state_detection_conf_floor, 1.0))
+        self.state_detection_conf_gamma = max(0.05, self.state_detection_conf_gamma)
+        self.state_roi_margin_ratio = max(0.0, min(self.state_roi_margin_ratio, 0.45))
 
         self.red_low1 = np.array(taillight_cfg.get("hsv_red_low1", [0, 80, 80]), dtype=np.uint8)
         self.red_high1 = np.array(taillight_cfg.get("hsv_red_high1", [12, 255, 255]), dtype=np.uint8)
@@ -288,6 +304,18 @@ class TailLightDetector:
         if clamped is None:
             return 0.0
         x1, y1, x2, y2 = clamped
+
+        # Ignore bbox borders so the score reflects the lamp core more than body paint.
+        bw = x2 - x1
+        bh = y2 - y1
+        mx = int(round(self.state_roi_margin_ratio * bw))
+        my = int(round(self.state_roi_margin_ratio * bh))
+        if (bw - (2 * mx)) >= 2 and (bh - (2 * my)) >= 2:
+            x1 += mx
+            y1 += my
+            x2 -= mx
+            y2 -= my
+
         roi = hsv_frame[y1:y2, x1:x2]
         if roi.size == 0:
             return 0.0
@@ -316,28 +344,113 @@ class TailLightDetector:
         elif "brake" in low_prompt or "lit" in low_prompt:
             prompt_boost = 1.05
 
-        raw = float(det_conf) * (0.75 * red_ratio + 0.25 * value_term) * prompt_boost
+        # Confidence should softly gate color score, not dominate it.
+        conf = max(0.0, min(float(det_conf), 1.0))
+        conf_term = self.state_detection_conf_floor + (1.0 - self.state_detection_conf_floor) * (
+            conf ** self.state_detection_conf_gamma
+        )
+        color_term = (self.state_red_ratio_weight * red_ratio) + (self.state_value_weight * value_term)
+        raw = conf_term * color_term * prompt_boost
         return max(0.0, min(raw, 1.0))
 
     def _classify_state_from_scores(self, left_score: float, right_score: float) -> Tuple[str, float]:
-        thr = self.state_lit_score_threshold
-        left_on = left_score >= thr
-        right_on = right_score >= thr
+        # Backward-compatible wrapper (legacy callsites).
+        return self._classify_state_from_side_scores(
+            left_detected=True,
+            right_detected=True,
+            left_score=left_score,
+            right_score=right_score,
+        )
 
-        if left_on and right_on:
-            weaker = max(min(left_score, right_score), 1e-6)
-            stronger = max(left_score, right_score)
-            ratio = stronger / weaker
-            if ratio >= self.state_indicator_ratio:
-                if left_score >= right_score:
-                    return "left indicator", float(stronger)
-                return "right indicator", float(stronger)
-            return "on", float(min(left_score, right_score))
-        if left_on:
-            return "left indicator", float(left_score)
-        if right_on:
-            return "right indicator", float(right_score)
-        return "off", float(max(left_score, right_score))
+    def _force_geo_side(self, box: List[float], vehicle_bbox: List[float]) -> str:
+        """Always return left/right from geometry (no center unknown state)."""
+        vx1, _, vx2, _ = [float(v) for v in vehicle_bbox]
+        vcx = 0.5 * (vx1 + vx2)
+        cx = 0.5 * (float(box[0]) + float(box[2]))
+        return "left" if cx <= vcx else "right"
+
+    def _collapse_vehicle_taillights(
+        self,
+        vehicle_dets: List[TailLightDetection],
+        vehicle_bbox: List[float],
+    ) -> Tuple[List[TailLightDetection], bool, bool, float, float]:
+        """
+        Reduce raw prompt detections to at most one detection per side.
+
+        We keep the highest-activation detection per side so downstream JSON/debug
+        and vehicle-state logic operate on simplified left/right taillights.
+        """
+        by_side = {"left": [], "right": []}
+        for det in vehicle_dets:
+            # Use geometry for final side assignment so prompt wording does not
+            # create contradictory left/right duplicates for the same light.
+            side = self._force_geo_side(getattr(det, "bbox", [0.0, 0.0, 0.0, 0.0]), vehicle_bbox)
+            det.side = side
+            by_side[side].append(det)
+
+        collapsed: List[TailLightDetection] = []
+        left_detected = len(by_side["left"]) > 0
+        right_detected = len(by_side["right"]) > 0
+        left_score = 0.0
+        right_score = 0.0
+
+        if left_detected:
+            best_left = max(
+                by_side["left"],
+                key=lambda d: (float(getattr(d, "activation_score", 0.0)), float(getattr(d, "confidence", 0.0))),
+            )
+            left_score = float(getattr(best_left, "activation_score", 0.0))
+            best_left.status = self._light_status_from_activation(left_score)
+            collapsed.append(best_left)
+
+        if right_detected:
+            best_right = max(
+                by_side["right"],
+                key=lambda d: (float(getattr(d, "activation_score", 0.0)), float(getattr(d, "confidence", 0.0))),
+            )
+            right_score = float(getattr(best_right, "activation_score", 0.0))
+            best_right.status = self._light_status_from_activation(right_score)
+            collapsed.append(best_right)
+
+        return collapsed, left_detected, right_detected, left_score, right_score
+
+    def _classify_state_from_side_scores(
+        self,
+        left_detected: bool,
+        right_detected: bool,
+        left_score: float,
+        right_score: float,
+    ) -> Tuple[str, float]:
+        """
+        Vehicle brake-light state rules:
+          - no detections: off
+          - one side detected and on: on (assume both are on)
+          - both sides detected, one on: left/right indicator
+          - both detected and both on: on
+          - both detected and both off: off
+        """
+        thr = self.state_lit_score_threshold
+        left_on = left_detected and (left_score >= thr)
+        right_on = right_detected and (right_score >= thr)
+
+        if not left_detected and not right_detected:
+            return "off", 0.0
+
+        if left_detected and right_detected:
+            if left_on and right_on:
+                return "on", float(min(left_score, right_score))
+            if left_on and not right_on:
+                return "left indicator", float(left_score)
+            if right_on and not left_on:
+                return "right indicator", float(right_score)
+            return "off", float(max(left_score, right_score))
+
+        # Only one side detected.
+        detected_score = float(left_score if left_detected else right_score)
+        detected_on = bool(left_on if left_detected else right_on)
+        if detected_on:
+            return "on", detected_score
+        return "off", detected_score
 
     def _light_status_from_activation(self, activation_score: float) -> str:
         return "on" if float(activation_score) >= self.state_lit_score_threshold else "off"
@@ -347,6 +460,30 @@ class TailLightDetector:
         setattr(vehicle, "brake_light_state", final_state)
         setattr(vehicle, "brake_light_confidence", round(float(score), 4))
 
+    def _side_status(self, detected: bool, score: float) -> str:
+        if not detected:
+            return "not_detected"
+        return "on" if float(score) >= self.state_lit_score_threshold else "off"
+
+    def _set_vehicle_side_states(
+        self,
+        vehicle,
+        left_status: str,
+        right_status: str,
+        left_score: float = 0.0,
+        right_score: float = 0.0,
+    ) -> None:
+        left = str(left_status).strip().lower()
+        right = str(right_status).strip().lower()
+        if left not in _VALID_SIDE_STATES:
+            left = "not_detected"
+        if right not in _VALID_SIDE_STATES:
+            right = "not_detected"
+        setattr(vehicle, "brake_light_left_status", left)
+        setattr(vehicle, "brake_light_right_status", right)
+        setattr(vehicle, "brake_light_left_score", round(float(left_score), 4))
+        setattr(vehicle, "brake_light_right_score", round(float(right_score), 4))
+
     def detect(self, frame_bgr: np.ndarray, vehicles: List[object]) -> List[TailLightDetection]:
         if len(vehicles) == 0:
             return []
@@ -355,6 +492,7 @@ class TailLightDetector:
         for vehicle in vehicles:
             if getattr(vehicle, "brake_light_state", None) not in _VALID_STATES:
                 self._set_vehicle_state(vehicle, "off", 0.0)
+            self._set_vehicle_side_states(vehicle, "not_detected", "not_detected", 0.0, 0.0)
 
         if not self.is_active():
             return []
@@ -439,24 +577,26 @@ class TailLightDetector:
                         )
                     )
 
-            # Keep top detections per vehicle by confidence.
+            # Keep top raw detections per vehicle, then simplify to left/right.
             vehicle_dets = sorted(vehicle_dets, key=lambda d: float(d.confidence), reverse=True)[: self.max_per_vehicle]
-
-            left_score = 0.0
-            right_score = 0.0
-            for det in vehicle_dets:
-                if det.side == "left":
-                    left_score = max(left_score, float(det.activation_score))
-                elif det.side == "right":
-                    right_score = max(right_score, float(det.activation_score))
-                else:
-                    # Ambiguous side: give small weight to both.
-                    amb = 0.6 * float(det.activation_score)
-                    left_score = max(left_score, amb)
-                    right_score = max(right_score, amb)
-
-            state, conf = self._classify_state_from_scores(left_score, right_score)
+            collapsed_dets, left_detected, right_detected, left_score, right_score = self._collapse_vehicle_taillights(
+                vehicle_dets,
+                vbox_raw,
+            )
+            state, conf = self._classify_state_from_side_scores(
+                left_detected=left_detected,
+                right_detected=right_detected,
+                left_score=left_score,
+                right_score=right_score,
+            )
             self._set_vehicle_state(vehicle, state, conf)
-            final.extend(vehicle_dets)
+            self._set_vehicle_side_states(
+                vehicle,
+                self._side_status(left_detected, left_score),
+                self._side_status(right_detected, right_score),
+                left_score,
+                right_score,
+            )
+            final.extend(collapsed_dets)
 
         return final

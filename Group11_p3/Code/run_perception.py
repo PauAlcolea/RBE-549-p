@@ -51,6 +51,7 @@ from utils.viz import (
     draw_signs,
     draw_non_coco_objects,
     draw_taillights,
+    draw_taillight_vehicle_status,
     draw_pymaf_matches,
 )
 from perception.lanes import LaneDetector
@@ -1741,10 +1742,10 @@ def process_sequence(
 
         if debug:
             if brakelight_only:
-                annotated_taillights = draw_taillights(
+                annotated_taillights = draw_taillight_vehicle_status(
                     frame_bgr,
+                    vehicle_results,
                     taillight_results,
-                    status_only_text=True,
                 )
             else:
                 annotated = draw_detections(frame_bgr, object_results, proj_matrix=debug_proj_matrix)
@@ -1978,9 +1979,9 @@ def main():
     if args.pymaf_only:
         print("[init] PyMAF-only mode enabled (--pymaf-only).")
     if args.brakelight_only:
-        print("[init] Taillight-only debug mode enabled (--tailight-only).")
+        print("[init] Brakelight-only debug mode enabled (--brakelight-only).")
         if not args.debug:
-            print("[init] Note: --tailight-only affects only debug overlay rendering; add --debug to save visuals.")
+            print("[init] Note: --brakelight-only affects only debug overlay rendering; add --debug to save visuals.")
     if args.start_frame > 0:
         print(f"[init] Start frame set to: {args.start_frame}")
     if args.lane_conf_yellow is not None:

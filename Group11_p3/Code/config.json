@@ -39,7 +39,7 @@
   },
   "perception": {
     "batch_size": 1,
-    "frame_skip": 30,
+    "frame_skip": 5,
     "yolo": {
       "confidence": 0.25,
       "iou_threshold": 0.45,
@@ -366,28 +366,33 @@
       "detic_repo": "perception/Detic",
       "config_file": "configs/Detic_LI_CLIP_SwinB_896b32_4x_ft4x_max-size.yaml",
       "weights": "../Weights/Detic.pth",
-      "confidence": 0.2,
+      "confidence": 0.3,
       "max_per_vehicle": 4,
-      "min_width_px": 2,
-      "min_height_px": 2,
+      "min_width_px": 1,
+      "min_height_px": 1,
       "min_vehicle_crop_side_px": 16,
       "side_center_margin_ratio": 0.1,
-      "state_lit_score_threshold": 0.05,
+      "state_lit_score_threshold": 0.035,
       "state_indicator_ratio": 1.7,
+      "state_red_ratio_weight": 0.8,
+      "state_value_weight": 0.2,
+      "state_detection_conf_floor": 0.6,
+      "state_detection_conf_gamma": 0.5,
+      "state_roi_margin_ratio": 0.12,
       "hsv_red_low1": [
         0,
-        80,
-        80
+        40,
+        40
       ],
       "hsv_red_high1": [
-        12,
+        20,
         255,
         255
       ],
       "hsv_red_low2": [
-        170,
-        80,
-        80
+        160,
+        40,
+        40
       ],
       "hsv_red_high2": [
         180,
@@ -395,9 +400,9 @@
         255
       ],
       "prompts": [
-        "left rear turn indicator lit",
-        "right rear turn indicator lit",
-        "vehicle brake light lit",
+        "left rear turn indicator",
+        "right rear turn indicator",
+        "vehicle brake light",
         "car taillight"
       ]
     },

@@ -120,6 +120,14 @@ def _serialize_vehicle(det) -> dict:
     if brake_light_state in {"on", "off", "left indicator", "right indicator"}:
         vehicle["brake_light_state"] = brake_light_state
         vehicle["brake_light_confidence"] = round(float(getattr(det, "brake_light_confidence", 0.0)), 4)
+        left_status = str(getattr(det, "brake_light_left_status", "")).strip().lower()
+        right_status = str(getattr(det, "brake_light_right_status", "")).strip().lower()
+        if left_status in {"on", "off", "not_detected"}:
+            vehicle["brake_light_left_status"] = left_status
+            vehicle["brake_light_left_score"] = round(float(getattr(det, "brake_light_left_score", 0.0)), 4)
+        if right_status in {"on", "off", "not_detected"}:
+            vehicle["brake_light_right_status"] = right_status
+            vehicle["brake_light_right_score"] = round(float(getattr(det, "brake_light_right_score", 0.0)), 4)
 
     _attach_temporal_fields(det, vehicle)
 

@@ -400,6 +400,42 @@ def draw_taillights(frame_bgr: np.ndarray, taillights: list, status_only_text: b
     return out
 
 
+def draw_taillight_vehicle_status(frame_bgr: np.ndarray, vehicles: list, taillights: list) -> np.ndarray:
+    """
+    Taillight-only debug view:
+      - taillight boxes with on/off labels
+      - vehicle boxes with one-line left/right/final status summary
+    """
+    out = draw_taillights(frame_bgr, taillights, status_only_text=True)
+    for det in vehicles:
+        x1, y1, x2, y2 = [int(v) for v in det.bbox]
+        cv2.rectangle(out, (x1, y1), (x2, y2), _COLOR_CAR, 2)
+
+        left_status = str(getattr(det, "brake_light_left_status", "not_detected")).strip().lower()
+        right_status = str(getattr(det, "brake_light_right_status", "not_detected")).strip().lower()
+        final_status = str(getattr(det, "brake_light_state", "off")).strip().lower()
+
+        txt = f"left:{left_status} right:{right_status} final:{final_status}"
+        (tw, th), _ = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
+        text_y = max(y1 - 8, 12)
+        bg_y1 = max(text_y - th - 4, 0)
+        bg_y2 = min(text_y + 2, out.shape[0] - 1)
+        bg_x2 = min(x1 + tw + 6, out.shape[1] - 1)
+        cv2.rectangle(out, (x1, bg_y1), (bg_x2, bg_y2), (10, 10, 10), -1)
+        cv2.putText(
+            out,
+            txt,
+            (x1 + 2, text_y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.42,
+            _COLOR_CAR,
+            1,
+            lineType=cv2.LINE_AA,
+        )
+
+    return out
+
+
 def draw_cones(frame_bgr: np.ndarray, cones: list) -> np.ndarray:
     """Backward-compatible wrapper around draw_non_coco_objects."""
     return draw_non_coco_objects(frame_bgr, cones)
