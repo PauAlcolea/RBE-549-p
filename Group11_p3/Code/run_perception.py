@@ -22,6 +22,7 @@ Output
 
 import argparse
 from copy import deepcopy
+from collections import deque
 import math
 import torch
 from pathlib import Path
@@ -64,6 +65,7 @@ from perception.export import build_frame_dict
 from perception.vehicle_subtypes import VehicleSubtypeClassifier
 from perception.pymaf import PymafEstimator
 from perception.tracker import ByteTrackWrapper
+from perception.movement import MovementEstimator
 
 
 def parse_args():
@@ -178,6 +180,7 @@ def load_models(
     if pymaf_only:
         models = {
             "pymaf": PymafEstimator(cfg, device),
+            "movement": None,
         }
         print("[init] PyMAF-only mode enabled: loading just PyMAF bridge.")
         return models
@@ -187,6 +190,7 @@ def load_models(
         person_cfg["perception"]["yolo"]["classes_phase1"] = [0]
         models = {
             "objects": ObjectDetector(person_cfg, device),
+            "movement": None,
         }
         print("[init] Person-only debug mode enabled: loading just the object detector.")
         return models
@@ -210,6 +214,7 @@ def load_models(
         "vehicle_subtypes": VehicleSubtypeClassifier(cfg, device) if vehicle_subtypes_enabled else None,
         "speed_limit_ocr": speed_ocr,
         "tracker": ByteTrackWrapper(cfg) if tracker_enabled else None,
+        "movement": MovementEstimator(cfg, device),
     }
     models["traffic"].set_night_mode(night_mode)
     print("[init] All models loaded in the process of instantializing detectors.")
@@ -566,6 +571,10 @@ def _angle_delta_rad(prev_angle: float, curr_angle: float) -> float:
     return _wrap_angle_rad(float(curr_angle) - float(prev_angle))
 
 
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
+
+
 def _get_temporal_cfg(cfg: dict) -> dict:
     perception_cfg = cfg.get("perception", {})
     temporal_cfg = perception_cfg.get("temporal_stability", {})
@@ -773,12 +782,114 @@ def _update_track_snapshots(detections: list, frame_idx: int, track_states: dict
                 "last_seen": -1,
                 "last_det": None,
                 "last_heading": None,
+                "bbox_history": deque(maxlen=6),
+                "frame_history": deque(maxlen=6),
+                "birth_frame": int(frame_idx),
+                "gap_frames": 0,
+                "age_frames": 0,
             },
         )
+
+        # Backfill keys for states that were created earlier by smoothing code paths.
+        state.setdefault("bbox_history", deque(maxlen=6))
+        state.setdefault("frame_history", deque(maxlen=6))
+        state.setdefault("birth_frame", int(frame_idx))
+        state.setdefault("gap_frames", 0)
+        state.setdefault("age_frames", 0)
+
+        prev_seen = int(state.get("last_seen", -1))
+        if prev_seen >= 0:
+            state["gap_frames"] = max(0, int(frame_idx) - prev_seen - 1)
+        else:
+            state["gap_frames"] = 0
+
+        state["age_frames"] = int(frame_idx) - int(state.get("birth_frame", frame_idx)) + 1
+        state["bbox_history"].append([float(v) for v in det.bbox])
+        state["frame_history"].append(int(frame_idx))
         state["last_seen"] = int(frame_idx)
         det.is_held = False
         det.hold_age_frames = 0
         state["last_det"] = deepcopy(det)
+
+
+def _track_velocity_px(state: dict) -> tuple:
+    bbox_history = list(state.get("bbox_history", []))
+    frame_history = list(state.get("frame_history", []))
+    if len(bbox_history) < 2 or len(frame_history) < 2:
+        return 0.0, 0.0, 0.0
+
+    b0 = bbox_history[0]
+    b1 = bbox_history[-1]
+    f0 = int(frame_history[0])
+    f1 = int(frame_history[-1])
+    frame_delta = max(1, f1 - f0)
+
+    c0x = 0.5 * (float(b0[0]) + float(b0[2]))
+    c0y = 0.5 * (float(b0[1]) + float(b0[3]))
+    c1x = 0.5 * (float(b1[0]) + float(b1[2]))
+    c1y = 0.5 * (float(b1[1]) + float(b1[3]))
+
+    vx = (c1x - c0x) / float(frame_delta)
+    vy = (c1y - c0y) / float(frame_delta)
+    speed = float(math.sqrt(vx * vx + vy * vy))
+    return float(vx), float(vy), speed
+
+
+def _track_jitter_px(state: dict) -> float:
+    bbox_history = list(state.get("bbox_history", []))
+    if len(bbox_history) < 3:
+        return 0.0
+
+    centers = []
+    for box in bbox_history:
+        cx = 0.5 * (float(box[0]) + float(box[2]))
+        cy = 0.5 * (float(box[1]) + float(box[3]))
+        centers.append([cx, cy])
+
+    centers_np = np.asarray(centers, dtype=np.float32)
+    deltas = np.linalg.norm(np.diff(centers_np, axis=0), axis=1)
+    if deltas.size == 0:
+        return 0.0
+    return float(np.std(deltas))
+
+
+def _build_track_feature_map(detections: list, track_states: dict, cfg: dict) -> dict:
+    motion_cfg = cfg.get("perception", {}).get("temporal_stability", {}).get("motion_detection", {})
+    min_age = max(1, int(motion_cfg.get("min_track_age_frames", 3)))
+    max_gap = max(1, int(motion_cfg.get("track_gap_penalty_frames", 2)))
+    max_jitter = max(0.1, float(motion_cfg.get("track_jitter_max_px", 4.0)))
+
+    feature_map = {}
+    for det in detections:
+        track_id = getattr(det, "track_id", None)
+        if track_id is None:
+            continue
+
+        state = track_states.get(int(track_id))
+        if state is None:
+            continue
+
+        vx, vy, speed = _track_velocity_px(state)
+        jitter = _track_jitter_px(state)
+        age_frames = int(state.get("age_frames", 0))
+        gap_frames = int(state.get("gap_frames", 0))
+
+        age_score = _clamp01(float(age_frames) / float(min_age))
+        gap_penalty = _clamp01(float(gap_frames) / float(max_gap))
+        jitter_penalty = _clamp01(float(jitter) / float(max_jitter))
+        reliability = age_score * (1.0 - 0.55 * gap_penalty) * (1.0 - 0.45 * jitter_penalty)
+        reliability = _clamp01(reliability)
+
+        feature_map[int(track_id)] = {
+            "velocity_px": [round(vx, 4), round(vy, 4)],
+            "speed_px": round(speed, 4),
+            "jitter_px": round(jitter, 4),
+            "age_frames": age_frames,
+            "gap_frames": gap_frames,
+            "reliability": round(reliability, 4),
+        }
+
+    return feature_map
 
 
 def _inject_held_detections(detections: list, frame_idx: int, track_states: dict, hold_cfg: dict) -> int:
@@ -1561,6 +1672,8 @@ def process_sequence(
         models["traffic"].set_scene_context(scene_name)
     if models.get("tracker") is not None:
         models["tracker"].reset()
+    if models.get("movement") is not None:
+        models["movement"].reset()
 
     # scene_dir is the root of this sequence, e.g. Data/Sequences/scene1/
     scene_dir = Path(cfg["paths"]["sequences_dir"]) / scene_name
@@ -1573,15 +1686,18 @@ def process_sequence(
     lane_debug_dir = Path(cfg["paths"]["detections_dir"]) / scene_name / "lane_debug"
     traffic_algo_dir = out_dir / "../traffic_algo"
     ocr_debug_dir = out_dir / "../ocr_debug"
+    flow_debug_dir = out_dir / "../flow_debug"
     if debug:
         debug_dir.mkdir(parents=True, exist_ok=True)
         if not person_only:
             lane_debug_dir.mkdir(parents=True, exist_ok=True)
             traffic_algo_dir.mkdir(parents=True, exist_ok=True)
             ocr_debug_dir.mkdir(parents=True, exist_ok=True)
+            flow_debug_dir.mkdir(parents=True, exist_ok=True)
     debug_proj_matrix = _camera_projection_matrix(cfg) if debug else None
 
     print(f"[{scene_name}] Camera: {camera}")
+    prev_frame_bgr = None
 
     # Use the generator so we never load all frames into RAM at once
     for i, (frame_idx, frame_bgr) in enumerate(
@@ -1682,6 +1798,17 @@ def process_sequence(
                 _cleanup_track_states(object_track_states, frame_idx, temporal_cfg["hold"])
                 _cleanup_track_states(non_coco_track_states, frame_idx, temporal_cfg["hold"])
 
+            if models.get("movement") is not None:
+                track_features = _build_track_feature_map(object_results, object_track_states, cfg)
+                models["movement"].annotate(
+                    frame_idx=frame_idx,
+                    prev_frame_bgr=prev_frame_bgr,
+                    curr_frame_bgr=frame_bgr,
+                    objects=object_results,
+                    vehicle_labels=vehicle_labels,
+                    track_features=track_features,
+                )
+
             if isinstance(lane_output, dict) and "lanes" in lane_output:
                 lane_results = lane_output["lanes"]
                 lane_raw = lane_output.get("raw")
@@ -1766,16 +1893,21 @@ def process_sequence(
                         traffic_algo_dir / "detail",
                     )
 
+                if models.get("movement") is not None:
+                    flow_viz, flow_source = models["movement"].get_last_flow_visualization()
+                    if flow_viz is not None:
+                        cv2.imwrite(
+                            str(flow_debug_dir / f"frame_{frame_idx:06d}_{flow_source}.png"),
+                            flow_viz,
+                        )
+
         if (i + 1) % 50 == 0:
             raw_count = 0
             if isinstance(lane_raw, dict) and "scores" in lane_raw:
                 raw_count = len(lane_raw["scores"])
-            print(
-                f"  [{scene_name}/{camera}] {i+1} frames processed | "
-                f"lanes={len(lane_results)} raw_dets={raw_count} "
-                f"vehicles={len(vehicle_results)} oriented={len(orientation_estimates)} "
-                f"pedestrians={sum(1 for d in object_results if d.label == 'person')}"
-            )
+            print(f"  [{scene_name}/{camera}] {i+1} frames processed")
+
+        prev_frame_bgr = frame_bgr.copy()
 
     print(f"[{scene_name}] Done. JSONs saved to {out_dir}")
     if debug:
@@ -1783,6 +1915,7 @@ def process_sequence(
         if not person_only:
             print(f"[{scene_name}] Lane overlays saved to {lane_debug_dir}")
             print(f"[{scene_name}] Traffic algorithm figures saved to {traffic_algo_dir}")
+            print(f"[{scene_name}] Flow visualizations saved to {flow_debug_dir}")
     return
 
 
