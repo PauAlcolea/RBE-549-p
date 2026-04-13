@@ -129,7 +129,7 @@ def parse_args():
     parser.add_argument(
         "--frame_skip",
         type=int,
-        default=None,
+        default=5,
         help="Override frame skip from config (process every Nth frame, N>=1)."
     )
 
