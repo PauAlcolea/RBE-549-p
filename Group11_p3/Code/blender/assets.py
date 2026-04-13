@@ -350,6 +350,7 @@ class AssetLibrary:
         self._frame_objects = []     # track objects placed this frame for cleanup
         self._ground_arrow_bboxes = []
         self._ground_text_bboxes = []
+        self._taillight_material_variants: Dict[tuple, object] = {}
         self._templates: Dict[str, object] = {}  # cache of linked template objects
         self._template_groups: Dict[str, list] = {}  # cache of linked grouped templates
         self._load_templates()
@@ -517,6 +518,9 @@ class AssetLibrary:
             if vehicle_class == "suv":
                 obj.rotation_euler[2] += math.pi
 
+        taillight_targets = children if children else [obj]
+        self._apply_vehicle_brake_lights(vehicle, taillight_targets)
+
         if children:
             self._align_group_to_ground(obj, children, ground_z=0.0, clearance=self.ground_clearance_m)
         else:
@@ -528,6 +532,125 @@ class AssetLibrary:
             f"[assets] {vehicle_class}: scale={tuple(vehicle_scale)} "
             f"json_pos={vehicle['position_3d']}  →  blender_pos={bpos}  depth={vehicle['depth_m']:.1f}m"
         )
+
+    @staticmethod
+    def _normalize_brake_light_state(value) -> str:
+        txt = str(value).strip().lower().replace("_", " ").replace("-", " ")
+        return re.sub(r"\s+", " ", txt).strip()
+
+    def _resolve_vehicle_brake_lights(self, vehicle: dict) -> tuple:
+        """Return (left_on, right_on, normalized_state) from vehicle JSON fields."""
+        state = self._normalize_brake_light_state(vehicle.get("brake_light_state", "off"))
+
+        left_on = False
+        right_on = False
+        if state in {"on", "both", "both on"}:
+            left_on = True
+            right_on = True
+        elif state in {"left indicator", "left turn indicator", "left turn"}:
+            left_on = True
+        elif state in {"right indicator", "right turn indicator", "right turn"}:
+            right_on = True
+
+        left_status = self._normalize_brake_light_state(vehicle.get("brake_light_left_status", ""))
+        right_status = self._normalize_brake_light_state(vehicle.get("brake_light_right_status", ""))
+        if left_status in {"on", "off"}:
+            left_on = left_status == "on"
+        if right_status in {"on", "off"}:
+            right_on = right_status == "on"
+
+        return left_on, right_on, state
+
+    @staticmethod
+    def _is_vehicle_side_light_object(obj, side: str) -> bool:
+        if obj is None:
+            return False
+        raw_name = str(obj.get("source_name", obj.name))
+        norm = re.sub(r"[^a-z0-9]+", "", raw_name.lower())
+        token = "leftlight" if side == "left" else "rightlight"
+        return token in norm
+
+    @staticmethod
+    def _set_material_emission_strength(mat, strength: float) -> bool:
+        if mat is None:
+            return False
+        mat.use_nodes = True
+        tree = mat.node_tree
+        if tree is None:
+            return False
+
+        strength = float(strength)
+        changed = False
+        for node in tree.nodes:
+            if node.type == "EMISSION":
+                strength_inp = node.inputs.get("Strength")
+                if strength_inp is not None:
+                    strength_inp.default_value = strength
+                    changed = True
+            elif node.type == "BSDF_PRINCIPLED":
+                emission_strength_inp = next(
+                    (inp for inp in node.inputs if inp.name == "Emission Strength"),
+                    None,
+                )
+                if emission_strength_inp is not None:
+                    emission_strength_inp.default_value = strength
+                    changed = True
+
+        return changed
+
+    def _get_or_create_taillight_material_variant(self, source_mat, strength: float):
+        key = (str(source_mat.name), round(float(strength), 3))
+        cached = self._taillight_material_variants.get(key)
+        if cached is not None and bpy.data.materials.get(cached.name) is not None:
+            return cached
+
+        variant = source_mat.copy()
+        suffix = "on" if float(strength) > 1e-4 else "off"
+        variant.name = f"{source_mat.name}_taillight_{suffix}"
+        self._set_material_emission_strength(variant, strength)
+        self._taillight_material_variants[key] = variant
+        return variant
+
+    def _set_object_taillight_strength(self, obj, strength: float):
+        if obj is None or obj.type != "MESH" or getattr(obj, "data", None) is None:
+            return False
+        if len(obj.data.materials) == 0:
+            return False
+
+        changed = False
+        for i, mat in enumerate(list(obj.data.materials)):
+            if mat is None:
+                continue
+            obj.data.materials[i] = self._get_or_create_taillight_material_variant(mat, strength)
+            changed = True
+        return changed
+
+    def _apply_vehicle_brake_lights(self, vehicle: dict, objects):
+        if not objects:
+            return
+
+        left_on, right_on, state = self._resolve_vehicle_brake_lights(vehicle)
+        left_strength = 1.0 if left_on else 0.0
+        right_strength = 1.0 if right_on else 0.0
+
+        left_hits = 0
+        right_hits = 0
+        for obj in objects:
+            if self._is_vehicle_side_light_object(obj, "left"):
+                if self._set_object_taillight_strength(obj, left_strength):
+                    left_hits += 1
+                continue
+            if self._is_vehicle_side_light_object(obj, "right"):
+                if self._set_object_taillight_strength(obj, right_strength):
+                    right_hits += 1
+
+        if left_hits or right_hits:
+            left_txt = "on" if left_on else "off"
+            right_txt = "on" if right_on else "off"
+            print(
+                f"[assets] brake lights: state={state or 'unknown'} "
+                f"L={left_txt} R={right_txt} (matched LeftLight={left_hits}, RightLight={right_hits})"
+            )
 
     def place_ego_vehicle(self):
         """Instantiate the configured ego vehicle (Tesla) at world origin."""
