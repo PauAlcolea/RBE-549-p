@@ -12,6 +12,9 @@ re-encodes everything and is slower for batch jobs. ffmpeg must be
 available on PATH (it's pre-installed on most Linux clusters).
 """
 
+import os
+import shutil
+import tempfile
 from pathlib import Path
 import subprocess
 
@@ -46,49 +49,56 @@ def frames_to_video(frames_dir: Path, out_path: Path, fps: int = 30):
     fps        : output frame rate
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    pattern = str(frames_dir / "frame_%06d.png")
+    frame_paths = sorted(frames_dir.glob("frame_*.png"))
+    if not frame_paths:
+        raise RuntimeError(f"No rendered frames found in {frames_dir}")
 
-    cmd = [
-        "ffmpeg", 
-        "-y",
-        "-framerate", str(fps),
-        "-i", pattern,
-        "-c:v", "libx264",
-        "-pix_fmt", "yuv420p",
-        "-crf", "18",           # quality: 0=lossless, 23=default, 51=worst
-        "-preset", "fast",
-        str(out_path),
-    ]
+    ffmpeg_bin = shutil.which("ffmpeg")
+    if ffmpeg_bin is None:
+        raise RuntimeError("ffmpeg executable not found on PATH")
 
-    print(f"[render] Stitching frames → {out_path}")
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    print(f"[render] Stitching {len(frame_paths)} frames → {out_path}")
 
-    if result.returncode != 0:
-        print(f"[render] ffmpeg error:\n{result.stderr}")
-        raise RuntimeError(f"ffmpeg failed for {out_path}")
+    # Reindex to a contiguous temporary sequence so ffmpeg does not depend on
+    # original frame numbering (supports non-zero starts and skipped indices).
+    with tempfile.TemporaryDirectory(prefix="ffmpeg_stage_", dir=str(frames_dir)) as stage_tmp:
+        stage_dir = Path(stage_tmp)
+        for i, src in enumerate(frame_paths):
+            dst = stage_dir / f"frame_{i:06d}.png"
+            try:
+                os.link(str(src), str(dst))
+            except OSError:
+                shutil.copy2(src, dst)
+
+        pattern = str(stage_dir / "frame_%06d.png")
+        cmd = [
+            ffmpeg_bin,
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-framerate",
+            str(fps),
+            "-start_number",
+            "0",
+            "-i",
+            pattern,
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-crf",
+            "18",  # quality: 0=lossless, 23=default, 51=worst
+            "-preset",
+            "fast",
+            "-movflags",
+            "+faststart",
+            str(out_path),
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"[render] ffmpeg error:\n{result.stderr}")
+            raise RuntimeError(f"ffmpeg failed for {out_path}")
 
     print(f"[render] Video written: {out_path}")
-
-
-# def composite_overlay(background_path: Path, overlay_path: Path, out_path: Path, alpha: float = 0.85):
-#     """
-#     OPTIONAL: Alpha-composite a rendered overlay PNG onto the original video frame.
-
-#     Useful for the Tesla-style look where you see the real road underneath
-#     the 3D visualization. Call this after render_frame() if desired.
-
-#     Parameters
-#     ----------
-#     background_path : original video frame PNG
-#     overlay_path    : rendered Blender frame (RGBA)
-#     out_path        : composited output PNG
-#     alpha           : opacity of the overlay layer
-#     """
-#     # TODO: implement if desired for final visual style
-#     # import cv2, numpy as np
-#     # bg   = cv2.imread(str(background_path)).astype(float)
-#     # ov   = cv2.imread(str(overlay_path), cv2.IMREAD_UNCHANGED).astype(float)
-#     # a    = (ov[:, :, 3:4] / 255.0) * alpha
-#     # comp = bg * (1 - a) + ov[:, :, :3] * a
-#     # cv2.imwrite(str(out_path), comp.astype("uint8"))
-#     raise NotImplementedError("composite_overlay not yet implemented")
