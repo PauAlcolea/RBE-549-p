@@ -468,6 +468,14 @@ class AssetLibrary:
                     print(f"[assets] traffic_pole mesh selection: chose '{mesh_obj.name}' from {mesh_names}")
 
             # Hide all loaded objects, keep only selected mesh(es).
+            if name not in self._template_groups and len(meshes) > 1:
+                keep_meshes = sorted(list(meshes), key=lambda m: norm(m.name))
+                self._template_groups[name] = keep_meshes
+                mesh_obj = keep_meshes[0]
+                print(f"[assets] {name}: registering {len(keep_meshes)} meshes as group: "
+                      f"{[m.name for m in keep_meshes]}")
+
+            # Hide all loaded objects, keep only selected mesh(es).
             for obj in list(data_to.objects):
                 if obj is not None and obj not in keep_meshes:
                     bpy.data.objects.remove(obj, do_unlink=True)
@@ -488,7 +496,13 @@ class AssetLibrary:
         """
         vehicle_class = str(vehicle.get("class", "car")).lower()
         asset_name = self._vehicle_asset_name(vehicle_class)
-        obj = self._instance(asset_name)
+
+        children = []
+        if asset_name in self._template_groups:
+            obj, children = self._instance_group(asset_name)
+        else:
+            obj = self._instance(asset_name)
+
         bpos = self._json_to_blender(vehicle["position_3d"])
         obj.location = bpos
         vehicle_scale = self._vehicle_scale(vehicle_class)
@@ -502,9 +516,14 @@ class AssetLibrary:
             )
             if vehicle_class == "suv":
                 obj.rotation_euler[2] += math.pi
-        self._align_object_to_ground(obj, ground_z=0.0, clearance=self.ground_clearance_m)
+
+        if children:
+            self._align_group_to_ground(obj, children, ground_z=0.0, clearance=self.ground_clearance_m)
+        else:
+            self._align_object_to_ground(obj, ground_z=0.0, clearance=self.ground_clearance_m)
 
         self._frame_objects.append(obj)
+        self._frame_objects.extend(children)
         print(
             f"[assets] {vehicle_class}: scale={tuple(vehicle_scale)} "
             f"json_pos={vehicle['position_3d']}  →  blender_pos={bpos}  depth={vehicle['depth_m']:.1f}m"
@@ -2303,7 +2322,7 @@ class AssetLibrary:
             "sedan": (0.02, 0.02, 0.02),
             "sedanandhatchbacks": (0.02, 0.02, 0.02),
             "hatchback": (0.02, 0.02, 0.02),
-            "suv": (3.354, 3.354, 3.354),
+            "suv": (1, 1, 1),
             "pickuptruck": (0.5, 0.5, 0.5),
             "pickup_truck": (0.5, 0.5, 0.5),
             "truck": (0.001, 0.001, 0.001),
