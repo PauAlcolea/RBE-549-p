@@ -354,6 +354,10 @@ class AssetLibrary:
         self._template_groups: Dict[str, list] = {}  # cache of linked grouped templates
         self._load_templates()
         self.Materials = MaterialLibrary(cfg)
+        style_cfg = cfg.get("blender", {}).get("style", {})
+        self.motion_tint_color = style_cfg.get("vehicle_motion_tint_color", [0.95, 0.82, 0.20])
+        self.motion_tint_metallic = max(0.0, min(1.0, float(style_cfg.get("vehicle_motion_tint_metallic", 0.12))))
+        self.motion_tint_roughness = max(0.0, min(1.0, float(style_cfg.get("vehicle_motion_tint_roughness", 0.35))))
 
     def set_render_context(self, scene_name: str = None, camera_name: str = None):
         """Store active scene/camera so style overrides can be scene-specific."""
@@ -478,7 +482,93 @@ class AssetLibrary:
 
             self._templates[name] = mesh_obj
 
-    def place_vehicle(self, vehicle: dict):
+    @staticmethod
+    def _safe_rgb(color_value, fallback=(0.15, 0.82, 0.92)):
+        if not isinstance(color_value, (list, tuple)) or len(color_value) != 3:
+            return fallback
+        try:
+            return (
+                max(0.0, min(1.0, float(color_value[0]))),
+                max(0.0, min(1.0, float(color_value[1]))),
+                max(0.0, min(1.0, float(color_value[2]))),
+            )
+        except Exception:
+            return fallback
+
+    @staticmethod
+    def _forward_vector_from_heading(heading_rad):
+        if heading_rad is None:
+            return None
+        try:
+            heading = float(heading_rad)
+        except Exception:
+            return None
+        yaw = -(heading - math.pi / 2.0)
+        return Vector((math.sin(yaw), math.cos(yaw), 0.0))
+
+    @staticmethod
+    def _vehicle_front_anchor(obj, forward_xy: Vector, up_offset_m: float):
+        bpy.context.view_layer.update()
+        corners = [obj.matrix_world @ Vector(corner) for corner in obj.bound_box]
+        if not corners:
+            return obj.location + Vector((0.0, 0.0, up_offset_m))
+
+        min_z = min(p.z for p in corners)
+        max_z = max(p.z for p in corners)
+        center = Vector((
+            sum(p.x for p in corners) / len(corners),
+            sum(p.y for p in corners) / len(corners),
+            0.0,
+        ))
+        fwd = forward_xy.normalized() if forward_xy.length > 1e-6 else Vector((0.0, 1.0, 0.0))
+
+        front_pt = None
+        best_proj = -1e9
+        for p in corners:
+            proj = (Vector((p.x, p.y, 0.0)) - center).dot(fwd)
+            if proj > best_proj:
+                best_proj = proj
+                front_pt = p
+
+        if front_pt is None:
+            front_pt = obj.location.copy()
+
+        z = min_z + 0.62 * (max_z - min_z) + up_offset_m
+        return Vector((front_pt.x, front_pt.y, z))
+
+    @staticmethod
+    def _iter_mesh_descendants(root_obj):
+        stack = [root_obj]
+        seen = set()
+        while stack:
+            obj = stack.pop()
+            if obj is None:
+                continue
+            key = getattr(obj, "name_full", obj.name)
+            if key in seen:
+                continue
+            seen.add(key)
+            if obj.type == "MESH":
+                yield obj
+            for child in getattr(obj, "children", []):
+                stack.append(child)
+
+    def _apply_vehicle_motion_tint(self, obj):
+        tint_rgb = self._safe_rgb(self.motion_tint_color, fallback=(0.95, 0.82, 0.20))
+        tint_mat = self._get_or_create_principled_material(
+            "vehicle_motion_tint_mat",
+            tint_rgb,
+            metallic=self.motion_tint_metallic,
+            roughness=self.motion_tint_roughness,
+            alpha=1.0,
+            transmission=0.0,
+            specular=0.35,
+        )
+        for mesh_obj in self._iter_mesh_descendants(obj):
+            mesh_obj.data.materials.clear()
+            mesh_obj.data.materials.append(tint_mat)
+
+    def place_vehicle(self, vehicle: dict, is_moving: bool = False, motion_forward=None):
         """
         Instantiate the detected vehicle asset at the vehicle's 3D position.
 
@@ -503,6 +593,9 @@ class AssetLibrary:
             if vehicle_class == "suv":
                 obj.rotation_euler[2] += math.pi
         self._align_object_to_ground(obj, ground_z=0.0, clearance=self.ground_clearance_m)
+
+        if bool(is_moving):
+            self._apply_vehicle_motion_tint(obj)
 
         self._frame_objects.append(obj)
         print(
