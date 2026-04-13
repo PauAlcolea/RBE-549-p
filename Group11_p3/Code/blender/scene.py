@@ -1020,25 +1020,13 @@ def render_sequence(
             if dropped_dupes > 0 and (debug or motion_cfg["debug"]):
                 print(f"[scene] frame={frame_idx:06d} removed duplicate vehicles={dropped_dupes}")
 
-            motion_summary = _annotate_vehicle_motion_state(
-                vehicles=vehicles,
-                frame_idx=frame_idx,
-                cfg=cfg,
-                motion_ctx=motion_ctx,
-            )
 
+            # Use is_moving from JSON, no longer compute motion state here
             for v in vehicles:
                 asset_lib.place_vehicle(
                     v,
-                    is_moving=bool(v.get("__motion_is_moving", False)),
-                    motion_forward=v.get("__motion_forward_dir"),
-                )
-
-            if debug or motion_cfg["debug"]:
-                flow_vx, flow_vy = motion_summary["dominant_flow"]
-                print(
-                    f"[motion] frame={frame_idx:06d} moving={motion_summary['moving']} "
-                    f"parked={motion_summary['parked']} "
+                    is_moving=bool(v.get("is_moving", False)),
+                    motion_forward=None,
                 )
 
             for p in frame_data.get("pedestrians", []):

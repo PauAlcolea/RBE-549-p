@@ -97,7 +97,7 @@ def _serialize_lane(lane) -> dict:
 
 
 def _serialize_vehicle(det) -> dict:
-    """normalize vehicles and add the radian heading if it has one"""
+    """normalize vehicles and add the radian heading if it has one, plus is_moving/moving_score if present"""
     vehicle = {
         "bbox": [round(v, 2) for v in det.bbox],
         "class": det.label,
@@ -112,6 +112,12 @@ def _serialize_vehicle(det) -> dict:
     track_id = getattr(det, "track_id", None)
     if track_id is not None:
         vehicle["track_id"] = int(track_id)
+
+    # Add motion fields if present
+    if hasattr(det, "is_moving"):
+        vehicle["is_moving"] = bool(getattr(det, "is_moving", False))
+    if hasattr(det, "moving_score"):
+        vehicle["moving_score"] = float(getattr(det, "moving_score", 0.0))
 
     _attach_temporal_fields(det, vehicle)
 
@@ -161,6 +167,7 @@ def build_frame_dict(
     traffic_lights: list,
     stop_signs: list,
     non_coco_objects: list,
+    vehicle_results: list = None,
 ) -> dict:
     """
     Convert all detector outputs for one frame into the shared JSON schema.
@@ -178,7 +185,7 @@ def build_frame_dict(
     -------
     dict matching the schema above.
     """
-    vehicles        = [d for d in objects if d.label in _VEHICLE_LABELS]
+    vehicles = vehicle_results if vehicle_results is not None else [d for d in objects if d.label in _VEHICLE_LABELS]
     pedestrians     = [d for d in objects if d.label == "person"]
     non_coco_records = []
     bucket_map = {}

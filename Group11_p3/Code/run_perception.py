@@ -59,6 +59,7 @@ from perception.depth import DepthEstimator
 from perception.traffic import TrafficLightDetector
 from perception.signs import SignDetector
 from perception.orientation import OrientationEstimator
+from perception.movement import estimate_ego_motion, is_vehicle_moving
 from perception.speed_limit_ocr import SpeedLimitOcr
 from perception.export import build_frame_dict
 from perception.vehicle_subtypes import VehicleSubtypeClassifier
@@ -1584,11 +1585,17 @@ def process_sequence(
     print(f"[{scene_name}] Camera: {camera}")
 
     # Use the generator so we never load all frames into RAM at once
+    prev_frame_bgr = None
+    prev_vehicle_positions = {}
+    prev_frame_idx = None
+    prev_flow = None
+    prev_bg_mask = None
     for i, (frame_idx, frame_bgr) in enumerate(
         frame_generator(scene_dir, camera=camera, frame_skip=frame_skip)
-):
+    ):
         if frame_idx < start_frame:
             continue
+
 
         # --- Run detectors ---
         object_results = models["objects"].detect(frame_bgr)
@@ -1690,6 +1697,50 @@ def process_sequence(
                 lane_results = lane_output
                 lane_raw = None
 
+        # --- Movement logic ---
+        # Compute flow and background mask if possible
+        flow = None
+        bg_mask = None
+        ego_H = None
+        dt = frame_skip / float(cfg["blender"]["fps"])
+        if prev_frame_bgr is not None:
+            # Use RAFT or other flow estimator here; placeholder: Farneback for demo
+            flow = cv2.calcOpticalFlowFarneback(
+                cv2.cvtColor(prev_frame_bgr, cv2.COLOR_BGR2GRAY),
+                cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY),
+                None, 0.5, 3, 15, 3, 5, 1.2, 0
+            )
+            # flow shape: (H, W, 2)
+            # Build background mask: mask out all vehicle bboxes
+            bg_mask = np.ones(flow.shape[:2], dtype=bool)
+            for det in vehicle_results:
+                x1, y1, x2, y2 = map(int, det.bbox)
+                bg_mask[max(0, y1):max(0, y2), max(0, x1):max(0, x2)] = False
+            ego_H = estimate_ego_motion(flow, mask=bg_mask)
+        # Assign prev_position_3d for velocity
+        for det in vehicle_results:
+            tid = getattr(det, "track_id", None)
+            det.prev_position_3d = None
+            if tid is not None and tid in prev_vehicle_positions:
+                det.prev_position_3d = prev_vehicle_positions[tid]
+        # Classify moving/parked
+        for det in vehicle_results:
+            is_moving, move_score = False, 0.0
+            if flow is not None and bg_mask is not None:
+                is_moving, move_score = is_vehicle_moving(
+                    det, flow, bg_mask, ego_H, dt
+                )
+            det.is_moving = bool(is_moving)
+            det.moving_score = float(move_score)
+
+        # Save prev positions for next frame
+        prev_vehicle_positions = {
+            getattr(det, "track_id", None): list(det.position_3d)
+            for det in vehicle_results if getattr(det, "track_id", None) is not None and hasattr(det, "position_3d")
+        }
+        prev_frame_bgr = frame_bgr.copy()
+        prev_frame_idx = frame_idx
+
         lane_results_detected = list(lane_results)
         lane_results_after_ground_text = _suppress_lanes_near_ground_text(lane_results_detected, non_coco_results, cfg)
         lane_results_after_crosswalk = _suppress_lanes_on_crosswalk_markings(lane_results_after_ground_text, lane_raw, cfg)
@@ -1720,6 +1771,7 @@ def process_sequence(
             traffic_lights=traffic_results,
             stop_signs=sign_results,
             non_coco_objects=non_coco_results,
+            vehicle_results=vehicle_results,
         )
         save_detection_json(frame_dict, out_dir / f"frame_{frame_idx:06d}.json")
 
