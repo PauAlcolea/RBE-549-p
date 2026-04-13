@@ -637,13 +637,29 @@ def _labels_are_compatible(prev_label: str, new_label: str, class_cfg: dict) -> 
     return bool(prev_group.intersection(new_group))
 
 
-def _apply_class_smoothing(detections: list, frame_idx: int, track_states: dict, class_cfg: dict) -> set:
+def _apply_class_smoothing(
+    detections: list,
+    frame_idx: int,
+    track_states: dict,
+    class_cfg: dict,
+    *,
+    enable_vehicle_track_lock: bool = False,
+    vehicle_labels = None,
+) -> set:
     seen_tracks = set()
     enabled = bool(class_cfg.get("enabled", True))
     window = int(class_cfg.get("window", 5))
     hysteresis = int(class_cfg.get("hysteresis", 2))
     min_vote_ratio = float(class_cfg.get("min_vote_ratio", 0.5))
     confidence_margin = float(class_cfg.get("confidence_margin", 0.08))
+    lock_exclusions = {
+        str(v).strip().lower()
+        for v in class_cfg.get(
+            "vehicle_track_lock_exclusions",
+            ["truck", "bus", "motorcycle", "bicycle"],
+        )
+        if str(v).strip()
+    }
 
     for det in detections:
         track_id = getattr(det, "track_id", None)
@@ -665,6 +681,7 @@ def _apply_class_smoothing(detections: list, frame_idx: int, track_states: dict,
                 "last_seen": -1,
                 "last_det": None,
                 "last_heading": None,
+                "locked_label": None,
             },
         )
 
@@ -672,12 +689,24 @@ def _apply_class_smoothing(detections: list, frame_idx: int, track_states: dict,
         state["label_history"].append((observed_label, observed_conf))
         if len(state["label_history"]) > window:
             state["label_history"] = state["label_history"][-window:]
+        locked_label = state.get("locked_label")
 
         stable_label = state.get("stable_label")
         if not enabled or stable_label is None:
             state["stable_label"] = observed_label
-            det.label = observed_label
-            det.is_class_smoothed = False
+            final_label = observed_label
+            if locked_label is not None:
+                final_label = str(locked_label)
+            elif (
+                enable_vehicle_track_lock
+                and final_label not in lock_exclusions
+                and (vehicle_labels is None or final_label in vehicle_labels)
+            ):
+                state["locked_label"] = final_label
+            det.label = final_label
+            det.is_class_smoothed = (final_label != observed_label)
+            if det.is_class_smoothed:
+                det.observed_label = observed_label
             continue
 
         votes = {}
@@ -715,6 +744,14 @@ def _apply_class_smoothing(detections: list, frame_idx: int, track_states: dict,
                 state["pending_count"] = 0
 
         final_label = str(state.get("stable_label", observed_label))
+        if state.get("locked_label") is not None:
+            final_label = str(state["locked_label"])
+        elif (
+            enable_vehicle_track_lock
+            and final_label not in lock_exclusions
+            and (vehicle_labels is None or final_label in vehicle_labels)
+        ):
+            state["locked_label"] = final_label
         was_smoothed = final_label != observed_label
         det.label = final_label
         det.is_class_smoothed = bool(was_smoothed)
@@ -749,6 +786,7 @@ def _apply_heading_smoothing(detections: list, track_states: dict, heading_cfg: 
                 "last_seen": -1,
                 "last_det": None,
                 "last_heading": None,
+                "locked_label": None,
             },
         )
 
@@ -786,6 +824,7 @@ def _update_track_snapshots(detections: list, frame_idx: int, track_states: dict
                 "last_seen": -1,
                 "last_det": None,
                 "last_heading": None,
+                "locked_label": None,
             },
         )
         state["last_seen"] = int(frame_idx)
@@ -1676,6 +1715,8 @@ def process_sequence(
                     frame_idx,
                     object_track_states,
                     temporal_cfg["class"],
+                    enable_vehicle_track_lock=True,
+                    vehicle_labels=vehicle_labels,
                 )
                 _apply_class_smoothing(
                     non_coco_results,

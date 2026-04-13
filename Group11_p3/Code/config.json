@@ -39,7 +39,7 @@
   },
   "perception": {
     "batch_size": 1,
-    "frame_skip": 5,
+    "frame_skip": 1,
     "yolo": {
       "confidence": 0.25,
       "iou_threshold": 0.45,
