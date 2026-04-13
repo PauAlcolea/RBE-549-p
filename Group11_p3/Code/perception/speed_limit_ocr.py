@@ -125,7 +125,7 @@ class SpeedLimitOcr:
     @staticmethod
     def _only_letter_hits(text: str) -> str:
         letters_only = re.sub(r"[^a-z]", "", text.lower())
-        present = sorted({ch for ch in letters_only if ch in {"o", "n", "y"}})
+        present = sorted({ch for ch in letters_only if ch in {"o", "n"}})
         return "".join(present)
 
     def _parse_speed(self, text: str) -> Optional[int]:
