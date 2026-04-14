@@ -348,6 +348,8 @@ class AssetLibrary:
         self._scene_name = None
         self._camera_name = None
         self._frame_objects = []     # track objects placed this frame for cleanup
+        # self._frame_vehicle_roots = []  # track vehicle root objects placed this frame
+        # self._frame_collision_tint_obj = None  # last vehicle tinted this frame
         self._ground_arrow_bboxes = []
         self._ground_text_bboxes = []
         self._taillight_material_variants: Dict[tuple, object] = {}
@@ -562,6 +564,50 @@ class AssetLibrary:
             for child in getattr(obj, "children", []):
                 stack.append(child)
 
+    # def _apply_vehicle_collision_tint(self, obj):
+    #     tint_rgb = self._safe_rgb(None, fallback=(0.95, 0.15, 0.20))
+    #     tint_mat = self._get_or_create_principled_material(
+    #         "vehicle_collision_tint_mat",
+    #         tint_rgb,
+    #         metallic=0.4,
+    #         roughness=self.motion_tint_roughness,
+    #         alpha=1.0,
+    #         transmission=0.0,
+    #         specular=0.75,
+    #     )
+    #     for mesh_obj in self._iter_mesh_descendants(obj):
+    #         mesh = mesh_obj.data
+    #         # Stash original materials once so we can restore if needed
+    #         if not mesh_obj.get("collision_tint_original_mats"):
+    #             orig_names = [m.name for m in mesh.materials if m is not None]
+    #             mesh_obj["collision_tint_original_mats"] = orig_names
+    #         # Replace all material slots with the tint material
+    #         mesh.materials.clear()
+    #         mesh.materials.append(tint_mat)
+    #         # Assign all faces to material index 0 (the tint)
+    #         if hasattr(mesh, 'polygons'):
+    #             for poly in mesh.polygons:
+    #                 poly.material_index = 0
+
+    # def _clear_vehicle_collision_tint(self, obj):
+    #     if obj is None:
+    #         return
+    #     for mesh_obj in self._iter_mesh_descendants(obj):
+    #         mesh = mesh_obj.data
+    #         orig_names = mesh_obj.get("collision_tint_original_mats")
+    #         if not orig_names:
+    #             continue
+    #         mesh.materials.clear()
+    #         for name in orig_names:
+    #             mat = bpy.data.materials.get(name)
+    #             if mat is not None:
+    #                 mesh.materials.append(mat)
+    #         # Clean up to allow re-stash if re-tinted later
+    #         try:
+    #             del mesh_obj["collision_tint_original_mats"]
+    #         except Exception:
+    #             pass
+
     def _apply_vehicle_motion_tint(self, obj):
         tint_rgb = self._safe_rgb(self.motion_tint_color, fallback=(0.95, 0.82, 0.20))
         tint_mat = self._get_or_create_principled_material(
@@ -619,6 +665,42 @@ class AssetLibrary:
         # Only apply moving vehicle tint in scene7 or scene8
         if bool(is_moving) and (self._scene_name in {"scene7", "scene8"}):
             self._apply_vehicle_motion_tint(obj)
+
+        # # Only apply collision tint to the vehicle closest to the ego vehicle for specific scenes/frames
+        # from mathutils import Vector
+        # # Mark this as a vehicle root so we can reliably find vehicles only
+        # try:
+        #     obj["is_vehicle_root"] = True
+        # except Exception:
+        #     pass
+        # self._frame_vehicle_roots.append(obj)
+        # # Find ego vehicle location (assume at origin or from config)
+        # ego_cfg = self.cfg.get("blender", {}).get("ego_vehicle", {})
+        # ego_location = ego_cfg.get("location", [0.0, 0.0, 0.0])
+        # if not isinstance(ego_location, (list, tuple)) or len(ego_location) != 3:
+        #     ego_location = [0.0, 0.0, 0.0]
+        # ego_vec = Vector(ego_location)
+        # # Find all vehicle roots placed this frame (exclude ego if present)
+        # all_vehicles = [
+        #     o for o in self._frame_vehicle_roots
+        #     if o is not None and hasattr(o, "location") and not bool(o.get("is_ego_vehicle", False))
+        # ]
+        # # Find the closest vehicle to ego
+        # min_dist = float('inf')
+        # closest_obj = None
+        # for v in all_vehicles:
+        #     if v is None or not hasattr(v, 'location'):
+        #         continue
+        #     dist = (v.location - ego_vec).length
+        #     if dist < min_dist:
+        #         min_dist = dist
+        #         closest_obj = v
+        # # Only apply tint to the closest vehicle
+        # if closest_obj is not None:
+        #     if self._frame_collision_tint_obj is not None and self._frame_collision_tint_obj != closest_obj:
+        #         self._clear_vehicle_collision_tint(self._frame_collision_tint_obj)
+        #     self._apply_vehicle_collision_tint(closest_obj)
+        #     self._frame_collision_tint_obj = closest_obj
 
         self._frame_objects.append(obj)
         self._frame_objects.extend(children)
@@ -785,6 +867,10 @@ class AssetLibrary:
         else:
             self._align_object_to_ground(obj, ground_z=0.0, clearance=self.ground_clearance_m)
 
+        # try:
+        #     obj["is_ego_vehicle"] = True
+        # except Exception:
+        #     pass
         self._frame_objects.append(obj)
         self._frame_objects.extend(children)
         print(
@@ -900,6 +986,16 @@ class AssetLibrary:
                 None,
             )
             if spec_inp is not None:
+                # # Ensure Principled BSDF is connected to Material Output
+                # output = next((n for n in nodes if n.type == 'OUTPUT_MATERIAL'), None)
+                # if output is not None:
+                #     # Find the first input named 'Surface'
+                #     if not any(link.to_node == output and link.from_node == bsdf for link in mat.node_tree.links):
+                #         # Remove existing links to Surface
+                #         for link in list(mat.node_tree.links):
+                #             if link.to_node == output and link.to_socket.name == 'Surface':
+                #                 mat.node_tree.links.remove(link)
+                #         mat.node_tree.links.new(bsdf.outputs['BSDF'], output.inputs['Surface'])
                 spec_inp.default_value = float(specular)
 
             trans_inp = next((inp for inp in bsdf.inputs if inp.name == "Transmission Weight"), None)
@@ -2045,6 +2141,8 @@ class AssetLibrary:
         for obj in self._frame_objects:
             bpy.data.objects.remove(obj, do_unlink=True)
         self._frame_objects.clear()
+        # self._frame_vehicle_roots.clear()
+        # self._frame_collision_tint_obj = None
         self._ground_arrow_bboxes.clear()
         self._ground_text_bboxes.clear()
 
