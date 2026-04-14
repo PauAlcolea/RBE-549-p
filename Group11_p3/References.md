@@ -26,3 +26,8 @@
 
 8. ["Tesla 3D" model by kaleankalin](https://skfb.ly/oLtrO)
     Tesla Blender model is licensed under [Creative Commons Attribution](http://creativecommons.org/licenses/by/4.0/).
+
+### Phase 3 Packages:
+
+9. [Detic](https://github.com/facebookresearch/Detic)
+    We used Detic to detect vehicle brakelights.
