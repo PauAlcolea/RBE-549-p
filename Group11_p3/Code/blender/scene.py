@@ -906,11 +906,11 @@ def render_sequence(
     frames_dir.mkdir(parents=True, exist_ok=True)
     video_dir.mkdir(parents=True, exist_ok=True)
 
-    stale_frames = list(frames_dir.glob("frame_*.png"))
-    if stale_frames:
-        for stale in stale_frames:
-            stale.unlink()
-        print(f"[scene] Cleared {len(stale_frames)} stale frame PNGs from {frames_dir}")
+    # stale_frames = list(frames_dir.glob("frame_*.png"))
+    # if stale_frames:
+    #     for stale in stale_frames:
+    #         stale.unlink()
+    #     print(f"[scene] Cleared {len(stale_frames)} stale frame PNGs from {frames_dir}")
  
     jsons = list_frame_jsons(det_dir)
     if not jsons:
