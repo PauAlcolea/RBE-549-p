@@ -47,12 +47,13 @@ weights:
   lanes:        ../Weights/sam3.pt
   orientation:  ../Weights/boundingbox.pkl
   pymaf:        ../Weights/PyMAF_model_checkpoint.pt
+  flow:         ../Weights/FA-C-T-Mixed-TSKH432x960.pth
 
 # ── Perception settings ────────────────────────────────────────────────────
 perception:
   # device: cuda          # cuda | cpu    # might not be needed because we specify it in main()
   batch_size: 1         # increase if GPU memory allows
-  frame_skip: 1         # process every Nth frame (30 = every frame)
+  frame_skip: 5         # process every Nth frame (30 = every frame)
 
   yolo:
     confidence: 0.25    # low on purpose
@@ -483,6 +484,29 @@ blender:
     asset_yaw_offset_rad: 3.141592653589793
     scale: [0.9, 0.9, 0.9]
 
+  motion_state:
+    enabled: true
+    history_frames: 5
+    min_history_frames: 3
+    ema_alpha: 0.35
+    jitter_speed_mps: 0.20
+    moving_speed_mps: 0.70
+    parked_speed_mps: 0.35
+    move_confirm_frames: 3
+    park_confirm_frames: 4
+    min_forward_mps: 0.15
+    lateral_min_mps: 0.25
+    max_lateral_to_forward_ratio: 1.2
+    max_unseen_frames: 20
+    anon_assoc_max_dist_m: 1.6
+    debug: false
+
+  vehicle_dedupe:
+    enabled: true
+    max_xy_dist_m: 0.85      # treat vehicles within this planar distance as duplicates
+    max_depth_delta_m: 2.5   # and with small vertical/depth mismatch
+    bbox_iou_thresh: 0.92    # also dedupe near-identical 2D boxes
+
   # Visual style for Tesla-like overlay
   style:
     lane_solid_white:  [1.0, 1.0, 1.0]
@@ -509,6 +533,9 @@ blender:
       logo: logo_gray
     lane_width: 0.15          # meters (rendered lane stripe width)
     car_color:   [0.2, 0.6, 1.0]
+    vehicle_motion_tint_color: [0.95, 0.82, 0.20]
+    vehicle_motion_tint_metallic: 0.12
+    vehicle_motion_tint_roughness: 0.35
     ped_color:   [0.1, 0.9, 0.4]
     light_red:   [1.0, 0.15, 0.1]
     light_yellow: [1.0, 0.85, 0.0]
