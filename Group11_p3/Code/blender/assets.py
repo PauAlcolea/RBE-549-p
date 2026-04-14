@@ -616,7 +616,8 @@ class AssetLibrary:
         else:
             self._align_object_to_ground(obj, ground_z=0.0, clearance=self.ground_clearance_m)
 
-        if bool(is_moving):
+        # Only apply moving vehicle tint in scene7 or scene8
+        if bool(is_moving) and (self._scene_name in {"scene7", "scene8"}):
             self._apply_vehicle_motion_tint(obj)
 
         self._frame_objects.append(obj)
