@@ -269,6 +269,47 @@ perception:
     max_instances: 40
     match_iou: 0.50
 
+  taillights_detic:
+    enabled: true
+    detic_repo: perception/Detic
+    config_file: configs/Detic_LI_CLIP_SwinB_896b32_4x_ft4x_max-size.yaml
+    weights: ../Weights/Detic.pth
+    confidence: 0.30
+    max_per_vehicle: 4
+    min_width_px: 2
+    min_height_px: 2
+    min_vehicle_crop_side_px: 16
+    side_center_margin_ratio: 0.10
+    state_lit_score_threshold: 0.035
+    state_indicator_ratio: 1.7
+    state_red_ratio_weight: 0.80
+    state_value_weight: 0.20
+    state_detection_conf_floor: 0.60
+    state_detection_conf_gamma: 0.50
+    state_roi_margin_ratio: 0.12
+    # HSV ranges for red taillight activation scoring
+    hsv_red_low1: [0, 40, 40]
+    hsv_red_high1: [20, 255, 255]
+    hsv_red_low2: [160, 40, 40]
+    hsv_red_high2: [180, 255, 255]
+    night:
+      # Applied only when --night is passed to run_perception.
+      # Uses anti-reflector gates to reduce false "on" at night.
+      # Keep HSV near daytime defaults unless you specifically need tightegr color cuts.
+      state_lit_score_threshold: 0.06
+      hsv_red_low1: [0, 40, 40]
+      hsv_red_high1: [20, 255, 255]
+      hsv_red_low2: [160, 40, 40]
+      hsv_red_high2: [180, 255, 255]
+      min_lit_value_mean: 185.0
+      max_red_ratio: 0.45
+    # Prompt set can include both side-specific indicators and generic taillights
+    prompts:
+    - "left rear turn indicator"
+    - "right rear turn indicator"
+    - "vehicle brake light"
+    - "car taillight"
+
   speed_limit_ocr:
     enabled: true
     lang_list: ["en"]

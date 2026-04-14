@@ -50,6 +50,8 @@ from utils.viz import (
     draw_traffic_lights,
     draw_signs,
     draw_non_coco_objects,
+    draw_taillights,
+    draw_taillight_vehicle_status,
     draw_pymaf_matches,
 )
 from perception.lanes import LaneDetector
@@ -65,6 +67,7 @@ from perception.export import build_frame_dict
 from perception.vehicle_subtypes import VehicleSubtypeClassifier
 from perception.pymaf import PymafEstimator
 from perception.tracker import ByteTrackWrapper
+from perception.taillights import TailLightDetector
 
 
 def parse_args():
@@ -112,7 +115,7 @@ def parse_args():
     parser.add_argument(
         "--night",
         action="store_true",
-        help="Enable night traffic-light mode (pick lowest-saturation ROI)."
+        help="Enable night mode for traffic lights and taillight activation thresholds."
     )
 
     parser.add_argument(
@@ -125,6 +128,13 @@ def parse_args():
         "--pymaf-only",
         action="store_true",
         help="Run only PyMAF and update existing detection JSONs in-place."
+    )
+
+    parser.add_argument(
+        "--brakelight-only",
+        dest="brakelight_only",
+        action="store_true",
+        help="Debug visualization mode: draw only brakelight boxes with HSV on/off status text."
     )
 
     parser.add_argument(
@@ -208,11 +218,14 @@ def load_models(
         "traffic": TrafficLightDetector(cfg),
         "signs":   SignDetector(cfg),
         "non_coco": NonCocoDartDetector(cfg, device) if non_coco_enabled else None,
+        "taillights": TailLightDetector(cfg, device),
         "vehicle_subtypes": VehicleSubtypeClassifier(cfg, device) if vehicle_subtypes_enabled else None,
         "speed_limit_ocr": speed_ocr,
         "tracker": ByteTrackWrapper(cfg) if tracker_enabled else None,
     }
     models["traffic"].set_night_mode(night_mode)
+    if models.get("taillights") is not None:
+        models["taillights"].set_night_mode(night_mode)
     print("[init] All models loaded in the process of instantializing detectors.")
     return models
 
@@ -625,13 +638,29 @@ def _labels_are_compatible(prev_label: str, new_label: str, class_cfg: dict) -> 
     return bool(prev_group.intersection(new_group))
 
 
-def _apply_class_smoothing(detections: list, frame_idx: int, track_states: dict, class_cfg: dict) -> set:
+def _apply_class_smoothing(
+    detections: list,
+    frame_idx: int,
+    track_states: dict,
+    class_cfg: dict,
+    *,
+    enable_vehicle_track_lock: bool = False,
+    vehicle_labels = None,
+) -> set:
     seen_tracks = set()
     enabled = bool(class_cfg.get("enabled", True))
     window = int(class_cfg.get("window", 5))
     hysteresis = int(class_cfg.get("hysteresis", 2))
     min_vote_ratio = float(class_cfg.get("min_vote_ratio", 0.5))
     confidence_margin = float(class_cfg.get("confidence_margin", 0.08))
+    lock_exclusions = {
+        str(v).strip().lower()
+        for v in class_cfg.get(
+            "vehicle_track_lock_exclusions",
+            ["truck", "bus", "motorcycle", "bicycle"],
+        )
+        if str(v).strip()
+    }
 
     for det in detections:
         track_id = getattr(det, "track_id", None)
@@ -653,6 +682,7 @@ def _apply_class_smoothing(detections: list, frame_idx: int, track_states: dict,
                 "last_seen": -1,
                 "last_det": None,
                 "last_heading": None,
+                "locked_label": None,
             },
         )
 
@@ -660,12 +690,24 @@ def _apply_class_smoothing(detections: list, frame_idx: int, track_states: dict,
         state["label_history"].append((observed_label, observed_conf))
         if len(state["label_history"]) > window:
             state["label_history"] = state["label_history"][-window:]
+        locked_label = state.get("locked_label")
 
         stable_label = state.get("stable_label")
         if not enabled or stable_label is None:
             state["stable_label"] = observed_label
-            det.label = observed_label
-            det.is_class_smoothed = False
+            final_label = observed_label
+            if locked_label is not None:
+                final_label = str(locked_label)
+            elif (
+                enable_vehicle_track_lock
+                and final_label not in lock_exclusions
+                and (vehicle_labels is None or final_label in vehicle_labels)
+            ):
+                state["locked_label"] = final_label
+            det.label = final_label
+            det.is_class_smoothed = (final_label != observed_label)
+            if det.is_class_smoothed:
+                det.observed_label = observed_label
             continue
 
         votes = {}
@@ -703,6 +745,14 @@ def _apply_class_smoothing(detections: list, frame_idx: int, track_states: dict,
                 state["pending_count"] = 0
 
         final_label = str(state.get("stable_label", observed_label))
+        if state.get("locked_label") is not None:
+            final_label = str(state["locked_label"])
+        elif (
+            enable_vehicle_track_lock
+            and final_label not in lock_exclusions
+            and (vehicle_labels is None or final_label in vehicle_labels)
+        ):
+            state["locked_label"] = final_label
         was_smoothed = final_label != observed_label
         det.label = final_label
         det.is_class_smoothed = bool(was_smoothed)
@@ -737,6 +787,7 @@ def _apply_heading_smoothing(detections: list, track_states: dict, heading_cfg: 
                 "last_seen": -1,
                 "last_det": None,
                 "last_heading": None,
+                "locked_label": None,
             },
         )
 
@@ -774,6 +825,7 @@ def _update_track_snapshots(detections: list, frame_idx: int, track_states: dict
                 "last_seen": -1,
                 "last_det": None,
                 "last_heading": None,
+                "locked_label": None,
             },
         )
         state["last_seen"] = int(frame_idx)
@@ -1537,6 +1589,7 @@ def process_sequence(
     lane_conf_yellow: float = None,
     lane_conf_white: float = None,
     traffic_light_conf: float = None,
+    brakelight_only: bool = False,
 ):
     """Run every active detector on every frame of one sequence and write JSONs."""
     vehicle_labels = {"bicycle", "car", "motorcycle", "bus", "truck", "sedan", "hatchback", "suv", "pickuptruck", "pickup_truck"}
@@ -1576,7 +1629,7 @@ def process_sequence(
     ocr_debug_dir = out_dir / "../ocr_debug"
     if debug:
         debug_dir.mkdir(parents=True, exist_ok=True)
-        if not person_only:
+        if not person_only and not brakelight_only:
             lane_debug_dir.mkdir(parents=True, exist_ok=True)
             traffic_algo_dir.mkdir(parents=True, exist_ok=True)
             ocr_debug_dir.mkdir(parents=True, exist_ok=True)
@@ -1605,6 +1658,7 @@ def process_sequence(
         traffic_results = []
         sign_results = []
         vehicle_results = []
+        taillight_results = []
         orientation_estimates = []
 
         if person_only:
@@ -1668,6 +1722,8 @@ def process_sequence(
                     frame_idx,
                     object_track_states,
                     temporal_cfg["class"],
+                    enable_vehicle_track_lock=True,
+                    vehicle_labels=vehicle_labels,
                 )
                 _apply_class_smoothing(
                     non_coco_results,
@@ -1678,6 +1734,9 @@ def process_sequence(
 
             vehicle_results = [d for d in object_results if d.label in vehicle_labels]
             orientation_estimates = models["orientation"].annotate_detections(frame_bgr, vehicle_results)
+            if models.get("taillights") is not None and vehicle_results:
+                taillight_results = models["taillights"].detect(frame_bgr, vehicle_results)
+                taillight_results = models["depth"].lift_to_3d(taillight_results, depth_map)
 
             if temporal_cfg.get("enabled", True):
                 _apply_heading_smoothing(object_results, object_track_states, temporal_cfg["heading"])
@@ -1771,24 +1830,33 @@ def process_sequence(
             traffic_lights=traffic_results,
             stop_signs=sign_results,
             non_coco_objects=non_coco_results,
+            taillights=taillight_results,
             vehicle_results=vehicle_results,
         )
         save_detection_json(frame_dict, out_dir / f"frame_{frame_idx:06d}.json")
 
         if debug:
-            annotated = draw_detections(frame_bgr, object_results, proj_matrix=debug_proj_matrix)
-            annotated_traffic = draw_traffic_lights(annotated, traffic_results)
-            annotated_signs = draw_signs(annotated_traffic, sign_results)
-            annotated_non_coco = draw_non_coco_objects(annotated_signs, non_coco_results)
+            if brakelight_only:
+                annotated_taillights = draw_taillight_vehicle_status(
+                    frame_bgr,
+                    vehicle_results,
+                    taillight_results,
+                )
+            else:
+                annotated = draw_detections(frame_bgr, object_results, proj_matrix=debug_proj_matrix)
+                annotated_traffic = draw_traffic_lights(annotated, traffic_results)
+                annotated_signs = draw_signs(annotated_traffic, sign_results)
+                annotated_non_coco = draw_non_coco_objects(annotated_signs, non_coco_results)
+                annotated_taillights = draw_taillights(annotated_non_coco, taillight_results)
 
             # FIXME all these paths
             show_or_save(
-                annotated_non_coco,
+                annotated_taillights,
                 save_path=str(debug_dir / f"debug_frame_{frame_idx:06d}.png")
             )
             lane_exclude_classes = cfg.get("perception", {}).get("lanes", {}).get("exclude_classes", [])
 
-            if not person_only:
+            if not person_only and not brakelight_only:
                 overlay = draw_lane_debug_overlay(
                 frame_bgr,
                 lane_results,
@@ -1826,13 +1894,14 @@ def process_sequence(
                 f"  [{scene_name}/{camera}] {i+1} frames processed | "
                 f"lanes={len(lane_results)} raw_dets={raw_count} "
                 f"vehicles={len(vehicle_results)} oriented={len(orientation_estimates)} "
-                f"pedestrians={sum(1 for d in object_results if d.label == 'person')}"
+                f"pedestrians={sum(1 for d in object_results if d.label == 'person')} "
+                f"taillights={len(taillight_results)}"
             )
 
     print(f"[{scene_name}] Done. JSONs saved to {out_dir}")
     if debug:
         print(f"[{scene_name}] Debug overlays saved to {debug_dir}")
-        if not person_only:
+        if not person_only and not brakelight_only:
             print(f"[{scene_name}] Lane overlays saved to {lane_debug_dir}")
             print(f"[{scene_name}] Traffic algorithm figures saved to {traffic_algo_dir}")
     return
@@ -1999,11 +2068,15 @@ def main():
         pymaf_only=args.pymaf_only,
     )
     if args.night:
-        print("[init] Night traffic-light mode enabled (--night).")
+        print("[init] Night mode enabled for traffic lights and taillights (--night).")
     if args.person:
         print("[init] Person-only debug mode enabled (--person).")
     if args.pymaf_only:
         print("[init] PyMAF-only mode enabled (--pymaf-only).")
+    if args.brakelight_only:
+        print("[init] Brakelight-only debug mode enabled (--brakelight-only).")
+        if not args.debug:
+            print("[init] Note: --brakelight-only affects only debug overlay rendering; add --debug to save visuals.")
     if args.start_frame > 0:
         print(f"[init] Start frame set to: {args.start_frame}")
     if args.lane_conf_yellow is not None:
@@ -2037,6 +2110,7 @@ def main():
                     lane_conf_yellow=args.lane_conf_yellow,
                     lane_conf_white=args.lane_conf_white,
                     traffic_light_conf=args.traffic_light_conf,
+                    brakelight_only=args.brakelight_only,
             )
 
     print("\n[done] All sequences processed.")

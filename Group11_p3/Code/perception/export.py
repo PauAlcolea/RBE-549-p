@@ -40,6 +40,9 @@ possible JSON schema (one file per frame):
     ],
     "non_coco_objects": [
         {"class": "traffic_cone|trash_can|traffic_pole|...", "bbox": [x1,y1,x2,y2], "depth_m": float, "position_3d": [x,y,z]}
+  ],
+  "taillights": [
+    {"bbox": [x1,y1,x2,y2], "confidence": float, "vehicle_track_id": int|null, "vehicle_class": str}
   ]
 }
 """
@@ -113,6 +116,19 @@ def _serialize_vehicle(det) -> dict:
     if track_id is not None:
         vehicle["track_id"] = int(track_id)
 
+    brake_light_state = str(getattr(det, "brake_light_state", "")).strip().lower()
+    if brake_light_state in {"on", "off", "left indicator", "right indicator"}:
+        vehicle["brake_light_state"] = brake_light_state
+        vehicle["brake_light_confidence"] = round(float(getattr(det, "brake_light_confidence", 0.0)), 4)
+        left_status = str(getattr(det, "brake_light_left_status", "")).strip().lower()
+        right_status = str(getattr(det, "brake_light_right_status", "")).strip().lower()
+        if left_status in {"on", "off", "not_detected"}:
+            vehicle["brake_light_left_status"] = left_status
+            vehicle["brake_light_left_score"] = round(float(getattr(det, "brake_light_left_score", 0.0)), 4)
+        if right_status in {"on", "off", "not_detected"}:
+            vehicle["brake_light_right_status"] = right_status
+            vehicle["brake_light_right_score"] = round(float(getattr(det, "brake_light_right_score", 0.0)), 4)
+
     # Add motion fields if present
     if hasattr(det, "is_moving"):
         vehicle["is_moving"] = bool(getattr(det, "is_moving", False))
@@ -159,6 +175,28 @@ def _serialize_pedestrian(det) -> dict:
 
     return ped
 
+
+def _serialize_taillight(det) -> dict:
+    status = str(getattr(det, "status", "off")).strip().lower()
+    if status not in {"on", "off"}:
+        status = "off"
+    out = {
+        "bbox": [round(v, 2) for v in det.bbox],
+        "confidence": round(float(getattr(det, "confidence", 0.0)), 4),
+        "depth_m": round(float(getattr(det, "depth_m", 0.0)), 3),
+        "position_3d": [round(float(v), 3) for v in getattr(det, "position_3d", [0.0, 0.0, 0.0])],
+        "vehicle_class": str(getattr(det, "vehicle_class", "vehicle")),
+        "side": str(getattr(det, "side", "unknown")),
+        "prompt": str(getattr(det, "prompt", "taillight")),
+        "activation_score": round(float(getattr(det, "activation_score", 0.0)), 4),
+        "status": status,
+    }
+    vehicle_track_id = getattr(det, "vehicle_track_id", None)
+    if vehicle_track_id is not None:
+        out["vehicle_track_id"] = int(vehicle_track_id)
+    return out
+
+
 def build_frame_dict(
     frame_idx: int,
     fps: float,
@@ -167,6 +205,7 @@ def build_frame_dict(
     traffic_lights: list,
     stop_signs: list,
     non_coco_objects: list,
+    taillights: list = None,
     vehicle_results: list = None,
 ) -> dict:
     """
@@ -189,6 +228,8 @@ def build_frame_dict(
     pedestrians     = [d for d in objects if d.label == "person"]
     non_coco_records = []
     bucket_map = {}
+    if taillights is None:
+        taillights = []
 
     for det in non_coco_objects:
         entry = {
@@ -280,4 +321,5 @@ def build_frame_dict(
         "ground_arrows": bucket_map.get("ground_arrows", []),
         "ground_text_markings": bucket_map.get("ground_text_markings", []),
         "non_coco_objects": non_coco_records,
+        "taillights": [_serialize_taillight(det) for det in taillights],
     }

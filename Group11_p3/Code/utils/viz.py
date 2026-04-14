@@ -36,6 +36,7 @@ _COLOR_3D_FRONT = (255, 120, 40)
 _COLOR_CONE  = (  0, 140, 255)   # orange
 _COLOR_NON_COCO = (180, 120, 255)
 _COLOR_PYMAF = (255, 255, 0)     # cyan-yellow for pymaf overlays
+_COLOR_TAILLIGHT = (255, 0, 255)  # magenta
 
 
 def _rotation_matrix_y(yaw_rad: float) -> np.ndarray:
@@ -212,6 +213,9 @@ def draw_detections(
         heading_rad = getattr(det, "heading_rad", None)
         if heading_rad is not None and det.label != "person":
             text = f"{text} yaw={np.degrees(float(heading_rad)):.0f}deg"
+        brake_state = str(getattr(det, "brake_light_state", "")).strip()
+        if brake_state and det.label != "person":
+            text = f"{text} bl={brake_state}"
 
         # Draw a filled background behind the text so it's readable on any frame
         (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
@@ -357,6 +361,78 @@ def draw_pymaf_matches(frame_bgr: np.ndarray, detections: list) -> np.ndarray:
         1,
         lineType=cv2.LINE_AA,
     )
+    return out
+
+
+def draw_taillights(frame_bgr: np.ndarray, taillights: list, status_only_text: bool = False) -> np.ndarray:
+    """Draw taillight detections, optionally rendering only HSV status text."""
+    out = frame_bgr.copy()
+    for det in taillights:
+        x1, y1, x2, y2 = [int(v) for v in det.bbox]
+        cv2.rectangle(out, (x1, y1), (x2, y2), _COLOR_TAILLIGHT, 2)
+
+        status = str(getattr(det, "status", "off")).strip().lower()
+        if status not in {"on", "off"}:
+            status = "off"
+
+        if status_only_text:
+            txt = status
+        else:
+            txt = f"taillight {status}"
+        vehicle_track_id = getattr(det, "vehicle_track_id", None)
+        vehicle_class = str(getattr(det, "vehicle_class", "vehicle"))
+        side = str(getattr(det, "side", "unknown"))
+        if not status_only_text:
+            if vehicle_track_id is None:
+                txt = f"{txt} {det.confidence:.2f} {side} ({vehicle_class})"
+            else:
+                txt = f"{txt} {det.confidence:.2f} {side} #{int(vehicle_track_id)} {vehicle_class}"
+        cv2.putText(
+            out,
+            txt,
+            (x1, max(y1 - 6, 10)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            _COLOR_TAILLIGHT,
+            1,
+            lineType=cv2.LINE_AA,
+        )
+    return out
+
+
+def draw_taillight_vehicle_status(frame_bgr: np.ndarray, vehicles: list, taillights: list) -> np.ndarray:
+    """
+    Taillight-only debug view:
+      - taillight boxes with on/off labels
+      - vehicle boxes with one-line left/right/final status summary
+    """
+    out = draw_taillights(frame_bgr, taillights, status_only_text=True)
+    for det in vehicles:
+        x1, y1, x2, y2 = [int(v) for v in det.bbox]
+        cv2.rectangle(out, (x1, y1), (x2, y2), _COLOR_CAR, 2)
+
+        left_status = str(getattr(det, "brake_light_left_status", "not_detected")).strip().lower()
+        right_status = str(getattr(det, "brake_light_right_status", "not_detected")).strip().lower()
+        final_status = str(getattr(det, "brake_light_state", "off")).strip().lower()
+
+        txt = f"left:{left_status} right:{right_status} final:{final_status}"
+        (tw, th), _ = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
+        text_y = max(y1 - 8, 12)
+        bg_y1 = max(text_y - th - 4, 0)
+        bg_y2 = min(text_y + 2, out.shape[0] - 1)
+        bg_x2 = min(x1 + tw + 6, out.shape[1] - 1)
+        cv2.rectangle(out, (x1, bg_y1), (bg_x2, bg_y2), (10, 10, 10), -1)
+        cv2.putText(
+            out,
+            txt,
+            (x1 + 2, text_y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.42,
+            _COLOR_CAR,
+            1,
+            lineType=cv2.LINE_AA,
+        )
+
     return out
 
 
