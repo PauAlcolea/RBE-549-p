@@ -16,3 +16,6 @@
 [submodule "Group11_p3/Code/perception/Detic"]
 	path = Group11_p3/Code/perception/Detic
 	url = https://github.com/facebookresearch/Detic
+[submodule "Group11_p3/Code/perception/Flow_Anything"]
+	path = Group11_p3/Code/perception/Flow_Anything
+	url = https://github.com/benjaminorr/Flow-Anything

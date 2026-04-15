@@ -103,6 +103,7 @@ while [[ $# -gt 0 ]]; do
         --allcam)  ALL_CAMS=true;   shift ;;
         --debug)   EXTRA_ARGS="$EXTRA_ARGS --debug"; shift ;;
         --start_frame) EXTRA_ARGS="$EXTRA_ARGS --start_frame $2"; shift 2 ;;
+        --collision) shift ;;
         *) echo "Unknown argument: $1"; exit 1 ;;
     esac
 done

@@ -19,6 +19,8 @@ import sys
 import argparse
 from pathlib import Path
 import re
+import math
+from statistics import median
 
 # sys.path must include Code/ so our utils and blender packages are importable
 code_dir = Path(__file__).resolve().parent.parent
@@ -465,6 +467,424 @@ def _only_render_bbox(marking: dict):
     return [render_left, y1, render_right, y2]
 
 
+def _blender_motion_cfg(cfg: dict) -> dict:
+    motion_cfg = cfg.get("blender", {}).get("motion_state", {})
+    return {
+        "enabled": bool(motion_cfg.get("enabled", True)),
+        "history_frames": max(2, int(motion_cfg.get("history_frames", 5))),
+        "min_history_frames": max(2, int(motion_cfg.get("min_history_frames", 3))),
+        "ema_alpha": max(0.0, min(1.0, float(motion_cfg.get("ema_alpha", 0.35)))),
+        "jitter_speed_mps": max(0.0, float(motion_cfg.get("jitter_speed_mps", 0.20))),
+        "moving_speed_mps": max(0.0, float(motion_cfg.get("moving_speed_mps", 0.70))),
+        "parked_speed_mps": max(0.0, float(motion_cfg.get("parked_speed_mps", 0.35))),
+        "move_confirm_frames": max(1, int(motion_cfg.get("move_confirm_frames", 3))),
+        "park_confirm_frames": max(1, int(motion_cfg.get("park_confirm_frames", 4))),
+        "min_forward_mps": max(0.0, float(motion_cfg.get("min_forward_mps", 0.15))),
+        "lateral_min_mps": max(0.0, float(motion_cfg.get("lateral_min_mps", 0.25))),
+        "max_lateral_to_forward_ratio": max(
+            0.0, float(motion_cfg.get("max_lateral_to_forward_ratio", 1.2))
+        ),
+        "max_unseen_frames": max(1, int(motion_cfg.get("max_unseen_frames", 20))),
+        "anon_assoc_max_dist_m": max(0.0, float(motion_cfg.get("anon_assoc_max_dist_m", 1.6))),
+        "debug": bool(motion_cfg.get("debug", False)),
+    }
+
+
+def _default_motion_state() -> dict:
+    return {
+        "last_xy": None,
+        "last_frame": None,
+        "age": 0,
+        "last_heading": None,
+        "raw_vx": 0.0,
+        "raw_vy": 0.0,
+        "ema_vx": 0.0,
+        "ema_vy": 0.0,
+        "is_moving": False,
+        "move_count": 0,
+        "park_count": 0,
+        "was_observed": False,
+    }
+
+
+def _json_to_blender_xy(position_3d):
+    if not isinstance(position_3d, (list, tuple)) or len(position_3d) < 3:
+        return None
+    try:
+        px = float(position_3d[0])
+        py = float(position_3d[1])
+        pz = float(position_3d[2])
+    except Exception:
+        return None
+    return (px, pz), -py
+
+
+def _heading_to_blender_forward(heading_rad):
+    if heading_rad is None:
+        return None
+    try:
+        heading = float(heading_rad)
+    except Exception:
+        return None
+    yaw = -(heading - math.pi / 2.0)
+    return (math.sin(yaw), math.cos(yaw))
+
+
+def _vehicle_dedupe_cfg(cfg: dict) -> dict:
+    dedupe_cfg = cfg.get("blender", {}).get("vehicle_dedupe", {})
+    return {
+        "enabled": bool(dedupe_cfg.get("enabled", True)),
+        "max_xy_dist_m": max(0.0, float(dedupe_cfg.get("max_xy_dist_m", 0.85))),
+        "max_depth_delta_m": max(0.0, float(dedupe_cfg.get("max_depth_delta_m", 2.5))),
+        "bbox_iou_thresh": max(0.0, min(1.0, float(dedupe_cfg.get("bbox_iou_thresh", 0.92)))),
+    }
+
+
+def _bbox_area(bbox):
+    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        return 0.0
+    try:
+        x1, y1, x2, y2 = [float(v) for v in bbox]
+    except Exception:
+        return 0.0
+    w = max(0.0, x2 - x1)
+    h = max(0.0, y2 - y1)
+    return w * h
+
+
+def _bbox_iou(b0, b1) -> float:
+    if not isinstance(b0, (list, tuple)) or not isinstance(b1, (list, tuple)):
+        return 0.0
+    if len(b0) != 4 or len(b1) != 4:
+        return 0.0
+    try:
+        ax1, ay1, ax2, ay2 = [float(v) for v in b0]
+        bx1, by1, bx2, by2 = [float(v) for v in b1]
+    except Exception:
+        return 0.0
+
+    ix1 = max(ax1, bx1)
+    iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2)
+    iy2 = min(ay2, by2)
+    iw = max(0.0, ix2 - ix1)
+    ih = max(0.0, iy2 - iy1)
+    inter = iw * ih
+    if inter <= 0.0:
+        return 0.0
+
+    a_area = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    b_area = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    union = a_area + b_area - inter
+    if union <= 1e-9:
+        return 0.0
+    return inter / union
+
+
+def _vehicle_keep_score(vehicle: dict) -> float:
+    score = 0.0
+    if vehicle.get("track_id") is not None:
+        score += 100.0
+    if not bool(vehicle.get("is_held", False)):
+        score += 20.0
+    if vehicle.get("is_class_smoothed", False):
+        score += 8.0
+
+    cls = str(vehicle.get("class", "")).lower()
+    if cls and cls not in {"car", "truck", "bus"}:
+        score += 5.0
+
+    score += min(4.0, _bbox_area(vehicle.get("bbox")) / 12000.0)
+    return score
+
+
+def _vehicles_are_duplicate(v0: dict, v1: dict, dedupe_cfg: dict) -> bool:
+    xy_z0 = _json_to_blender_xy(v0.get("position_3d"))
+    xy_z1 = _json_to_blender_xy(v1.get("position_3d"))
+    close_in_3d = False
+    if xy_z0 is not None and xy_z1 is not None:
+        (x0, y0), z0 = xy_z0
+        (x1, y1), z1 = xy_z1
+        d_xy = math.hypot(x0 - x1, y0 - y1)
+        d_z = abs(z0 - z1)
+        close_in_3d = (
+            d_xy <= dedupe_cfg["max_xy_dist_m"]
+            and d_z <= dedupe_cfg["max_depth_delta_m"]
+        )
+
+    bbox_iou = _bbox_iou(v0.get("bbox"), v1.get("bbox"))
+    return close_in_3d or (bbox_iou >= dedupe_cfg["bbox_iou_thresh"])
+
+
+def _dedupe_vehicles_for_render(vehicles: list, cfg: dict):
+    dedupe_cfg = _vehicle_dedupe_cfg(cfg)
+    if not dedupe_cfg["enabled"] or len(vehicles) <= 1:
+        return vehicles, 0
+
+    ranked = sorted(vehicles, key=_vehicle_keep_score, reverse=True)
+    kept = []
+    dropped = 0
+
+    for v in ranked:
+        is_dup = False
+        for prev in kept:
+            if _vehicles_are_duplicate(v, prev, dedupe_cfg):
+                is_dup = True
+                break
+        if is_dup:
+            dropped += 1
+            continue
+        kept.append(v)
+
+    return kept, dropped
+
+
+def _associate_anonymous_track_ids(vehicles: list, frame_idx: int, motion_ctx: dict) -> None:
+    cfg = motion_ctx["cfg"]
+    anon_max_dist = cfg["anon_assoc_max_dist_m"]
+    anon_tracks = motion_ctx["anon_tracks"]
+    used_anon_ids = set()
+
+    for vehicle in vehicles:
+        if vehicle.get("track_id") is not None:
+            continue
+        xy_z = _json_to_blender_xy(vehicle.get("position_3d"))
+        if xy_z is None:
+            continue
+        xy, _ = xy_z
+
+        best_id = None
+        best_dist = float("inf")
+        for anon_id, state in anon_tracks.items():
+            if anon_id in used_anon_ids:
+                continue
+            if (frame_idx - int(state.get("last_frame", -999))) > 1:
+                continue
+            prev_xy = state.get("last_xy")
+            if prev_xy is None:
+                continue
+            dx = xy[0] - prev_xy[0]
+            dy = xy[1] - prev_xy[1]
+            dist = math.hypot(dx, dy)
+            if dist < best_dist:
+                best_dist = dist
+                best_id = anon_id
+
+        if best_id is None or best_dist > anon_max_dist:
+            best_id = motion_ctx["next_anon_id"]
+            motion_ctx["next_anon_id"] += 1
+
+        used_anon_ids.add(best_id)
+        vehicle["__motion_track_id"] = f"anon-{best_id}"
+        vehicle["__motion_low_confidence"] = True
+
+
+def _estimate_dominant_flow(vehicles: list, frame_idx: int, motion_ctx: dict):
+    vx_samples = []
+    vy_samples = []
+
+    for vehicle in vehicles:
+        track_key = vehicle.get("__motion_track_id")
+        if track_key is None:
+            continue
+        state = motion_ctx["tracks"].get(track_key)
+        if state is None:
+            continue
+        prev_xy = state.get("last_xy")
+        prev_frame = state.get("last_frame")
+        if prev_xy is None or prev_frame is None:
+            continue
+
+        frame_delta = max(1, frame_idx - int(prev_frame))
+        if frame_delta > 2:
+            continue
+
+        xy_z = _json_to_blender_xy(vehicle.get("position_3d"))
+        if xy_z is None:
+            continue
+        xy, _ = xy_z
+        dt = frame_delta / max(1e-6, motion_ctx["fps"])
+
+        raw_vx = (xy[0] - prev_xy[0]) / max(1e-6, dt)
+        raw_vy = (xy[1] - prev_xy[1]) / max(1e-6, dt)
+
+        if state.get("age", 0) < 2:
+            continue
+        if math.hypot(raw_vx, raw_vy) > 20.0:
+            continue
+
+        vx_samples.append(raw_vx)
+        vy_samples.append(raw_vy)
+
+    if len(vx_samples) < 3:
+        return 0.0, 0.0
+    return float(median(vx_samples)), float(median(vy_samples))
+
+
+def _update_single_motion_state(vehicle: dict, frame_idx: int, dominant_flow: tuple, motion_ctx: dict) -> None:
+    cfg = motion_ctx["cfg"]
+    track_key = vehicle.get("__motion_track_id")
+    if track_key is None:
+        vehicle["__motion_is_moving"] = False
+        vehicle["__motion_forward_dir"] = None
+        return
+
+    state = motion_ctx["tracks"].setdefault(track_key, _default_motion_state())
+    xy_z = _json_to_blender_xy(vehicle.get("position_3d"))
+    if xy_z is None:
+        vehicle["__motion_is_moving"] = False
+        vehicle["__motion_forward_dir"] = None
+        return
+
+    xy, _ = xy_z
+    prev_xy = state.get("last_xy")
+    prev_frame = state.get("last_frame")
+    frame_delta = 1 if prev_frame is None else max(1, frame_idx - int(prev_frame))
+    dt = frame_delta / max(1e-6, motion_ctx["fps"])
+
+    raw_vx = 0.0
+    raw_vy = 0.0
+    if prev_xy is not None and frame_delta <= 2:
+        raw_vx = (xy[0] - prev_xy[0]) / max(1e-6, dt)
+        raw_vy = (xy[1] - prev_xy[1]) / max(1e-6, dt)
+
+    residual_vx = raw_vx - dominant_flow[0]
+    residual_vy = raw_vy - dominant_flow[1]
+
+    alpha = cfg["ema_alpha"]
+    state["ema_vx"] = alpha * residual_vx + (1.0 - alpha) * float(state.get("ema_vx", 0.0))
+    state["ema_vy"] = alpha * residual_vy + (1.0 - alpha) * float(state.get("ema_vy", 0.0))
+    speed = math.hypot(state["ema_vx"], state["ema_vy"])
+
+    heading_forward = _heading_to_blender_forward(vehicle.get("heading_rad"))
+    forward_comp = None
+    lateral_comp = None
+    hard_reject = False
+
+    if heading_forward is not None:
+        fx, fy = heading_forward
+        lx, ly = -fy, fx
+        forward_comp = state["ema_vx"] * fx + state["ema_vy"] * fy
+        lateral_comp = state["ema_vx"] * lx + state["ema_vy"] * ly
+
+        if forward_comp <= 0.0:
+            hard_reject = True
+        if (
+            abs(forward_comp) < cfg["min_forward_mps"]
+            and abs(lateral_comp) >= cfg["lateral_min_mps"]
+        ):
+            hard_reject = True
+        if abs(forward_comp) > 1e-6:
+            if abs(lateral_comp) / abs(forward_comp) > cfg["max_lateral_to_forward_ratio"]:
+                hard_reject = True
+
+    if speed <= cfg["jitter_speed_mps"]:
+        hard_reject = True
+
+    moving_candidate = (speed >= cfg["moving_speed_mps"]) and (not hard_reject)
+    parked_candidate = (speed <= cfg["parked_speed_mps"]) or hard_reject
+
+    low_conf = bool(vehicle.get("__motion_low_confidence", False))
+    enough_history = int(state.get("age", 0)) >= cfg["min_history_frames"]
+    if low_conf:
+        enough_history = enough_history and (int(state.get("age", 0)) >= (cfg["min_history_frames"] + 1))
+
+    if not enough_history:
+        moving_candidate = False
+        parked_candidate = True
+
+    if moving_candidate:
+        state["move_count"] = int(state.get("move_count", 0)) + 1
+    else:
+        state["move_count"] = 0
+
+    if parked_candidate:
+        state["park_count"] = int(state.get("park_count", 0)) + 1
+    else:
+        state["park_count"] = 0
+
+    is_moving = bool(state.get("is_moving", False))
+    if is_moving:
+        if state["park_count"] >= cfg["park_confirm_frames"]:
+            is_moving = False
+    else:
+        if state["move_count"] >= cfg["move_confirm_frames"]:
+            is_moving = True
+
+    state["is_moving"] = is_moving
+    state["raw_vx"] = raw_vx
+    state["raw_vy"] = raw_vy
+    state["last_xy"] = xy
+    state["last_frame"] = frame_idx
+    state["last_heading"] = vehicle.get("heading_rad")
+    state["age"] = int(state.get("age", 0)) + 1
+    state["was_observed"] = True
+
+    vehicle["__motion_is_moving"] = bool(is_moving)
+    vehicle["__motion_forward_dir"] = heading_forward
+
+
+def _cleanup_motion_tracks(frame_idx: int, motion_ctx: dict) -> None:
+    max_unseen = motion_ctx["cfg"]["max_unseen_frames"]
+    stale_track_keys = []
+    for track_key, state in motion_ctx["tracks"].items():
+        if frame_idx - int(state.get("last_frame", -999)) > max_unseen:
+            stale_track_keys.append(track_key)
+    for track_key in stale_track_keys:
+        motion_ctx["tracks"].pop(track_key, None)
+
+    stale_anon_ids = []
+    for anon_id, state in motion_ctx["anon_tracks"].items():
+        if frame_idx - int(state.get("last_frame", -999)) > max_unseen:
+            stale_anon_ids.append(anon_id)
+    for anon_id in stale_anon_ids:
+        motion_ctx["anon_tracks"].pop(anon_id, None)
+
+
+def _annotate_vehicle_motion_state(vehicles: list, frame_idx: int, cfg: dict, motion_ctx: dict) -> dict:
+    if not motion_ctx["cfg"]["enabled"]:
+        for vehicle in vehicles:
+            vehicle["__motion_is_moving"] = False
+            vehicle["__motion_forward_dir"] = None
+        return {"moving": 0, "parked": len(vehicles), "dominant_flow": (0.0, 0.0)}
+
+    for vehicle in vehicles:
+        track_id = vehicle.get("track_id")
+        if track_id is None:
+            vehicle["__motion_track_id"] = None
+            vehicle["__motion_low_confidence"] = True
+        else:
+            vehicle["__motion_track_id"] = f"track-{int(track_id)}"
+            vehicle["__motion_low_confidence"] = False
+
+    _associate_anonymous_track_ids(vehicles, frame_idx, motion_ctx)
+
+    dominant_flow = _estimate_dominant_flow(vehicles, frame_idx, motion_ctx)
+
+    moving_count = 0
+    for vehicle in vehicles:
+        _update_single_motion_state(vehicle, frame_idx, dominant_flow, motion_ctx)
+        track_key = vehicle.get("__motion_track_id")
+        if track_key and str(track_key).startswith("anon-"):
+            state = motion_ctx["tracks"].get(track_key)
+            if state is not None:
+                motion_ctx["anon_tracks"][int(str(track_key).split("-", 1)[1])] = {
+                    "last_xy": state.get("last_xy"),
+                    "last_frame": state.get("last_frame"),
+                }
+        if bool(vehicle.get("__motion_is_moving", False)):
+            moving_count += 1
+
+    _cleanup_motion_tracks(frame_idx, motion_ctx)
+
+    parked_count = max(0, len(vehicles) - moving_count)
+    return {
+        "moving": moving_count,
+        "parked": parked_count,
+        "dominant_flow": dominant_flow,
+    }
+
+
 def render_sequence(
     scene_name: str,
     camera: str,
@@ -486,11 +906,11 @@ def render_sequence(
     frames_dir.mkdir(parents=True, exist_ok=True)
     video_dir.mkdir(parents=True, exist_ok=True)
 
-    stale_frames = list(frames_dir.glob("frame_*.png"))
-    if stale_frames:
-        for stale in stale_frames:
-            stale.unlink()
-        print(f"[scene] Cleared {len(stale_frames)} stale frame PNGs from {frames_dir}")
+    # stale_frames = list(frames_dir.glob("frame_*.png"))
+    # if stale_frames:
+    #     for stale in stale_frames:
+    #         stale.unlink()
+    #     print(f"[scene] Cleared {len(stale_frames)} stale frame PNGs from {frames_dir}")
  
     jsons = list_frame_jsons(det_dir)
     if not jsons:
@@ -522,6 +942,15 @@ def render_sequence(
         f"[scene] Rendering {len(jsons)} frames for {scene_name}/{camera} "
         f"(start_frame={start_frame})"
     )
+
+    motion_cfg = _blender_motion_cfg(cfg)
+    motion_ctx = {
+        "cfg": motion_cfg,
+        "fps": float(cfg.get("blender", {}).get("fps", 30.0)),
+        "tracks": {},
+        "anon_tracks": {},
+        "next_anon_id": 1,
+    }
 
     # Provide current sequence context to asset renderer so it can apply
     # scene-specific rendering rules safely.
@@ -586,11 +1015,26 @@ def render_sequence(
                 else:
                     update_chase_camera(cam_obj, cfg)
 
+            vehicles = []
             for v in frame_data.get("vehicles", []):
                 cls = str(v.get("class", "")).lower()
                 if bool(v.get("is_ego", False)) or cls in {"ego", "tesla"}:
                     continue
-                asset_lib.place_vehicle(v)
+                vehicles.append(v)
+
+            vehicles, dropped_dupes = _dedupe_vehicles_for_render(vehicles, cfg)
+            if dropped_dupes > 0 and (debug or motion_cfg["debug"]):
+                print(f"[scene] frame={frame_idx:06d} removed duplicate vehicles={dropped_dupes}")
+
+
+            # Use is_moving from JSON, no longer compute motion state here
+            for v in vehicles:
+                asset_lib.place_vehicle(
+                    v,
+                    is_moving=bool(v.get("is_moving", False)),
+                    motion_forward=None,
+                )
+
             for p in frame_data.get("pedestrians", []):
                 asset_lib.place_pedestrian(p)
             # traffic lights

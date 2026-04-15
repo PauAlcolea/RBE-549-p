@@ -35,11 +35,12 @@
     "depth": "../Weights/depth_anything_v2_metric_vkitti_vitl.pth",
     "lanes": "../Weights/sam3.pt",
     "orientation": "../Weights/boundingbox.pkl",
-    "pymaf": "../Weights/PyMAF_model_checkpoint.pt"
+    "pymaf": "../Weights/PyMAF_model_checkpoint.pt",
+    "flow": "../Weights/FA-C-T-Mixed-TSKH432x960.pth"
   },
   "perception": {
     "batch_size": 1,
-    "frame_skip": 1,
+    "frame_skip": 5,
     "yolo": {
       "confidence": 0.25,
       "iou_threshold": 0.45,
@@ -651,6 +652,29 @@
         0.9
       ]
     },
+    "motion_state": {
+      "enabled": true,
+      "history_frames": 5,
+      "min_history_frames": 3,
+      "ema_alpha": 0.35,
+      "jitter_speed_mps": 0.2,
+      "moving_speed_mps": 0.7,
+      "parked_speed_mps": 0.35,
+      "move_confirm_frames": 3,
+      "park_confirm_frames": 4,
+      "min_forward_mps": 0.15,
+      "lateral_min_mps": 0.25,
+      "max_lateral_to_forward_ratio": 1.2,
+      "max_unseen_frames": 20,
+      "anon_assoc_max_dist_m": 1.6,
+      "debug": false
+    },
+    "vehicle_dedupe": {
+      "enabled": true,
+      "max_xy_dist_m": 0.85,
+      "max_depth_delta_m": 2.5,
+      "bbox_iou_thresh": 0.92
+    },
     "style": {
       "lane_solid_white": [
         1.0,
@@ -705,6 +729,13 @@
         0.6,
         1.0
       ],
+      "vehicle_motion_tint_color": [
+        0.95,
+        0.82,
+        0.2
+      ],
+      "vehicle_motion_tint_metallic": 0.12,
+      "vehicle_motion_tint_roughness": 0.35,
       "ped_color": [
         0.1,
         0.9,
