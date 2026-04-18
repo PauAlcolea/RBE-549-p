@@ -332,7 +332,7 @@ class MSCKF(object):
         omega[3, :3] = -gyro
 
         def f(y):
-            """derivate of the state vector"""
+            """derivative of the state vector"""
             q, v = y[0:4], y[4:7]
 
             # dq/dt
@@ -359,7 +359,7 @@ class MSCKF(object):
         k3 = f(y0 + k2*dt/2)
         
         # k4 = f(tn+dt, yn+k3*dt)
-        k4 = f(y0 + k3*dt/2)
+        k4 = f(y0 + k3*dt)
 
         # yn+1 = yn + dt/6*(k1+2*k2+2*k3+k4)
         y_new = y0 + dt/6*(k1 + 2*k2 + 2*k3 + k4)
@@ -367,6 +367,8 @@ class MSCKF(object):
         # update the imu state
         q_new = y_new[0:4]
         self.state_server.imu_state.orientation = q_new / np.linalg.norm(q_new)
+        self.state_server.imu_state.velocity = y_new[4:7]
+        self.state_server.imu_state.position = y_new[7:10]
 
     
     def state_augmentation(self, time):
