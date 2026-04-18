@@ -230,24 +230,38 @@ class MSCKF(object):
 
     def initialize_gravity_and_bias(self):
         """
-        IMPLEMENT THIS!!!!!
-        """
-        """
         Initialize the IMU bias and initial orientation based on the 
         first few IMU readings.
         """
-        # Initialize the gyro_bias given the current angular and linear velocity
-        ...
-
-        # Find the gravity in the IMU frame.
-        ...
+        # initialize gyro bias with mean of first 200 readings.
+        self.state_server.imu_state.gyro_bias = np.mean(
+            [imu_msg.angular_velocity for imu_msg in self.imu_msg_buffer])
         
-        # Normalize the gravity and save to IMUState          
-        ...
+        # initialize gravity vector as normalized mean of first 200 accelerometer readings
+        mean_acc = np.mean(
+            [imu_msg.linear_acceleration for imu_msg in self.imu_msg_buffer])   
+        self.state_server.imu_state.gravity = mean_acc / np.linalg.norm(mean_acc)
 
         # Initialize the initial orientation, so that the estimation
         # is consistent with the inertial frame.
-        ...
+        # z should be aligned with gravity vector
+        z_axis = self.state_server.imu_state.gravity
+        x_axis = np.array([1., 0., 0.])
+        if abs(z_axis @ x_axis) > 0.9:
+            x_axis = np.array([0., 1., 0.])
+        y_axis = np.cross(z_axis, x_axis)
+        y_axis /= np.linalg.norm(y_axis)
+        x_axis = np.cross(y_axis, z_axis)
+        x_axis /= np.linalg.norm(x_axis)
+        R_imu_world = np.column_stack((x_axis, y_axis, z_axis))
+        self.state_server.imu_state.orientation = to_quaternion(R_imu_world)
+
+        # rotate world gravity vector to IMU frame
+        gravity_world = np.array([0., 0., -9.81])
+        gravity_imu_expected = R_imu_world.T @ gravity_world
+
+        # initialize accelerometer bias 
+        self.state_server.imu_state.acc_bias = mean_acc - gravity_imu_expected
 
     # Filter related functions
     # (batch_imu_processing, process_model, predict_new_state)
