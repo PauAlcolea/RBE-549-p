@@ -321,40 +321,52 @@ class MSCKF(object):
         
 
     def predict_new_state(self, dt, gyro, acc):
-        """
-        IMPLEMENT THIS!!!!!
-        """
-        """Propogate the state using 4th order Runge-Kutta for equstion (1) in "MSCKF" paper"""
-        # compute norm of gyro
-        ...
+        """Propogate the state using 4th order Runge-Kutta for equation (1) in "MSCKF" paper"""
+        gyro -= self.state_server.imu_state.gyro_bias
+        acc -= self.state_server.imu_state.acc_bias
         
         # Get the Omega matrix, the equation above equation (2) in "MSCKF" paper
-        ...
+        omega = np.zeros((4, 4))
+        omega[:3, :3] = -skew(gyro)
+        omega[:3, 3] = gyro
+        omega[3, :3] = -gyro
+
+        def f(y):
+            """derivate of the state vector"""
+            q, v = y[0:4], y[4:7]
+
+            # dq/dt
+            q_dot = 0.5 * omega @ q
+
+            # dv/dt
+            R_imu_to_world = to_rotation(q)
+            v_dot = R_imu_to_world @ acc + self.state_server.imu_state.gravity
+
+            return np.concatenate((q_dot, v_dot, v))
+            
         
         # Get the orientation, velocity, position
-        ...
-        
-        # Compute the dq_dt, dq_dt2 in equation (1) in "MSCKF" paper
-        ...
+        y0 = np.concatenate((self.state_server.imu_state.orientation, self.state_server.imu_state.velocity, self.state_server.imu_state.position))
         
         # Apply 4th order Runge-Kutta 
         # k1 = f(tn, yn)
-        ...
+        k1 = f(y0)
 
         # k2 = f(tn+dt/2, yn+k1*dt/2)
-        ...
+        k2 = f(y0 + k1*dt/2)
         
         # k3 = f(tn+dt/2, yn+k2*dt/2)
-        ...
+        k3 = f(y0 + k2*dt/2)
         
         # k4 = f(tn+dt, yn+k3*dt)
-        ...
+        k4 = f(y0 + k3*dt/2)
 
         # yn+1 = yn + dt/6*(k1+2*k2+2*k3+k4)
-        ...
+        y_new = y0 + dt/6*(k1 + 2*k2 + 2*k3 + k4)
 
         # update the imu state
-        ...
+        q_new = y_new[0:4]
+        self.state_server.imu_state.orientation = q_new / np.linalg.norm(q_new)
 
     
     def state_augmentation(self, time):
