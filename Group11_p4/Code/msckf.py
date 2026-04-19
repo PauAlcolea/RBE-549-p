@@ -122,9 +122,6 @@ class MSCKF(object):
         # The intial orientation and position will be set to the origin implicitly.
         # But the initial velocity and bias can be set by parameters.
         # TODO: is it reasonable to set the initial bias to 0?
-        ## need to add an initial bias, but later on
-        self.state_server.imu_state.gyro_bias = 0
-        self.state_server.imu_state.acc_bias = 0
         self.state_server.imu_state.velocity = config.velocity
         self.reset_state_cov()
 
@@ -328,9 +325,6 @@ class MSCKF(object):
 
 
     def process_model(self, dt, m_gyro, m_acc):
-        """
-        IMPLEMENT THIS!!!!!
-        """
         """
         Section III.A: The dynamics of the error IMU state following equation (2) in the "MSCKF" paper.
         """
