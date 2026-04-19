@@ -493,17 +493,28 @@ class MSCKF(object):
         self.state_server.state_cov = P_aug
 
     def add_feature_observations(self, feature_msg):
-        """
-        IMPLEMENT THIS!!!!!
-        """
         # get the current imu state id and number of current features
-        ...
+        imu_state_id = self.state_server.imu_state.id
+        num_features = len(self.map_server)
         
+        # keep track of known features getting tracked in the current frame
+        num_tracked = 0
+
         # add all features in the feature_msg to self.map_server
-        ...
+        for feature in feature_msg.features:
+            if feature.id not in self.map_server:
+                # addding a new feature to map server begins tracking it
+                self.map_server[feature.id] = Feature(feature.id)
+            else:
+                num_tracked += 1
+            # add the observation to the feature in the map server
+            self.map_server[feature.id].observations[imu_state_id] = feature.observation
 
         # update the tracking rate
-        ...
+        if num_features == 0:
+            self.tracking_rate = 1.0
+        else:
+            self.tracking_rate = num_tracked / num_features
 
     def measurement_jacobian(self, cam_state_id, feature_id):
         """
