@@ -321,7 +321,7 @@ class MSCKF(object):
 
         # Remove all used IMU msgs.
         # remove messages from 0 to the lat one used
-        self.imu_msg_buffer = self.imu_msg_buffer[i_message_used:]
+        self.imu_msg_buffer = self.imu_msg_buffer[max(0, i_message_used - 1):]
 
 
     def process_model(self, dt, m_gyro, m_acc):
