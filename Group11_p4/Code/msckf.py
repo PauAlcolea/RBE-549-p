@@ -29,7 +29,7 @@ class IMUState(object):
         self.timestamp = None
 
         # Orientation
-        # Take a vector from the world frame to the IMU (body) frame.
+        # Take a vector from the IMU (body) frame to the world frame.
         self.orientation = np.array([0., 0., 0., 1.])
 
         # Position of the IMU (body) frame in the world frame.
@@ -67,7 +67,7 @@ class CAMState(object):
         self.timestamp = None
 
         # Orientation
-        # Take a vector from the world frame to the camera frame.
+        # Take a vector from the camera frame to the world frame.
         self.orientation = np.array([0., 0., 0., 1.])
 
         # Position of the camera frame in the world frame.
