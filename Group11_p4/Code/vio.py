@@ -71,7 +71,6 @@ if __name__ == '__main__':
     import argparse
 
     from dataset import EuRoCDataset, DataPublisher
-    from viewer import Viewer
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--path', type=str, default='path/to/your/EuRoC_MAV_dataset/MH_01_easy', 
@@ -80,6 +79,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     if args.view:
+        from viewer import Viewer
         viewer = Viewer()
     else:
         viewer = None

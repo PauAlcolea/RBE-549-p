@@ -276,48 +276,117 @@ class MSCKF(object):
         # Execute process model.
         # Update the state info
         # Repeat until the time_bound is reached
-        ...
+        i_message_used = 0
+
+        for i, imu_msg in enumerate(self.imu_msg_buffer):
+            # get current imu readings
+            m_gyro = imu_msg.angular_velocity
+            m_acc = imu_msg.linear_acceleration
+
+            # check that message in question has timestamp of before the bound
+            if imu_msg.timestamp < time_bound:
+                # if it's the last message in the buffer
+                if i == len(self.imu_msg_buffer) - 1:
+                    dt = time_bound - imu_msg.timestamp
+                
+                else:
+                    # look at the following message to compare the timestamps
+                    next_msg = self.imu_msg_buffer[i + 1]
+                    # if the next message will go over the time_bound, make the dt reflect that
+                    if next_msg.timestamp > time_bound:
+                        dt = time_bound - imu_msg.timestamp
+                    else:
+                        dt = next_msg.timestamp - imu_msg.timestamp
+                
+                # only process when valid dts
+                if dt > 0:
+                    self.process_model(dt, m_gyro, m_acc)
+                    i_message_used += 1
+
+                # time bound has been reached so stop processing so it doesn't go to the next one
+                if imu_msg.timestamp + dt >= time_bound:
+                    break
+
+            # otherwise the message is not in bounds
+            else:
+                break
+
+        # update the timestamp of the state
+        self.state_server.imu_state.timestamp = time_bound
         
         # Set the current imu id to be the IMUState.next_id
-        ...
-        
         # IMUState.next_id increments
-        ...
+        self.state_server.imu_state.id = IMUState.next_id
+        IMUState.next_id += 1
 
         # Remove all used IMU msgs.
-        ...
+        # remove messages from 0 to the lat one used
+        self.imu_msg_buffer = self.imu_msg_buffer[i_message_used:]
 
-    def process_model(self, time, m_gyro, m_acc):
-        """
-        IMPLEMENT THIS!!!!!
-        """
+
+    def process_model(self, dt, m_gyro, m_acc):
         """
         Section III.A: The dynamics of the error IMU state following equation (2) in the "MSCKF" paper.
         """
         # Get the error IMU state
-        ...
+        gyro = m_gyro - self.state_server.imu_state.gyro_bias
+        acc = m_acc - self.state_server.imu_state.acc_bias
 
-        # Compute discrete transition F, Q matrices in Appendix A in "MSCKF" paper
-        ...
+        # Compute discrete transition F, G matrices in Appendix A in "MSCKF" paper
+        C = to_rotation(self.state_server.imu_state.orientation).T                          # Rotation from IMU to World
         
+        F = np.zeros((15, 15))
+        F[0:3, 0:3] = -skew(gyro)
+        F[0:3, 3:6] = -np.eye(3)
+        F[6:9, 0:3] = -C @ skew(acc)
+        F[6:9, 9:12] = -C
+        F[12:15, 6:9] = np.eye(3)
+
+        G = np.zeros((15, 12))
+        G[0:3, 0:3] = -np.eye(3)
+        G[3:6, 3:6] = -np.eye(3)
+        G[6:9, 6:9] = -C
+        G[9:12, 9:12] = -np.eye(3)
+
         # Approximate matrix exponential to the 3rd order, which can be 
         # considered to be accurate enough assuming dt is within 0.01s.
-        ...
+        # continuous into discrete
+        F_dt = F * dt
+        F_dt2 = F_dt @ F_dt
+        F_dt3 = F_dt2 @ F_dt
+        
+        # need phi instead of F because you need to account for how the rate of change changes as the state progresses
+        Phi = np.eye(15) + F_dt + F_dt2 / 2 + F_dt3 / 6
 
         # Propogate the state using 4th order Runge-Kutta
         self.predict_new_state(dt, gyro, acc)
 
         # Modify the transition matrix
-        ...
+        # the imu changes, but not the transformation between the camera and the IMU. Still estimate extrinsics even if they don't change
+        Phi_full = np.eye(21)
+        Phi_full[0:15, 0:15] = Phi
+
+        Q_c = self.state_server.continuous_noise_cov
+        Q_d = Phi @ G @ Q_c @ G.T @ Phi.T * dt
+
+        Q_d_full = np.zeros((21, 21))
+        Q_d_full[0:15, 0:15] = Q_d
 
         # Propogate the state covariance matrix.
-        ...
+        state_cov = self.state_server.state_cov
+        self.state_server.state_cov = Phi_full @ state_cov @ Phi_full.T + Q_d_full
 
         # Fix the covariance to be symmetric
-        ...
+        self.state_server.state_cov = (
+            self.state_server.state_cov + self.state_server.state_cov.T) / 2.0
         
-        # Update the state correspondes to null space.
-        ...
+        # Update the state correspondes to null space.        
+        self.state_server.imu_state.orientation_null = \
+            self.state_server.imu_state.orientation
+        self.state_server.imu_state.position_null = \
+            self.state_server.imu_state.position
+        self.state_server.imu_state.velocity_null = \
+            self.state_server.imu_state.velocity
         
 
     def predict_new_state(self, dt, gyro, acc):
