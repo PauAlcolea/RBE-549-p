@@ -373,31 +373,54 @@ class MSCKF(object):
     
     def state_augmentation(self, time):
         """
-        IMPLEMENT THIS!!!!!
-        """
-        """
         Compute the state covariance matrix in equation (3) in the "MSCKF" paper.
         """
         # Get the imu_state, rotation from imu to cam0, and translation from cam0 to imu
-        ...
+        q_imu = self.state_server.imu_state.orientation
+        p_imu = self.state_server.imu_state.position
+
+        R_imu_to_cam0 = self.state_server.imu_state.R_imu_cam0
+        t_cam0_to_imu = self.state_server.imu_state.t_cam0_imu
+        R_imu_to_world = to_rotation(q_imu)
+        R_cam_to_world = R_imu_to_world @ R_imu_to_cam0.T
+
+        q_cam = to_quaternion(R_cam_to_world)
+        p_cam = p_imu + R_imu_to_world @ t_cam0_to_imu
 
         # Add a new camera state to the state server.
-        ...
-        
+        cam_state = CAMState(self.state_server.imu_state.id)
+        cam_state.timestamp = time
+        cam_state.orientation = q_cam
+        cam_state.position = p_cam
+
+        old_cam_len = len(self.state_server.cam_states)
+        self.state_server.cam_states[cam_state.id] = cam_state
 
         # Update the covariance matrix of the state.
         # To simplify computation, the matrix J below is the nontrivial block
         # Appendix B of "MSCKF" paper.
-        ...
+        J = np.zeros((6, 21+6*old_cam_len))
+        J[:3, :3] = R_imu_to_cam0.T
+        J[3:, :3] = -R_imu_to_cam0.T @ skew(t_cam0_to_imu)
+        J[3:, 12:15] = np.identity(3)
+        J[:3, 15:18] = np.identity(3)
+        J[3:, 18:21] = np.identity(3)
+
 
         # Resize the state covariance matrix.
-        ...
+        P = self.state_server.state_cov
+        P_aug = np.zeros((P.shape[0]+6, P.shape[1]+6))
 
         # Fill in the augmented state covariance.
-        ...
+        P_aug[:P.shape[0], :P.shape[1]] = P
+        P_aug[P.shape[0]:, :P.shape[1]] = J @ P
+        P_aug[:P.shape[0], P.shape[1]:] = P @ J.T
+        P_aug[P.shape[0]:, P.shape[1]:] = J @ P @ J.T
 
         # Fix the covariance to be symmetric
-        ...
+        P_aug = (P_aug + P_aug.T) / 2
+
+        self.state_server.state_cov = P_aug
 
     def add_feature_observations(self, feature_msg):
         """
