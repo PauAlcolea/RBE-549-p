@@ -391,8 +391,6 @@ class MSCKF(object):
 
     def predict_new_state(self, dt, gyro, acc):
         """Propogate the state using 4th order Runge-Kutta for equation (1) in "MSCKF" paper"""
-        gyro -= self.state_server.imu_state.gyro_bias
-        acc -= self.state_server.imu_state.acc_bias
         
         # Get the Omega matrix, the equation above equation (2) in "MSCKF" paper
         omega = np.zeros((4, 4))
