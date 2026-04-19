@@ -20,7 +20,7 @@ class IMUState(object):
     # The transformation takes a vector from the IMU frame to the 
     # body frame. The z axis of the body frame should point upwards.
     # Normally, this transform should be identity.
-    T_imu_body = Isometry3d(np.identity(3), np.zeros(3))
+    T_imu_wrt_body = Isometry3d(np.identity(3), np.zeros(3))
 
     def __init__(self, new_id=None):
         # An unique identifier for the IMU state.
@@ -51,14 +51,14 @@ class IMUState(object):
         self.velocity_null = np.zeros(3)
 
         # Transformation between the IMU and the left camera (cam0)
-        self.R_imu_cam0 = np.identity(3)
-        self.t_cam0_imu = np.zeros(3)
+        self.R_imu_wrt_cam0 = np.identity(3)
+        self.t_cam0_wrt_imu = np.zeros(3)
 
 
 class CAMState(object):
     # Takes a vector from the cam0 frame to the cam1 frame.
-    R_cam0_cam1 = None
-    t_cam0_cam1 = None
+    R_cam0_wrt_cam1 = None
+    t_cam0_wrt_cam1 = None
 
     def __init__(self, new_id=None):
         # An unique identifier for the CAM state.
@@ -136,17 +136,17 @@ class MSCKF(object):
         IMUState.gravity = config.gravity
 
         # Transformation between the IMU and the left camera (cam0)
-        T_cam0_imu = np.linalg.inv(config.T_imu_cam0)
-        self.state_server.imu_state.R_imu_cam0 = T_cam0_imu[:3, :3].T
-        self.state_server.imu_state.t_cam0_imu = T_cam0_imu[:3, 3]
+        T_cam0_wrt_imu = np.linalg.inv(config.T_imu_cam0)
+        self.state_server.imu_state.R_imu_wrt_cam0 = T_cam0_wrt_imu[:3, :3].T
+        self.state_server.imu_state.t_cam0_wrt_imu = T_cam0_wrt_imu[:3, 3]
 
         # Extrinsic parameters of camera and IMU.
-        T_cam0_cam1 = config.T_cn_cnm1
-        CAMState.R_cam0_cam1 = T_cam0_cam1[:3, :3]
-        CAMState.t_cam0_cam1 = T_cam0_cam1[:3, 3]
-        Feature.R_cam0_cam1 = CAMState.R_cam0_cam1
-        Feature.t_cam0_cam1 = CAMState.t_cam0_cam1
-        IMUState.T_imu_body = Isometry3d(
+        T_cam0_wrt_cam1 = config.T_cn_cnm1
+        CAMState.R_cam0_wrt_cam1 = T_cam0_wrt_cam1[:3, :3]
+        CAMState.t_cam0_wrt_cam1 = T_cam0_wrt_cam1[:3, 3]
+        Feature.R_cam0_wrt_cam1 = CAMState.R_cam0_wrt_cam1
+        Feature.t_cam0_wrt_cam1 = CAMState.t_cam0_wrt_cam1
+        IMUState.T_imu_wrt_body = Isometry3d(
             config.T_imu_body[:3, :3],
             config.T_imu_body[:3, 3])
 
@@ -253,12 +253,12 @@ class MSCKF(object):
         y_axis /= np.linalg.norm(y_axis)
         x_axis = np.cross(y_axis, z_axis)
         x_axis /= np.linalg.norm(x_axis)
-        R_imu_world = np.column_stack((x_axis, y_axis, z_axis))
-        self.state_server.imu_state.orientation = to_quaternion(R_imu_world)
+        R_imu_wrt_world = np.column_stack((x_axis, y_axis, z_axis))
+        self.state_server.imu_state.orientation = to_quaternion(R_imu_wrt_world)
 
         # rotate world gravity vector to IMU frame
         gravity_world = np.array([0., 0., -9.81])
-        gravity_imu_expected = R_imu_world.T @ gravity_world
+        gravity_imu_expected = R_imu_wrt_world.T @ gravity_world
 
         # initialize accelerometer bias 
         self.state_server.imu_state.acc_bias = mean_acc - gravity_imu_expected
@@ -339,8 +339,8 @@ class MSCKF(object):
             q_dot = 0.5 * omega @ q
 
             # dv/dt
-            R_imu_to_world = to_rotation(q)
-            v_dot = R_imu_to_world @ acc + self.state_server.imu_state.gravity
+            R_imu_wrt_world = to_rotation(q)
+            v_dot = R_imu_wrt_world @ acc + self.state_server.imu_state.gravity
 
             return np.concatenate((q_dot, v_dot, v))
             
@@ -380,13 +380,13 @@ class MSCKF(object):
         p_imu = self.state_server.imu_state.position
 
         # get pose of the new camera state using IMU->camera tranformation
-        R_imu_to_world = to_rotation(q_imu)
-        R_cam0_to_imu = self.state_server.imu_state.R_imu_cam0.T
-        R_cam_to_world = R_imu_to_world @ R_cam0_to_imu
-        q_cam = to_quaternion(R_cam_to_world) # orientation of the new camera state
+        R_imu_wrt_world = to_rotation(q_imu)
+        R_cam0_wrt_imu = self.state_server.imu_state.R_imu_wrt_cam0.T
+        R_cam_wrt_world = R_imu_wrt_world @ R_cam0_wrt_imu
+        q_cam = to_quaternion(R_cam_wrt_world) # orientation of the new camera state
 
-        t_cam0_to_imu = self.state_server.imu_state.t_cam0_imu
-        p_cam = p_imu + R_imu_to_world @ t_cam0_to_imu # position of the new camera state
+        t_cam0_wrt_imu = self.state_server.imu_state.t_cam0_wrt_imu
+        p_cam = p_imu + R_imu_wrt_world @ t_cam0_wrt_imu # position of the new camera state
 
         # Add a new camera state to the state server.
         cam_state = CAMState(self.state_server.imu_state.id)
@@ -402,8 +402,8 @@ class MSCKF(object):
         # To simplify computation, the matrix J below is the nontrivial block
         # Appendix B of "MSCKF" paper.
         J = np.zeros((6, 21+6*old_cam_len))
-        J[:3, :3] = R_cam0_to_imu
-        J[3:, :3] = -R_cam0_to_imu @ skew(t_cam0_to_imu)
+        J[:3, :3] = R_cam0_wrt_imu
+        J[3:, :3] = -R_cam0_wrt_imu @ skew(t_cam0_wrt_imu)
         J[3:, 12:15] = np.identity(3)
         J[:3, 15:18] = np.identity(3)
         J[3:, 18:21] = np.identity(3)
@@ -446,12 +446,12 @@ class MSCKF(object):
         feature = self.map_server[feature_id]
 
         # Cam0 pose.
-        R_w_c0 = to_rotation(cam_state.orientation)
-        t_c0_w = cam_state.position
+        R_world_wrt_cam0 = to_rotation(cam_state.orientation)
+        t_cam0_wrt_world = cam_state.position
 
         # Cam1 pose.
-        R_w_c1 = CAMState.R_cam0_cam1 @ R_w_c0
-        t_c1_w = t_c0_w - R_w_c1.T @ CAMState.t_cam0_cam1
+        R_world_wrt_cam1 = CAMState.R_cam0_wrt_cam1 @ R_world_wrt_cam0
+        t_cam1_wrt_world = t_cam0_wrt_world - R_world_wrt_cam1.T @ CAMState.t_cam0_wrt_cam1
 
         # 3d feature position in the world frame.
         # And its observation with the stereo cameras.
@@ -460,8 +460,8 @@ class MSCKF(object):
 
         # Convert the feature position from the world frame to
         # the cam0 and cam1 frame.
-        p_c0 = R_w_c0 @ (p_w - t_c0_w)
-        p_c1 = R_w_c1 @ (p_w - t_c1_w)
+        p_c0 = R_world_wrt_cam0 @ (p_w - t_cam0_wrt_world)
+        p_c1 = R_world_wrt_cam1 @ (p_w - t_cam1_wrt_world)
 
         # Compute the Jacobians.
         dz_dpc0 = np.zeros((4, 3))
@@ -478,14 +478,14 @@ class MSCKF(object):
 
         dpc0_dxc = np.zeros((3, 6))
         dpc0_dxc[:, :3] = skew(p_c0)
-        dpc0_dxc[:, 3:] = -R_w_c0
+        dpc0_dxc[:, 3:] = -R_world_wrt_cam0
 
         dpc1_dxc = np.zeros((3, 6))
-        dpc1_dxc[:, :3] = CAMState.R_cam0_cam1 @ skew(p_c0)
-        dpc1_dxc[:, 3:] = -R_w_c1
+        dpc1_dxc[:, :3] = CAMState.R_cam0_wrt_cam1 @ skew(p_c0)
+        dpc1_dxc[:, 3:] = -R_world_wrt_cam1
 
-        dpc0_dpg = R_w_c0
-        dpc1_dpg = R_w_c1
+        dpc0_dpg = R_world_wrt_cam0
+        dpc1_dpg = R_world_wrt_cam1
 
         H_x = dz_dpc0 @ dpc0_dxc + dz_dpc1 @ dpc1_dxc   # shape: (4, 6)
         H_f = dz_dpc0 @ dpc0_dpg + dz_dpc1 @ dpc1_dpg   # shape: (4, 3)
@@ -815,8 +815,8 @@ class MSCKF(object):
         # Reset the IMU state.
         imu_state = IMUState()
         imu_state.id = self.state_server.imu_state.id
-        imu_state.R_imu_cam0 = self.state_server.imu_state.R_imu_cam0
-        imu_state.t_cam0_imu = self.state_server.imu_state.t_cam0_imu
+        imu_state.R_imu_wrt_cam0 = self.state_server.imu_state.R_imu_wrt_cam0
+        imu_state.t_cam0_wrt_imu = self.state_server.imu_state.t_cam0_wrt_imu
         self.state_server.imu_state = imu_state
 
         # Remove all existing camera states.
@@ -873,15 +873,15 @@ class MSCKF(object):
         print('   velocity:', imu_state.velocity)
         print()
         
-        T_i_w = Isometry3d(
+        T_imu_wrt_world = Isometry3d(
             to_rotation(imu_state.orientation).T,
             imu_state.position)
-        T_b_w = IMUState.T_imu_body * T_i_w * IMUState.T_imu_body.inverse()
-        body_velocity = IMUState.T_imu_body.R @ imu_state.velocity
+        T_body_wrt_world = IMUState.T_imu_wrt_body * T_imu_wrt_world * IMUState.T_imu_wrt_body.inverse()
+        body_velocity = IMUState.T_imu_wrt_body.R @ imu_state.velocity
 
-        R_w_c = imu_state.R_imu_cam0 @ T_i_w.R.T
-        t_c_w = imu_state.position + T_i_w.R @ imu_state.t_cam0_imu
-        T_c_w = Isometry3d(R_w_c.T, t_c_w)
+        R_world_wrt_cam = imu_state.R_imu_wrt_cam0 @ T_imu_wrt_world.R.T
+        t_cam_wrt_world = imu_state.position + T_imu_wrt_world.R @ imu_state.t_cam0_wrt_imu
+        T_cam_wrt_world = Isometry3d(R_world_wrt_cam.T, t_cam_wrt_world)
 
         return namedtuple('vio_result', ['timestamp', 'pose', 'velocity', 'cam0_pose'])(
-            time, T_b_w, body_velocity, T_c_w)
+            time, T_body_wrt_world, body_velocity, T_cam_wrt_world)
