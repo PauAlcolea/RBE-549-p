@@ -373,19 +373,20 @@ class MSCKF(object):
     
     def state_augmentation(self, time):
         """
-        Compute the state covariance matrix in equation (3) in the "MSCKF" paper.
+        When a new image is received, we need to augment the state vector by adding a new camera state.
         """
-        # Get the imu_state, rotation from imu to cam0, and translation from cam0 to imu
+        # get the current imu_state
         q_imu = self.state_server.imu_state.orientation
         p_imu = self.state_server.imu_state.position
 
-        R_imu_to_cam0 = self.state_server.imu_state.R_imu_cam0
-        t_cam0_to_imu = self.state_server.imu_state.t_cam0_imu
+        # get pose of the new camera state using IMU->camera tranformation
         R_imu_to_world = to_rotation(q_imu)
-        R_cam_to_world = R_imu_to_world @ R_imu_to_cam0.T
+        R_cam0_to_imu = self.state_server.imu_state.R_imu_cam0.T
+        R_cam_to_world = R_imu_to_world @ R_cam0_to_imu
+        q_cam = to_quaternion(R_cam_to_world) # orientation of the new camera state
 
-        q_cam = to_quaternion(R_cam_to_world)
-        p_cam = p_imu + R_imu_to_world @ t_cam0_to_imu
+        t_cam0_to_imu = self.state_server.imu_state.t_cam0_imu
+        p_cam = p_imu + R_imu_to_world @ t_cam0_to_imu # position of the new camera state
 
         # Add a new camera state to the state server.
         cam_state = CAMState(self.state_server.imu_state.id)
@@ -396,18 +397,18 @@ class MSCKF(object):
         old_cam_len = len(self.state_server.cam_states)
         self.state_server.cam_states[cam_state.id] = cam_state
 
-        # Update the covariance matrix of the state.
+        # Update the covariance matrix of the state, which contains the 
+        #   partial derivatives of the camera pose equations w.r.t. the IMU error state vector
         # To simplify computation, the matrix J below is the nontrivial block
         # Appendix B of "MSCKF" paper.
         J = np.zeros((6, 21+6*old_cam_len))
-        J[:3, :3] = R_imu_to_cam0.T
-        J[3:, :3] = -R_imu_to_cam0.T @ skew(t_cam0_to_imu)
+        J[:3, :3] = R_cam0_to_imu
+        J[3:, :3] = -R_cam0_to_imu @ skew(t_cam0_to_imu)
         J[3:, 12:15] = np.identity(3)
         J[:3, 15:18] = np.identity(3)
         J[3:, 18:21] = np.identity(3)
 
-
-        # Resize the state covariance matrix.
+        # Resize the state covariance matrix to accommodate the new camera state.
         P = self.state_server.state_cov
         P_aug = np.zeros((P.shape[0]+6, P.shape[1]+6))
 
