@@ -269,7 +269,7 @@ class MSCKF(object):
         for z_axis in z_candidates:
             R_imu_wrt_world = orientation_from_z(z_axis)
             # rotate world gravity vector to IMU frame
-            gravity_imu_expected = R_imu_wrt_world.T @ gravity_world
+            gravity_imu_expected = -(R_imu_wrt_world.T @ gravity_world)
             acc_bias = mean_acc - gravity_imu_expected
             cost = np.linalg.norm(acc_bias)
             if best is None or cost < best[0]:
