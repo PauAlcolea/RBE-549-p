@@ -527,11 +527,14 @@ class MSCKF(object):
         for feature in feature_msg.features:
             if feature.id not in self.map_server:
                 # addding a new feature to map server begins tracking it
-                self.map_server[feature.id] = Feature(feature.id)
+                self.map_server[feature.id] = Feature(
+                    feature.id, self.optimization_config
+                )
             else:
                 num_tracked += 1
             # add the observation to the feature in the map server
-            self.map_server[feature.id].observations[imu_state_id] = feature.observation
+            obs = np.array([feature.u0, feature.v0, feature.u1, feature.v1], dtype=np.float64)
+            self.map_server[feature.id].observations[imu_state_id] = obs
 
         # update the tracking rate
         if num_features == 0:
