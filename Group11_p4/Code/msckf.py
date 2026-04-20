@@ -687,7 +687,7 @@ class MSCKF(object):
         # Update the IMU state.
         # update orientation
         rotation_err = state_err[0:3]
-        q_err = to_quaternion(to_rotation(rotation_err))
+        q_err = small_angle_quaternion(rotation_err)
         q_new = quaternion_multiplication(
             q_err, self.state_server.imu_state.orientation
         )
@@ -701,7 +701,7 @@ class MSCKF(object):
 
         # update extrinsics
         ext_rot_err = state_err[15:18]
-        q_ext_err = to_quaternion(to_rotation(ext_rot_err))
+        q_ext_err = small_angle_quaternion(ext_rot_err)
         self.state_server.imu_state.R_imu_wrt_cam0 = (
             to_rotation(q_ext_err) @ self.state_server.imu_state.R_imu_wrt_cam0
         )
@@ -717,7 +717,7 @@ class MSCKF(object):
             # update position
             self.state_server.cam_states[cam_state_id].position += cam_pos_err
             # update rotation
-            q_err = to_quaternion(to_rotation(cam_rot_err))
+            q_err = small_angle_quaternion(cam_rot_err)
             q_new = quaternion_multiplication(
                 q_err, self.state_server.cam_states[cam_state_id].orientation
             )
