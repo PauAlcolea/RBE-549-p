@@ -639,13 +639,9 @@ class MSCKF(object):
         # Decompose the final Jacobian matrix to reduce computational
         # complexity.
         Q, R = np.linalg.qr(H)
-        r_proj = Q.T @ r
-        non_zero_rows = np.where(np.abs(np.diag(R)) > 1e-6)[0]
-        R_thin = R[non_zero_rows, :]
-        r_proj = r_proj[non_zero_rows]
-        r_thin, r_noise = r_proj[:R_thin.shape[0]], r_proj[R_thin.shape[0]:]
-        R_noise = R[R_thin.shape[0]:, :]
-        H_thin = Q @ R_thin
+        r_thin = Q.T @ r
+        H_thin = R
+        R_noise = self.config.observation_noise * np.identity(H_thin.shape[0])
 
         # Compute the Kalman gain.
         P = self.state_server.state_cov
@@ -655,22 +651,36 @@ class MSCKF(object):
         state_err = K @ r_thin
         
         # Update the IMU state.
-        self.state_server.imu_state.position += state_err[:3]
-        rotation_err = state_err[3:6]
+        # update orientation
+        rotation_err = state_err[0:3]
         q_err = to_quaternion(to_rotation(rotation_err))
-        q_new = quaternion_multiplication(self.state_server.imu_state.orientation, q_err)
+        q_new = quaternion_multiplication(q_err, self.state_server.imu_state.orientation)
         self.state_server.imu_state.orientation = q_new / np.linalg.norm(q_new)
+
+        # update biases, velocity, and position
+        self.state_server.imu_state.gyro_bias += state_err[3:6]
         self.state_server.imu_state.velocity += state_err[6:9]
+        self.state_server.imu_state.acc_bias += state_err[9:12]
+        self.state_server.imu_state.position += state_err[12:15]
+
+        # update extrinsics
+        ext_rot_err = state_err[15:18]
+        q_ext_err = to_quaternion(to_rotation(ext_rot_err))
+        self.state_server.imu_state.R_imu_wrt_cam0 = to_rotation(q_ext_err) @ self.state_server.imu_state.R_imu_wrt_cam0
+        self.state_server.imu_state.t_cam0_wrt_imu += state_err[18:21]
 
         # Update the camera states.
         cam_state_ids = list(self.state_server.cam_states.keys())
-        for i in range(len(self.state_server.cam_states)):
-            cam_state_id = cam_state_ids[i]
+        for i, cam_state_id in enumerate(cam_state_ids):
+            # get the error of the camera state
             cam_state_err = state_err[21+6*i:21+6*(i+1)]
-            self.state_server.cam_states[cam_state_id].position += cam_state_err[:3]
-            rotation_err = cam_state_err[3:]
-            q_err = to_quaternion(to_rotation(rotation_err))
-            q_new = quaternion_multiplication(self.state_server.cam_states[cam_state_id].orientation, q_err)
+            cam_rot_err = cam_state_err[0:3]
+            cam_pos_err = cam_state_err[3:6]
+            # update position
+            self.state_server.cam_states[cam_state_id].position += cam_pos_err
+            # update rotation
+            q_err = to_quaternion(to_rotation(cam_rot_err))
+            q_new = quaternion_multiplication(q_err, self.state_server.cam_states[cam_state_id].orientation)
             self.state_server.cam_states[cam_state_id].orientation = q_new / np.linalg.norm(q_new)
 
         # Update state covariance.
