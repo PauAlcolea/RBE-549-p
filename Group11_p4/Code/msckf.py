@@ -382,13 +382,14 @@ class MSCKF(object):
 
         # Modify the transition matrix
         # the imu changes, but not the transformation between the camera and the IMU. Still estimate extrinsics even if they don't change
-        Phi_full = np.eye(21)
+        state_dim = self.state_server.state_cov.shape[0]
+        Phi_full = np.eye(state_dim)
         Phi_full[0:15, 0:15] = Phi
 
         Q_c = self.state_server.continuous_noise_cov
         Q_d = Phi @ G @ Q_c @ G.T @ Phi.T * dt
 
-        Q_d_full = np.zeros((21, 21))
+        Q_d_full = np.zeros((state_dim, state_dim))
         Q_d_full[0:15, 0:15] = Q_d
 
         # Propogate the state covariance matrix.
