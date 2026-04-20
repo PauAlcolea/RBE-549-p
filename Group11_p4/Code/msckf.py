@@ -237,36 +237,49 @@ class MSCKF(object):
         first few IMU readings.
         """
         # initialize gyro bias with mean of first 200 readings.
-        self.state_server.imu_state.gyro_bias = np.mean(
-            [imu_msg.angular_velocity for imu_msg in self.imu_msg_buffer]
-        )
+        self.state_server.imu_state.gyro_bias = np.mean(np.array(
+            [imu_msg.angular_velocity for imu_msg in self.imu_msg_buffer],
+            dtype=np.float64,
+        ), axis=0)
 
-        # initialize gravity vector as normalized mean of first 200 accelerometer readings
-        mean_acc = np.mean(
-            [imu_msg.linear_acceleration for imu_msg in self.imu_msg_buffer]
-        )
-        self.state_server.imu_state.gravity = mean_acc / np.linalg.norm(mean_acc)
+        mean_acc = np.mean(np.array(
+            [imu_msg.linear_acceleration for imu_msg in self.imu_msg_buffer],
+            dtype=np.float64,
+        ), axis=0)
+        mean_acc_norm = np.linalg.norm(mean_acc)
+        if mean_acc_norm < 1e-6:
+            return
 
-        # Initialize the initial orientation, so that the estimation
-        # is consistent with the inertial frame.
-        # z should be aligned with gravity vector
-        z_axis = self.state_server.imu_state.gravity
-        x_axis = np.array([1.0, 0.0, 0.0])
-        if abs(z_axis @ x_axis) > 0.9:
-            x_axis = np.array([0.0, 1.0, 0.0])
-        y_axis = np.cross(z_axis, x_axis)
-        y_axis /= np.linalg.norm(y_axis)
-        x_axis = np.cross(y_axis, z_axis)
-        x_axis /= np.linalg.norm(x_axis)
-        R_imu_wrt_world = np.column_stack((x_axis, y_axis, z_axis))
+        gravity_world = IMUState.gravity.astype(np.float64)
+
+        def orientation_from_z(z_axis):
+            """get orientation matrix given z-axis"""
+            x_axis = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+            if abs(float(z_axis @ x_axis)) > 0.9:
+                x_axis = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+            y_axis = np.cross(z_axis, x_axis)
+            y_axis /= np.linalg.norm(y_axis)
+            x_axis = np.cross(y_axis, z_axis)
+            x_axis /= np.linalg.norm(x_axis)
+            return np.column_stack((x_axis, y_axis, z_axis))
+
+        # choose the z-axis that best aligns with the expected gravity direction
+        z_candidates = [mean_acc / mean_acc_norm, -mean_acc / mean_acc_norm]
+        best = None
+        for z_axis in z_candidates:
+            R_imu_wrt_world = orientation_from_z(z_axis)
+            # rotate world gravity vector to IMU frame
+            gravity_imu_expected = R_imu_wrt_world.T @ gravity_world
+            acc_bias = mean_acc - gravity_imu_expected
+            cost = np.linalg.norm(acc_bias)
+            if best is None or cost < best[0]:
+                best = (cost, R_imu_wrt_world, acc_bias)
+
+        # set the IMU state's orientation, accelerometer bias, and gravity
+        _, R_imu_wrt_world, acc_bias = best
         self.state_server.imu_state.orientation = to_quaternion(R_imu_wrt_world)
-
-        # rotate world gravity vector to IMU frame
-        gravity_world = np.array([0.0, 0.0, -9.81])
-        gravity_imu_expected = R_imu_wrt_world.T @ gravity_world
-
-        # initialize accelerometer bias
-        self.state_server.imu_state.acc_bias = mean_acc - gravity_imu_expected
+        self.state_server.imu_state.acc_bias = acc_bias
+        self.state_server.imu_state.gravity = gravity_world.copy()
 
     # Filter related functions
     # (batch_imu_processing, process_model, predict_new_state)
