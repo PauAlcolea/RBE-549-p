@@ -68,6 +68,7 @@ class VIO(object):
 
 if __name__ == '__main__':
     import time
+    import sys
     import argparse
 
     from dataset import EuRoCDataset, DataPublisher
@@ -78,9 +79,11 @@ if __name__ == '__main__':
     parser.add_argument('--view', action='store_true', help='Show trajectory.')
     args = parser.parse_args()
 
+    use_main_thread_view = False
     if args.view:
         from viewer import Viewer
-        viewer = Viewer()
+        use_main_thread_view = (sys.platform == 'darwin')
+        viewer = Viewer(start_process=not use_main_thread_view)
     else:
         viewer = None
 
@@ -106,3 +109,10 @@ if __name__ == '__main__':
     now = time.time()
     imu_publisher.start(now)
     img_publisher.start(now)
+
+    if use_main_thread_view and viewer is not None:
+        try:
+            viewer.view()
+        finally:
+            imu_publisher.stop()
+            img_publisher.stop()
