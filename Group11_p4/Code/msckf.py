@@ -143,8 +143,8 @@ class MSCKF(object):
         T_cam0_wrt_cam1 = config.T_cn_cnm1
         CAMState.R_cam0_wrt_cam1 = T_cam0_wrt_cam1[:3, :3]
         CAMState.t_cam0_wrt_cam1 = T_cam0_wrt_cam1[:3, 3]
-        Feature.R_cam0_wrt_cam1 = CAMState.R_cam0_wrt_cam1
-        Feature.t_cam0_wrt_cam1 = CAMState.t_cam0_wrt_cam1
+        Feature.R_cam0_cam1 = CAMState.R_cam0_wrt_cam1
+        Feature.t_cam0_cam1 = CAMState.t_cam0_wrt_cam1
         IMUState.T_imu_wrt_body = Isometry3d(
             config.T_imu_body[:3, :3], config.T_imu_body[:3, 3]
         )
