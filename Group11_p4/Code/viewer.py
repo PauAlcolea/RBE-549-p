@@ -20,6 +20,8 @@ class Viewer(object):
         self.image_updates = 0
 
         self.view_thread = None
+        self.gt_points_xyz = None
+        self.est_origin_xyz = None
         if start_process:
             self.start()
 
@@ -39,6 +41,17 @@ class Viewer(object):
         if image.ndim == 2:
             image = np.repeat(image[..., np.newaxis], 3, axis=2)
         self.image_queue.put(image)
+
+    def set_groundtruth(self, points_xyz):
+        if points_xyz is None:
+            self.gt_points_xyz = None
+            self.est_origin_xyz = None
+            return
+        points_xyz = np.asarray(points_xyz, dtype=np.float64)
+        if points_xyz.ndim != 2 or points_xyz.shape[1] != 3:
+            raise ValueError("Ground-truth points must have shape (N, 3)")
+        self.gt_points_xyz = points_xyz
+        self.est_origin_xyz = None
 
     def _drain_queues(self, camera, trajectory, image):
         pose = None
@@ -66,37 +79,79 @@ class Viewer(object):
 
         return camera, image
 
-    def _draw_trajectory(self, traj_vis, points_xyz):
-        if len(points_xyz) == 0:
+    def _draw_trajectory(self, traj_vis, points_xyz, gt_points_xyz=None):
+        if len(points_xyz) == 0 and (gt_points_xyz is None or len(gt_points_xyz) == 0):
             return
 
-        xz = points_xyz[:, [0, 2]]
+        est_points_xyz = points_xyz
+        if gt_points_xyz is not None and len(gt_points_xyz) > 0 and len(points_xyz) > 0:
+            if self.est_origin_xyz is None:
+                self.est_origin_xyz = np.asarray(points_xyz[0], dtype=np.float64).copy()
+            # Visual-only translation so both tracks start at the same position.
+            est_offset = gt_points_xyz[0] - self.est_origin_xyz
+            est_points_xyz = points_xyz + est_offset
+
+        xz_sets = []
+        if gt_points_xyz is not None and len(gt_points_xyz) > 0:
+            xz_sets.append(gt_points_xyz[:, [0, 2]])
+        if len(est_points_xyz) > 0:
+            xz_sets.append(est_points_xyz[:, [0, 2]])
+        xz_all = np.vstack(xz_sets)
 
         # Keep a square world window so scale is stable and centered.
-        center = xz.mean(axis=0)
-        radius = np.max(np.abs(xz - center))
+        # When GT is available, anchor the view on GT so estimate outliers do not shrink it.
+        if gt_points_xyz is not None and len(gt_points_xyz) > 0:
+            gt_xz = gt_points_xyz[:, [0, 2]]
+            center = gt_xz.mean(axis=0)
+            radius = np.max(np.abs(gt_xz - center))
+            radius *= 1.05
+        else:
+            center = xz_all.mean(axis=0)
+            radius = np.max(np.abs(xz_all - center))
         radius = max(radius, 0.5)
 
         minv = center - radius
         maxv = center + radius
         span = np.maximum(maxv - minv, 1e-6)
 
-        norm = (xz - minv) / span
-        pix = np.zeros((len(norm), 2), dtype=np.int32)
-        pix[:, 0] = (norm[:, 0] * 560 + 20).astype(np.int32)
-        pix[:, 1] = (norm[:, 1] * 560 + 20).astype(np.int32)
-        pix[:, 1] = 599 - pix[:, 1]
+        if gt_points_xyz is not None and len(gt_points_xyz) > 0:
+            gt_xz = gt_points_xyz[:, [0, 2]]
+            gt_norm = (gt_xz - minv) / span
+            gt_pix = np.zeros((len(gt_norm), 2), dtype=np.int32)
+            gt_pix[:, 0] = (gt_norm[:, 0] * 560 + 20).astype(np.int32)
+            gt_pix[:, 1] = (gt_norm[:, 1] * 560 + 20).astype(np.int32)
+            gt_pix[:, 1] = 599 - gt_pix[:, 1]
+            if len(gt_pix) > 1:
+                cv2.polylines(traj_vis, [gt_pix.reshape(-1, 1, 2)], False, (220, 120, 0), 2)
 
-        for p in pix:
-            cv2.circle(traj_vis, tuple(p), 2, (0, 0, 255), -1)
-        if len(pix) > 1:
-            cv2.polylines(traj_vis, [pix.reshape(-1, 1, 2)], False, (0, 0, 255), 2)
+        if len(est_points_xyz) > 0:
+            xz = est_points_xyz[:, [0, 2]]
+            norm = (xz - minv) / span
+            pix = np.zeros((len(norm), 2), dtype=np.int32)
+            pix[:, 0] = (norm[:, 0] * 560 + 20).astype(np.int32)
+            pix[:, 1] = (norm[:, 1] * 560 + 20).astype(np.int32)
+            pix[:, 1] = 599 - pix[:, 1]
 
-        last = points_xyz[-1]
+            for p in pix:
+                cv2.circle(traj_vis, tuple(p), 2, (0, 0, 255), -1)
+            if len(pix) > 1:
+                cv2.polylines(traj_vis, [pix.reshape(-1, 1, 2)], False, (0, 0, 255), 2)
+
+            last = est_points_xyz[-1]
+            cv2.putText(
+                traj_vis,
+                f"last xyz (aligned): [{last[0]:.3f}, {last[1]:.3f}, {last[2]:.3f}]",
+                (15, 112),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (20, 20, 20),
+                2,
+            )
+
         cv2.putText(
             traj_vis,
-            f"last xyz: [{last[0]:.3f}, {last[1]:.3f}, {last[2]:.3f}]",
-            (15, 112),
+            "red: estimate  blue: ground truth",
+            (15, 138),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.55,
             (20, 20, 20),
@@ -149,7 +204,7 @@ class Viewer(object):
             )
 
             points_xyz = trajectory.array()
-            self._draw_trajectory(traj_vis, points_xyz)
+            self._draw_trajectory(traj_vis, points_xyz, self.gt_points_xyz)
 
             cv2.imshow("VIO Camera", cam_vis)
             cv2.imshow("VIO Trajectory", traj_vis)
