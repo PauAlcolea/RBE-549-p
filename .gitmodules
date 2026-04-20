@@ -19,6 +19,3 @@
 [submodule "Group11_p3/Code/perception/Flow_Anything"]
 	path = Group11_p3/Code/perception/Flow_Anything
 	url = https://github.com/benjaminorr/Flow-Anything
-[submodule "Group11_p4/Code/pangolin"]
-	path = Group11_p4/Code/pangolin
-	url = https://github.com/benjaminorr/pangolin
