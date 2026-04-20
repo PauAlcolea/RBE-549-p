@@ -10,7 +10,6 @@ Group11_p1/Phase1/Output/*
 
 # Virtual environment
 .venv/*
-.venv311/*
 .vscode/*
 .posevenv/*
 
