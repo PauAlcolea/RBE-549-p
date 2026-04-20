@@ -1,6 +1,43 @@
 import numpy as np
 import OpenGL.GL as gl
-import pangolin
+import importlib.util
+from pathlib import Path
+
+
+def _load_local_pangolin_extension():
+    """Load local compiled pangolin extension if source dir shadows import."""
+    module_dir = Path(__file__).resolve().parent / "pangolin"
+    for ext in ("*.so", "*.dylib"):
+        matches = sorted(module_dir.glob(f"pangolin{ext}"))
+        if matches:
+            spec = importlib.util.spec_from_file_location("pangolin", str(matches[0]))
+            if spec is not None and spec.loader is not None:
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                return module
+    return None
+
+
+try:
+    import pangolin
+except ImportError as exc:
+    pangolin = _load_local_pangolin_extension()
+    if pangolin is None:
+        raise ImportError(
+            "Missing Python module 'pangolin'. Build the binding in Code/pangolin with a compatible Python "
+            "(for example .venv311), or run without --view."
+        ) from exc
+
+if not hasattr(pangolin, 'CreateWindowAndBind'):
+    loaded = _load_local_pangolin_extension()
+    if loaded is not None:
+        pangolin = loaded
+
+if not hasattr(pangolin, 'CreateWindowAndBind'):
+    raise ImportError(
+        "Incompatible pangolin package detected. This project expects the uoip/pangolin Python binding "
+        "with CreateWindowAndBind()."
+    )
 import cv2
 
 from multiprocessing import Queue, Process
