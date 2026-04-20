@@ -115,7 +115,7 @@ class MSCKF(object):
         # Initialize the chi squared test table with confidence level 0.95.
         self.chi_squared_test_table = dict()
         for i in range(1, 100):
-            self.chi_squared_test_table[i] = chi2.ppf(0.05, i)
+            self.chi_squared_test_table[i] = chi2.ppf(0.95, i)
 
         # Set the initial IMU state.
         # The intial orientation and position will be set to the origin implicitly.
