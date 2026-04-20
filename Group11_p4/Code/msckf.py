@@ -630,35 +630,55 @@ class MSCKF(object):
 
     def measurement_update(self, H, r):
         """
-        IMPLEMENT THIS!!!!!
-        """
-        """
         Section III.B: by stacking multiple observations, we can compute the residuals in equation (6) in "MSCKF" paper 
         """
         # Check if H and r are empty
-        ...
+        if H.shape[0] == 0 or r.shape[0] == 0:
+            return
 
         # Decompose the final Jacobian matrix to reduce computational
         # complexity.
-        ...
+        Q, R = np.linalg.qr(H)
+        r_proj = Q.T @ r
+        non_zero_rows = np.where(np.abs(np.diag(R)) > 1e-6)[0]
+        R_thin = R[non_zero_rows, :]
+        r_proj = r_proj[non_zero_rows]
+        r_thin, r_noise = r_proj[:R_thin.shape[0]], r_proj[R_thin.shape[0]:]
+        R_noise = R[R_thin.shape[0]:, :]
+        H_thin = Q @ R_thin
 
         # Compute the Kalman gain.
-        ...
+        P = self.state_server.state_cov
+        K = P @ H_thin.T @ np.linalg.inv(H_thin @ P @ H_thin.T + R_noise)
 
         # Compute the error of the state.
-        ...
+        state_err = K @ r_thin
         
         # Update the IMU state.
-        ...
+        self.state_server.imu_state.position += state_err[:3]
+        rotation_err = state_err[3:6]
+        q_err = to_quaternion(to_rotation(rotation_err))
+        q_new = quaternion_multiplication(self.state_server.imu_state.orientation, q_err)
+        self.state_server.imu_state.orientation = q_new / np.linalg.norm(q_new)
+        self.state_server.imu_state.velocity += state_err[6:9]
 
         # Update the camera states.
-        ...
+        cam_state_ids = list(self.state_server.cam_states.keys())
+        for i in range(len(self.state_server.cam_states)):
+            cam_state_id = cam_state_ids[i]
+            cam_state_err = state_err[21+6*i:21+6*(i+1)]
+            self.state_server.cam_states[cam_state_id].position += cam_state_err[:3]
+            rotation_err = cam_state_err[3:]
+            q_err = to_quaternion(to_rotation(rotation_err))
+            q_new = quaternion_multiplication(self.state_server.cam_states[cam_state_id].orientation, q_err)
+            self.state_server.cam_states[cam_state_id].orientation = q_new / np.linalg.norm(q_new)
 
         # Update state covariance.
-        ...
+        I = np.eye(P.shape[0])
+        self.state_server.state_cov = (I - K @ H_thin) @ P
 
         # Fix the covariance to be symmetric
-        ...
+        self.state_server.state_cov = (self.state_server.state_cov + self.state_server.state_cov.T) / 2
 
     def gating_test(self, H, r, dof):
         P1 = H @ self.state_server.state_cov @ H.T
