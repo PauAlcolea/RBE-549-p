@@ -639,11 +639,12 @@ class MSCKF(object):
         # Decompose the final Jacobian matrix to reduce computational
         # complexity.
         Q, R = np.linalg.qr(H)
-        r_thin = Q.T @ r
-        H_thin = R
-        R_noise = self.config.observation_noise * np.identity(H_thin.shape[0])
+        r_thin = Q.T @ r # residual in the reduced space
+        H_thin = R # measurement matrix in the reduced space
+        R_noise = self.config.observation_noise * np.identity(H_thin.shape[0]) # observation noise in the reduced space
 
-        # Compute the Kalman gain.
+        # Compute the Kalman gain, which determines how much we should trust the measurement vs. the current state estimate.
+        # matrix K maps measurement errors in pixel space to errors in the state space
         P = self.state_server.state_cov
         K = P @ H_thin.T @ np.linalg.inv(H_thin @ P @ H_thin.T + R_noise)
 
