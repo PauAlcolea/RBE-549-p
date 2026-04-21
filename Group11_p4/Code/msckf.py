@@ -995,6 +995,21 @@ class MSCKF(object):
         )
         T_cam_wrt_world = Isometry3d(R_world_wrt_cam.T, t_cam_wrt_world)
 
+        # tum conversion for error
+        self.log_trajectory()
+
         return namedtuple("vio_result", ["timestamp", "pose", "velocity", "cam0_pose"])(
             time, T_body_wrt_world, body_velocity, T_cam_wrt_world
         )
+    
+    # transform into TUM so that evo can us it
+    def log_trajectory(self):
+
+        imu = self.state_server.imu_state
+
+        t = imu.timestamp
+        p = imu.position
+        q = imu.orientation
+
+        with open("../Output/traj_est.txt", "a") as f:
+            f.write(f"{t} {p[0]} {p[1]} {p[2]} {q[0]} {q[1]} {q[2]} {q[3]}\n")
