@@ -24,6 +24,16 @@ This project implements data loader and data publisher for EuRoC MAV dataset.
 or    
 `python vio.py --path path/to/your/EuRoC_MAV_dataset/MH_01_easy` (no visualization)  
 
+### Estimate vs Ground Truth Plot
+to compare estimate against ground truth:
+
+`python vio.py --path path/to/your/EuRoC_MAV_dataset/MH_01_easy --plot-final`
+
+Optional flags:
+* `--estimate-save outputs/estimate.csv`: save estimated trajectory (`timestamp,p_x,p_y,p_z`).
+* `--plot-save outputs/estimate_vs_gt.png`: save final comparison figure.
+* `--view --live-gt`: show a live top-down overlay with estimate (red) and ground truth (blue).
+
 ## Results
 MH_01_easy  
 ![](imgs/euroc_mh_01_easy.png)

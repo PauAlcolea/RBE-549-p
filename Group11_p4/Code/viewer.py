@@ -1,119 +1,221 @@
-import numpy as np
-import OpenGL.GL as gl
-import pangolin
+import time
+from multiprocessing import Process
+from multiprocessing import Queue as MPQueue
+from queue import Empty
+from queue import Queue as ThreadQueue
+
 import cv2
-
-from multiprocessing import Queue, Process
-
+import numpy as np
 
 
 class Viewer(object):
-    def __init__(self):
-        self.image_queue = Queue()
-        self.pose_queue = Queue()
+    """OpenCV-only viewer for image and top-down trajectory visualization."""
 
-        self.view_thread = Process(target=self.view)
-        self.view_thread.start()
+    def __init__(self, start_process=True):
+        queue_cls = MPQueue if start_process else ThreadQueue
+        self.image_queue = queue_cls()
+        self.pose_queue = queue_cls()
+
+        self.pose_updates = 0
+        self.image_updates = 0
+
+        self.view_thread = None
+        self.gt_points_xyz = None
+        self.est_origin_xyz = None
+        if start_process:
+            self.start()
+
+    def start(self):
+        if self.view_thread is None:
+            self.view_thread = Process(target=self.view)
+            self.view_thread.start()
 
     def update_pose(self, pose):
         if pose is None:
             return
-        self.pose_queue.put(pose.matrix())
+        self.pose_queue.put(np.asarray(pose.matrix(), dtype=np.float64))
 
     def update_image(self, image):
         if image is None:
             return
-        elif image.ndim == 2:
+        if image.ndim == 2:
             image = np.repeat(image[..., np.newaxis], 3, axis=2)
         self.image_queue.put(image)
-            
+
+    def set_groundtruth(self, points_xyz):
+        if points_xyz is None:
+            self.gt_points_xyz = None
+            self.est_origin_xyz = None
+            return
+        points_xyz = np.asarray(points_xyz, dtype=np.float64)
+        if points_xyz.ndim != 2 or points_xyz.shape[1] != 3:
+            raise ValueError("Ground-truth points must have shape (N, 3)")
+        self.gt_points_xyz = points_xyz
+        self.est_origin_xyz = None
+
+    def _drain_queues(self, camera, trajectory, image):
+        pose = None
+        try:
+            while True:
+                pose = self.pose_queue.get_nowait()
+        except Empty:
+            pass
+
+        if pose is not None:
+            trajectory.append(np.asarray(pose[:3, 3]).reshape(3,))
+            camera = pose
+            self.pose_updates += 1
+
+        img = None
+        try:
+            while True:
+                img = self.image_queue.get_nowait()
+        except Empty:
+            pass
+
+        if img is not None:
+            image = img.copy()
+            self.image_updates += 1
+
+        return camera, image
+
+    def _draw_trajectory(self, traj_vis, points_xyz, gt_points_xyz=None):
+        if len(points_xyz) == 0 and (gt_points_xyz is None or len(gt_points_xyz) == 0):
+            return
+
+        est_points_xyz = points_xyz
+        if gt_points_xyz is not None and len(gt_points_xyz) > 0 and len(points_xyz) > 0:
+            if self.est_origin_xyz is None:
+                self.est_origin_xyz = np.asarray(points_xyz[0], dtype=np.float64).copy()
+            # Visual-only translation so both tracks start at the same position.
+            est_offset = gt_points_xyz[0] - self.est_origin_xyz
+            est_points_xyz = points_xyz + est_offset
+
+        xz_sets = []
+        if gt_points_xyz is not None and len(gt_points_xyz) > 0:
+            xz_sets.append(gt_points_xyz[:, [0, 2]])
+        if len(est_points_xyz) > 0:
+            xz_sets.append(est_points_xyz[:, [0, 2]])
+        xz_all = np.vstack(xz_sets)
+
+        # Keep a square world window so scale is stable and centered.
+        # When GT is available, anchor the view on GT so estimate outliers do not shrink it.
+        if gt_points_xyz is not None and len(gt_points_xyz) > 0:
+            gt_xz = gt_points_xyz[:, [0, 2]]
+            center = gt_xz.mean(axis=0)
+            radius = np.max(np.abs(gt_xz - center))
+            radius *= 1.05
+        else:
+            center = xz_all.mean(axis=0)
+            radius = np.max(np.abs(xz_all - center))
+        radius = max(radius, 0.5)
+
+        minv = center - radius
+        maxv = center + radius
+        span = np.maximum(maxv - minv, 1e-6)
+
+        if gt_points_xyz is not None and len(gt_points_xyz) > 0:
+            gt_xz = gt_points_xyz[:, [0, 2]]
+            gt_norm = (gt_xz - minv) / span
+            gt_pix = np.zeros((len(gt_norm), 2), dtype=np.int32)
+            gt_pix[:, 0] = (gt_norm[:, 0] * 560 + 20).astype(np.int32)
+            gt_pix[:, 1] = (gt_norm[:, 1] * 560 + 20).astype(np.int32)
+            gt_pix[:, 1] = 599 - gt_pix[:, 1]
+            if len(gt_pix) > 1:
+                cv2.polylines(traj_vis, [gt_pix.reshape(-1, 1, 2)], False, (220, 120, 0), 2)
+
+        if len(est_points_xyz) > 0:
+            xz = est_points_xyz[:, [0, 2]]
+            norm = (xz - minv) / span
+            pix = np.zeros((len(norm), 2), dtype=np.int32)
+            pix[:, 0] = (norm[:, 0] * 560 + 20).astype(np.int32)
+            pix[:, 1] = (norm[:, 1] * 560 + 20).astype(np.int32)
+            pix[:, 1] = 599 - pix[:, 1]
+
+            for p in pix:
+                cv2.circle(traj_vis, tuple(p), 2, (0, 0, 255), -1)
+            if len(pix) > 1:
+                cv2.polylines(traj_vis, [pix.reshape(-1, 1, 2)], False, (0, 0, 255), 2)
+
+            last = est_points_xyz[-1]
+            cv2.putText(
+                traj_vis,
+                f"last xyz (aligned): [{last[0]:.3f}, {last[1]:.3f}, {last[2]:.3f}]",
+                (15, 112),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (20, 20, 20),
+                2,
+            )
+
+        cv2.putText(
+            traj_vis,
+            "red: estimate  blue: ground truth",
+            (15, 138),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (20, 20, 20),
+            2,
+        )
 
     def view(self):
-        pangolin.CreateWindowAndBind('Viewer', 1024, 768)
-        gl.glEnable(gl.GL_DEPTH_TEST)
-        gl.glEnable(gl.GL_BLEND)
-        gl.glBlendFunc (gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
-
-        viewpoint_x = 0
-        viewpoint_y = -7  
-        viewpoint_z = -18 
-        viewpoint_f = 1000
-
-        proj = pangolin.ProjectionMatrix(
-            1024, 768, viewpoint_f, viewpoint_f, 512, 389, 0.1, 300)
-        look_view = pangolin.ModelViewLookAt(
-            viewpoint_x, viewpoint_y, viewpoint_z, 0, 0, 0, 0, -1, 0)
-
-        # Camera Render Object (for view / scene browsing)
-        scam = pangolin.OpenGlRenderState(proj, look_view)
-
-        # Add named OpenGL viewport to window and provide 3D Handler
-        dcam = pangolin.CreateDisplay()
-        dcam.SetBounds(0.0, 1.0, 175 / 1024., 1.0, -1024 / 768.)
-        dcam.SetHandler(pangolin.Handler3D(scam))
-
-        # image
-        width, height = 376, 240
-        dimg = pangolin.Display('image')
-        dimg.SetBounds(0, height / 768., 0.0, width / 1024., 1024 / 768.)
-        dimg.SetLock(pangolin.Lock.LockLeft, pangolin.Lock.LockTop)
-
-        texture = pangolin.GlTexture(width, height, gl.GL_RGB, False, 0, gl.GL_RGB, gl.GL_UNSIGNED_BYTE)
-        image = np.ones((height, width, 3), 'uint8')
-
-        # axis
-        axis = pangolin.Renderable()
-        axis.Add(pangolin.Axis())
-
-
-        trajectory = DynamicArray()
-        camera = None
         image = None
+        camera = None
+        trajectory = DynamicArray()
 
-        while not pangolin.ShouldQuit():
-            if not self.pose_queue.empty():
-                while not self.pose_queue.empty():
-                    pose = self.pose_queue.get()
-                trajectory.append(pose[:3, 3])
-                camera = pose
+        cv2.namedWindow("VIO Camera", cv2.WINDOW_NORMAL)
+        cv2.namedWindow("VIO Trajectory", cv2.WINDOW_NORMAL)
 
-            if not self.image_queue.empty():
-                while not self.image_queue.empty():
-                    img = self.image_queue.get()
-                img = img[::-1, :, ::-1]
-                img = cv2.resize(img, (width, height))
-                image = img.copy()
+        while True:
+            camera, image = self._drain_queues(camera, trajectory, image)
 
-            gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
-            gl.glClearColor(1.0, 1.0, 1.0, 1.0)
-            dcam.Activate(scam)
+            if image is None:
+                cam_vis = np.zeros((480, 752, 3), dtype=np.uint8)
+                cv2.putText(
+                    cam_vis,
+                    "Waiting for image...",
+                    (20, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.9,
+                    (255, 255, 255),
+                    2,
+                )
+            else:
+                cam_vis = image
 
+            traj_vis = np.ones((600, 600, 3), dtype=np.uint8) * 255
+            cv2.putText(
+                traj_vis,
+                f"poses: {self.pose_updates}",
+                (15, 58),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (20, 20, 20),
+                2,
+            )
+            cv2.putText(
+                traj_vis,
+                f"images: {self.image_updates}",
+                (15, 84),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (20, 20, 20),
+                2,
+            )
 
-            # draw axis
-            axis.Render()
+            points_xyz = trajectory.array()
+            self._draw_trajectory(traj_vis, points_xyz, self.gt_points_xyz)
 
-            # draw current camera
-            if camera is not None:
-                gl.glLineWidth(1)
-                gl.glColor3f(0.0, 0.0, 1.0)
-                pangolin.DrawCameras(np.array([camera]), 0.5)
+            cv2.imshow("VIO Camera", cam_vis)
+            cv2.imshow("VIO Trajectory", traj_vis)
 
-            # show trajectory
-            if len(trajectory) > 0:
-                gl.glPointSize(2)
-                gl.glColor3f(0.0, 0.0, 0.0)
-                pangolin.DrawPoints(trajectory.array())
+            key = cv2.waitKey(1) & 0xFF
+            if key in (27, ord("q")):
+                break
+            time.sleep(0.005)
 
-            # show image
-            if image is not None:
-                texture.Upload(image, gl.GL_RGB, gl.GL_UNSIGNED_BYTE)
-                dimg.Activate()
-                gl.glColor3f(1.0, 1.0, 1.0)
-                texture.RenderToViewport()
-                
-            pangolin.FinishFrame()
-
-
+        cv2.destroyWindow("VIO Camera")
+        cv2.destroyWindow("VIO Trajectory")
 
 
 class DynamicArray(object):
@@ -131,25 +233,24 @@ class DynamicArray(object):
 
     def append(self, x):
         self.extend([x])
-    
+
     def extend(self, xs):
         if len(xs) == 0:
             return
         assert np.array(xs[0]).shape == self.shape
 
         if self.ind + len(xs) >= len(self.data):
-            self.data.resize(
-                (2 * len(self.data), *self.shape) , refcheck=False)
+            self.data.resize((2 * len(self.data), *self.shape), refcheck=False)
 
         if isinstance(xs, np.ndarray):
-            self.data[self.ind:self.ind+len(xs)] = xs
+            self.data[self.ind : self.ind + len(xs)] = xs
         else:
             for i, x in enumerate(xs):
-                self.data[self.ind+i] = x
-            self.ind += len(xs)
+                self.data[self.ind + i] = x
+        self.ind += len(xs)
 
     def array(self):
-        return self.data[:self.ind]
+        return self.data[: self.ind]
 
     def __len__(self):
         return self.ind
@@ -159,15 +260,5 @@ class DynamicArray(object):
         return self.data[i]
 
     def __iter__(self):
-        for x in self.data[:self.ind]:
+        for x in self.data[: self.ind]:
             yield x
-
-
-
-
-if __name__ == '__main__':
-    import g2o
-    import time
-
-    viewer = Viewer()
-    viewer.update_pose(g2o.Isometry3d())
