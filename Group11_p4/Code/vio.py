@@ -178,7 +178,7 @@ if __name__ == '__main__':
     from dataset import EuRoCDataset, DataPublisher
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--path', type=str, default='path/to/your/EuRoC_MAV_dataset/MH_01_easy', 
+    parser.add_argument('--path', type=str, default='../Data/MH_01_easy', 
         help='Path of EuRoC MAV dataset.')
     parser.add_argument('--view', action='store_true', help='Show trajectory.')
     parser.add_argument('--live-gt', action='store_true', help='Overlay full ground truth trajectory in live viewer.')
