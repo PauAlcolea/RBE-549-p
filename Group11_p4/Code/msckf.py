@@ -679,7 +679,8 @@ class MSCKF(object):
         # Compute the Kalman gain, which determines how much we should trust the measurement vs. the current state estimate.
         # matrix K maps measurement errors in pixel space to errors in the state space
         P = self.state_server.state_cov
-        K = P @ H_thin.T @ np.linalg.inv(H_thin @ P @ H_thin.T + R_noise)
+        S = H_thin @ P @ H_thin.T + R_noise
+        K = np.linalg.solve(S, H_thin @ P).T
 
         # Compute the error of the state.
         state_err = K @ r_thin
@@ -735,6 +736,7 @@ class MSCKF(object):
         ) / 2
 
     def gating_test(self, H, r, dof):
+        dof = int(max(1, dof))
         P1 = H @ self.state_server.state_cov @ H.T
         P2 = self.config.observation_noise * np.identity(len(H))
         gamma = r @ np.linalg.solve(P1 + P2, r)
