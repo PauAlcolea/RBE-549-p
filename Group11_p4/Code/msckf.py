@@ -29,7 +29,7 @@ class IMUState(object):
         self.timestamp = None
 
         # Orientation
-        # Take a vector from the world frame to the IMU (body) frame.
+        # Take a vector from the IMU (body) frame to the world frame.
         self.orientation = np.array([0., 0., 0., 1.])
 
         # Position of the IMU (body) frame in the world frame.
@@ -67,7 +67,7 @@ class CAMState(object):
         self.timestamp = None
 
         # Orientation
-        # Take a vector from the world frame to the camera frame.
+        # Take a vector from the camera frame to the world frame.
         self.orientation = np.array([0., 0., 0., 1.])
 
         # Position of the camera frame in the world frame.
@@ -321,7 +321,7 @@ class MSCKF(object):
 
         # Remove all used IMU msgs.
         # remove messages from 0 to the lat one used
-        self.imu_msg_buffer = self.imu_msg_buffer[i_message_used:]
+        self.imu_msg_buffer = self.imu_msg_buffer[max(0, i_message_used - 1):]
 
 
     def process_model(self, dt, m_gyro, m_acc):
@@ -391,8 +391,6 @@ class MSCKF(object):
 
     def predict_new_state(self, dt, gyro, acc):
         """Propogate the state using 4th order Runge-Kutta for equation (1) in "MSCKF" paper"""
-        gyro -= self.state_server.imu_state.gyro_bias
-        acc -= self.state_server.imu_state.acc_bias
         
         # Get the Omega matrix, the equation above equation (2) in "MSCKF" paper
         omega = np.zeros((4, 4))
@@ -493,17 +491,28 @@ class MSCKF(object):
         self.state_server.state_cov = P_aug
 
     def add_feature_observations(self, feature_msg):
-        """
-        IMPLEMENT THIS!!!!!
-        """
         # get the current imu state id and number of current features
-        ...
+        imu_state_id = self.state_server.imu_state.id
+        num_features = len(self.map_server)
         
+        # keep track of known features getting tracked in the current frame
+        num_tracked = 0
+
         # add all features in the feature_msg to self.map_server
-        ...
+        for feature in feature_msg.features:
+            if feature.id not in self.map_server:
+                # addding a new feature to map server begins tracking it
+                self.map_server[feature.id] = Feature(feature.id)
+            else:
+                num_tracked += 1
+            # add the observation to the feature in the map server
+            self.map_server[feature.id].observations[imu_state_id] = feature.observation
 
         # update the tracking rate
-        ...
+        if num_features == 0:
+            self.tracking_rate = 1.0
+        else:
+            self.tracking_rate = num_tracked / num_features
 
     def measurement_jacobian(self, cam_state_id, feature_id):
         """
