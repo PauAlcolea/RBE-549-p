@@ -411,55 +411,74 @@ class MSCKF(object):
     def predict_new_state(self, dt, gyro, acc):
         """Propogate the state using 4th order Runge-Kutta for equation (1) in "MSCKF" paper"""
 
+        if dt <= 0:
+            return
+
+        gyro_norm = np.linalg.norm(gyro)
+
         # Get the Omega matrix, the equation above equation (2) in "MSCKF" paper
         omega = np.zeros((4, 4))
         omega[:3, :3] = -skew(gyro)
         omega[:3, 3] = gyro
         omega[3, :3] = -gyro
 
-        def f(y):
-            """derivative of the state vector"""
-            q, v = y[0:4], y[4:7]
+        # closed-form for better numerical stability.
+        q = self.state_server.imu_state.orientation
+        if gyro_norm < 1e-6:
+            q_dt = (np.eye(4) + 0.5 * omega * dt) @ q
+            q_dt2 = (np.eye(4) + 0.25 * omega * dt) @ q
+        else:
+            q_dt = (
+                np.cos(0.5 * gyro_norm * dt) * np.eye(4)
+                + np.sin(0.5 * gyro_norm * dt) / gyro_norm * omega
+            ) @ q
+            q_dt2 = (
+                np.cos(0.25 * gyro_norm * dt) * np.eye(4)
+                + np.sin(0.25 * gyro_norm * dt) / gyro_norm * omega
+            ) @ q
 
-            # dq/dt
-            q_dot = 0.5 * omega @ q
+        R0 = to_rotation(q)
+        R_half = to_rotation(q_dt2)
+        R1 = to_rotation(q_dt)
 
-            # dv/dt
-            R_imu_wrt_world = to_rotation(q)
-            v_dot = R_imu_wrt_world @ acc + self.state_server.imu_state.gravity
+        velocity = self.state_server.imu_state.velocity
+        position = self.state_server.imu_state.position
+        gravity = IMUState.gravity
 
-            return np.concatenate((q_dot, v_dot, v))
-
-        # Get the orientation, velocity, position
-        y0 = np.concatenate(
-            (
-                self.state_server.imu_state.orientation,
-                self.state_server.imu_state.velocity,
-                self.state_server.imu_state.position,
-            )
-        )
-
-        # Apply 4th order Runge-Kutta
+        # Apply RK4 using analytically integrated orientation at half/full steps.
         # k1 = f(tn, yn)
-        k1 = f(y0)
+        k1_v_d = R0 @ acc + gravity
+        k1_p_d = velocity
+        k1_v = velocity + 0.5 * dt * k1_v_d
 
         # k2 = f(tn+dt/2, yn+k1*dt/2)
-        k2 = f(y0 + k1 * dt / 2)
+        k2_v_d = R_half @ acc + gravity
+        k2_p_d = k1_v
+        k2_v = velocity + 0.5 * dt * k2_v_d
 
         # k3 = f(tn+dt/2, yn+k2*dt/2)
-        k3 = f(y0 + k2 * dt / 2)
+        k3_v_d = R_half @ acc + gravity
+        k3_p_d = k2_v
+        k3_v = velocity + 0.5 * dt * k3_v_d
 
         # k4 = f(tn+dt, yn+k3*dt)
-        k4 = f(y0 + k3 * dt)
+        k4_v_d = R1 @ acc + gravity
+        k4_p_d = k3_v
+
+        # normalize the quaternion
+        q_norm = np.linalg.norm(q_dt)
+        if q_norm < 1e-12:
+            q_new = q
+        else:
+            q_new = q_dt / q_norm
 
         # yn+1 = yn + dt/6*(k1+2*k2+2*k3+k4)
-        y_new = y0 + dt / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
+        v_new = velocity + dt / 6.0 * (k1_v_d + 2 * k2_v_d + 2 * k3_v_d + k4_v_d)
+        p_new = position + dt / 6.0 * (k1_p_d + 2 * k2_p_d + 2 * k3_p_d + k4_p_d)
 
-        # update the imu state
-        q_new = y_new[0:4]
-        self.state_server.imu_state.orientation = q_new / np.linalg.norm(q_new)
-        self.state_server.imu_state.velocity = y_new[4:7]
-        self.state_server.imu_state.position = y_new[7:10]
+        self.state_server.imu_state.orientation = q_new
+        self.state_server.imu_state.velocity = v_new
+        self.state_server.imu_state.position = p_new
 
     def state_augmentation(self, time):
         """
