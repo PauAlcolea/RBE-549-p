@@ -31,6 +31,7 @@ to compare estimate against ground truth:
 
 Optional flags:
 * `--estimate-save outputs/estimate.csv`: save estimated trajectory (`timestamp,p_x,p_y,p_z`).
+* `--traj-est-save ../Output/traj_est.txt`: save TUM trajectory for evo (`t px py pz qx qy qz qw`). The file is overwritten at the start of each run.
 * `--plot-save outputs/estimate_vs_gt.png`: save final comparison figure.
 * `--view --live-gt`: show a live top-down overlay with estimate (red) and ground truth (blue).
 

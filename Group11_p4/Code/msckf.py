@@ -1,5 +1,6 @@
 import numpy as np
 from scipy.stats import chi2
+import os
 
 from utils import *
 from feature import Feature
@@ -157,6 +158,20 @@ class MSCKF(object):
         # Indicate if the received image is the first one. The system will
         # start after receiving the first image.
         self.is_first_img = True
+
+        self.traj_file = None
+        self.last_logged_timestamp = -float("inf")
+
+    def start_trajectory_logging(self, output_path):
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        # Truncate at start so each run writes an independent trajectory.
+        self.traj_file = open(output_path, "w", buffering=1)
+        self.last_logged_timestamp = -float("inf")
+
+    def stop_trajectory_logging(self):
+        if self.traj_file is not None:
+            self.traj_file.close()
+            self.traj_file = None
 
     def imu_callback(self, imu_msg):
         """
@@ -995,7 +1010,7 @@ class MSCKF(object):
         )
         T_cam_wrt_world = Isometry3d(R_world_wrt_cam.T, t_cam_wrt_world)
 
-        # tum conversion for error
+        # TUM trajectory logging for external evaluation.
         self.log_trajectory()
 
         return namedtuple("vio_result", ["timestamp", "pose", "velocity", "cam0_pose"])(
@@ -1004,6 +1019,8 @@ class MSCKF(object):
     
     # transform into TUM so that evo can us it
     def log_trajectory(self):
+        if self.traj_file is None:
+            return
 
         imu = self.state_server.imu_state
 
@@ -1011,5 +1028,9 @@ class MSCKF(object):
         p = imu.position
         q = imu.orientation
 
-        with open("../Output/traj_est.txt", "a") as f:
-            f.write(f"{t} {p[0]} {p[1]} {p[2]} {q[0]} {q[1]} {q[2]} {q[3]}\n")
+        # Keep the output strictly time-ordered for evo compatibility.
+        if t <= self.last_logged_timestamp:
+            return
+
+        self.traj_file.write(f"{t} {p[0]} {p[1]} {p[2]} {q[0]} {q[1]} {q[2]} {q[3]}\n")
+        self.last_logged_timestamp = t

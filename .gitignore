@@ -37,3 +37,4 @@ Group11_p3/Weights/*
 # Inference outputs
 Group11_p3/Outputs/Detections/
 
+Group11_p4/Output/traj_est.txt

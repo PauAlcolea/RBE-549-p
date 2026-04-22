@@ -68,10 +68,10 @@ class VIO(object):
             result = self.msckf.feature_callback(feature_msg)
 
             if result is not None:
-                cam_t = np.asarray(result.cam0_pose.matrix()[:3, 3], dtype=np.float64)
+                body_t = np.asarray(result.pose.matrix()[:3, 3], dtype=np.float64)
                 with self.result_lock:
                     self.estimate_timestamps.append(float(result.timestamp))
-                    self.estimate_positions.append(cam_t)
+                    self.estimate_positions.append(body_t)
 
                 if self.viewer is not None:
                     self.viewer.update_pose(result.cam0_pose)
@@ -116,6 +116,29 @@ def align_gt_to_estimate(est_t, est_p, gt_t, gt_p):
     return t, est, gt_interp
 
 
+def align_se3(est, gt):
+    """Rigidly align estimate points to GT points with no scale change."""
+    if len(est) == 0 or len(gt) == 0:
+        return est, np.eye(3), np.zeros(3)
+
+    est_mean = np.mean(est, axis=0)
+    gt_mean = np.mean(gt, axis=0)
+
+    est_centered = est - est_mean
+    gt_centered = gt - gt_mean
+
+    H = est_centered.T @ gt_centered
+    U, _, Vt = np.linalg.svd(H)
+    R = Vt.T @ U.T
+    if np.linalg.det(R) < 0:
+        Vt[-1, :] *= -1
+        R = Vt.T @ U.T
+
+    t = gt_mean - R @ est_mean
+    est_aligned = (R @ est.T).T + t
+    return est_aligned, R, t
+
+
 def save_estimate_csv(output_path, timestamps, positions):
     data = np.column_stack([timestamps, positions])
     header = 'timestamp,p_x,p_y,p_z'
@@ -125,14 +148,22 @@ def save_estimate_csv(output_path, timestamps, positions):
 def plot_estimate_vs_groundtruth(t, est, gt, output_path=None, show_plot=True):
     import matplotlib.pyplot as plt
 
+    gt_color = 'tab:pink'
+    est_traj_color = 'tab:blue'
+    est_err_color = 'black'
+
     t0 = t[0]
     t_rel = t - t0
+
+    est_aligned, _, _ = align_se3(est, gt)
+    err_aligned = est_aligned - gt
+    err_norm_aligned = np.linalg.norm(err_aligned, axis=1)
 
     fig, axes = plt.subplots(1, 2, figsize=(13, 5))
 
     # Top-down trajectory view in X-Z.
-    axes[0].plot(gt[:, 0], gt[:, 2], label='Ground Truth', color='tab:blue', linewidth=2.0)
-    axes[0].plot(est[:, 0], est[:, 2], label='Estimate', color='tab:red', linewidth=1.7)
+    axes[0].plot(gt[:, 0], gt[:, 2], label='Ground Truth', color=gt_color, linewidth=2.0)
+    axes[0].plot(est_aligned[:, 0], est_aligned[:, 2], label='Estimate', color=est_traj_color, linewidth=1.7)
     axes[0].set_title('Trajectory (X-Z)')
     axes[0].set_xlabel('X [m]')
     axes[0].set_ylabel('Z [m]')
@@ -140,21 +171,16 @@ def plot_estimate_vs_groundtruth(t, est, gt, output_path=None, show_plot=True):
     axes[0].grid(True, alpha=0.3)
     axes[0].legend()
 
-    axes[1].plot(t_rel, gt[:, 0], color='tab:blue', linestyle='-', label='GT x')
-    axes[1].plot(t_rel, gt[:, 1], color='tab:blue', linestyle='--', label='GT y')
-    axes[1].plot(t_rel, gt[:, 2], color='tab:blue', linestyle=':', label='GT z')
-    axes[1].plot(t_rel, est[:, 0], color='tab:red', linestyle='-', label='Est x')
-    axes[1].plot(t_rel, est[:, 1], color='tab:red', linestyle='--', label='Est y')
-    axes[1].plot(t_rel, est[:, 2], color='tab:red', linestyle=':', label='Est z')
-    axes[1].set_title('Position vs Time')
+    axes[1].plot(t_rel, err_norm_aligned, color=est_err_color, linestyle='-', label='|e|')
+    axes[1].set_title('Position Error Norm vs Time')
     axes[1].set_xlabel('Time [s]')
-    axes[1].set_ylabel('Position [m]')
+    axes[1].set_ylabel('|e| [m]')
     axes[1].grid(True, alpha=0.3)
-    axes[1].legend(ncol=2)
+    axes[1].legend()
 
-    rmse = np.sqrt(np.mean((est - gt) ** 2, axis=0))
+    rmse_aligned = np.sqrt(np.mean((est_aligned - gt) ** 2, axis=0))
     fig.suptitle(
-        f'Estimate vs Ground Truth  RMSE [m]: x={rmse[0]:.3f}, y={rmse[1]:.3f}, z={rmse[2]:.3f}',
+        f'Estimate vs Ground Truth RMSE [m]: x={rmse_aligned[0]:.3f}, y={rmse_aligned[1]:.3f}, z={rmse_aligned[2]:.3f}',
         fontsize=11,
     )
 
@@ -185,6 +211,7 @@ if __name__ == '__main__':
     parser.add_argument('--plot-final', action='store_true', help='Plot estimate vs ground truth after run.')
     parser.add_argument('--plot-save', type=str, default=None, help='Optional output image path for final plot.')
     parser.add_argument('--estimate-save', type=str, default=None, help='Optional CSV output path for estimated trajectory.')
+    parser.add_argument('--traj-est-save', type=str, default='../Output/traj_est.txt', help='TUM output path for evo trajectory evaluation.')
     args = parser.parse_args()
 
     dataset = EuRoCDataset(args.path)
@@ -210,6 +237,7 @@ if __name__ == '__main__':
 
     config = ConfigEuRoC()
     msckf_vio = VIO(config, img_queue, imu_queue, viewer=viewer)
+    msckf_vio.msckf.start_trajectory_logging(args.traj_est_save)
 
 
     duration = float('inf')
@@ -232,6 +260,7 @@ if __name__ == '__main__':
     finally:
         imu_publisher.stop()
         img_publisher.stop()
+        msckf_vio.msckf.stop_trajectory_logging()
 
         msckf_vio.img_thread.join(timeout=3.0)
         msckf_vio.imu_thread.join(timeout=3.0)
