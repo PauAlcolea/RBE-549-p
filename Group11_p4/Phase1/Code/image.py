@@ -946,8 +946,8 @@ if __name__ == '__main__':
     from queue import Queue
     from threading import Thread
     
-    from config import ConfigEuRoC
-    from dataset import EuRoCDataset, DataPublisher
+    from Group11_p4.Phase1.Code.config import ConfigEuRoC
+    from Group11_p4.Phase1.Code.dataset import EuRoCDataset, DataPublisher
 
     img_queue = Queue()
     imu_queue = Queue()

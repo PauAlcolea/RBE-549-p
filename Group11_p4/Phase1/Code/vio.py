@@ -4,9 +4,9 @@ from threading import Lock, Thread
 
 import numpy as np
 
-from config import ConfigEuRoC
-from image import ImageProcessor
-from msckf import MSCKF
+from Group11_p4.Phase1.Code.config import ConfigEuRoC
+from Group11_p4.Phase1.Code.image import ImageProcessor
+from Group11_p4.Phase1.Code.msckf import MSCKF
 
 
 
@@ -201,7 +201,7 @@ if __name__ == '__main__':
     import sys
     import argparse
 
-    from dataset import EuRoCDataset, DataPublisher
+    from Group11_p4.Phase1.Code.dataset import EuRoCDataset, DataPublisher
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--path', type=str, default='../Data/MH_01_easy', 
@@ -219,7 +219,7 @@ if __name__ == '__main__':
 
     use_main_thread_view = False
     if args.view:
-        from viewer import Viewer
+        from Group11_p4.Phase1.Code.viewer import Viewer
 
         use_main_thread_view = (sys.platform == 'darwin')
         viewer = Viewer(start_process=not use_main_thread_view)

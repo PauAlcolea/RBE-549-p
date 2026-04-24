@@ -2,8 +2,8 @@ import numpy as np
 from scipy.stats import chi2
 import os
 
-from utils import *
-from feature import Feature
+from Group11_p4.Phase1.Code.utils import *
+from Group11_p4.Phase1.Code.feature import Feature
 
 import time
 from collections import namedtuple
