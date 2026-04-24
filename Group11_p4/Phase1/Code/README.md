@@ -13,7 +13,7 @@ For algorithm details, please refer to:
 * numpy
 * scipy
 * cv2
-* [pangolin](https://github.com/uoip/pangolin) (optional, for trajectory/poses visualization)
+* evo
 
 ## Dataset
 * [EuRoC MAV](http://projects.asl.ethz.ch/datasets/doku.php?id=kmavvisualinertialdatasets): visual-inertial datasets collected on-board a MAV. The datasets contain stereo images, synchronized IMU measurements, and ground-truth.  
@@ -31,8 +31,15 @@ to compare estimate against ground truth:
 
 Optional flags:
 * `--estimate-save outputs/estimate.csv`: save estimated trajectory (`timestamp,p_x,p_y,p_z`).
+* `--traj-est-save ../Output/traj_est.txt`: save TUM trajectory for evo (`t px py pz qx qy qz qw`). The file is overwritten at the start of each run.
 * `--plot-save outputs/estimate_vs_gt.png`: save final comparison figure.
 * `--view --live-gt`: show a live top-down overlay with estimate (red) and ground truth (blue).
+
+### Evaluation
+`evo_config set plot_backend Agg`
+
+`source run_error.sh`
+
 
 ## Results
 MH_01_easy  

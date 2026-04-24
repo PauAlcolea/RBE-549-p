@@ -5,10 +5,10 @@ import os
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
-from config import OptimizationConfigEuRoC
-from utils import to_quaternion, to_rotation, Isometry3d
-from feature import Feature
-from msckf import CAMState
+from Group11_p4.Phase1.Code.config import OptimizationConfigEuRoC
+from Group11_p4.Phase1.Code.utils import to_quaternion, to_rotation, Isometry3d
+from Group11_p4.Phase1.Code.feature import Feature
+from Group11_p4.Phase1.Code.msckf import CAMState
 
 
 

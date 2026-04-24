@@ -1,8 +1,9 @@
 import numpy as np
 from scipy.stats import chi2
+import os
 
-from utils import *
-from feature import Feature
+from Group11_p4.Phase1.Code.utils import *
+from Group11_p4.Phase1.Code.feature import Feature
 
 import time
 from collections import namedtuple
@@ -120,7 +121,7 @@ class MSCKF(object):
         # Set the initial IMU state.
         # The intial orientation and position will be set to the origin implicitly.
         # But the initial velocity and bias can be set by parameters.
-        # TODO: is it reasonable to set the initial bias to 0?
+
         self.state_server.imu_state.velocity = config.velocity
         self.reset_state_cov()
 
@@ -157,6 +158,20 @@ class MSCKF(object):
         # Indicate if the received image is the first one. The system will
         # start after receiving the first image.
         self.is_first_img = True
+
+        self.traj_file = None
+        self.last_logged_timestamp = -float("inf")
+
+    def start_trajectory_logging(self, output_path):
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        # Truncate at start so each run writes an independent trajectory.
+        self.traj_file = open(output_path, "w", buffering=1)
+        self.last_logged_timestamp = -float("inf")
+
+    def stop_trajectory_logging(self):
+        if self.traj_file is not None:
+            self.traj_file.close()
+            self.traj_file = None
 
     def imu_callback(self, imu_msg):
         """
@@ -257,9 +272,6 @@ class MSCKF(object):
     # (batch_imu_processing, process_model, predict_new_state)
     def batch_imu_processing(self, time_bound):
         """
-        IMPLEMENT THIS!!!!!
-        """
-        """
         Process the imu message given the time bound
         """
         # Process the imu messages in the imu_msg_buffer
@@ -286,7 +298,7 @@ class MSCKF(object):
 
         # Remove all used IMU msgs.
         self.imu_msg_buffer = self.imu_msg_buffer[used_imu_msg_count:]
-    
+
     def process_model(self, time, m_gyro, m_acc):
         """
         Section III.A: The dynamics of the error IMU state following equation (2) in the "MSCKF" paper.
@@ -332,7 +344,11 @@ class MSCKF(object):
 
         A2 = Phi[12:15, :3]
         w2 = (
-            skew(dt * imu_state.velocity_null + imu_state.position_null - imu_state.position)
+            skew(
+                dt * imu_state.velocity_null
+                + imu_state.position_null
+                - imu_state.position
+            )
             @ IMUState.gravity
         )
         Phi[12:15, :3] = A2 - (A2 @ u - w2)[:, None] * s
@@ -384,12 +400,10 @@ class MSCKF(object):
             ) @ q
         else:
             q_dt = (
-                np.cos(gyro_norm * dt * 0.5)
-                * (np.identity(4) + omega * dt * 0.5)
+                np.cos(gyro_norm * dt * 0.5) * (np.identity(4) + omega * dt * 0.5)
             ) @ q
             q_dt2 = (
-                np.cos(gyro_norm * dt * 0.25)
-                * (np.identity(4) + omega * dt * 0.25)
+                np.cos(gyro_norm * dt * 0.25) * (np.identity(4) + omega * dt * 0.25)
             ) @ q
 
         dR_dt_transpose = to_rotation(q_dt).T
@@ -410,8 +424,12 @@ class MSCKF(object):
         k4_v_dot = dR_dt_transpose @ acc + IMUState.gravity
 
         q_new = q_dt / np.linalg.norm(q_dt)
-        v_new = velocity + (k1_v_dot + 2 * k2_v_dot + 2 * k3_v_dot + k4_v_dot) * dt / 6.0
-        p_new = position + (k1_p_dot + 2 * k2_p_dot + 2 * k3_p_dot + k4_p_dot) * dt / 6.0
+        v_new = (
+            velocity + (k1_v_dot + 2 * k2_v_dot + 2 * k3_v_dot + k4_v_dot) * dt / 6.0
+        )
+        p_new = (
+            position + (k1_p_dot + 2 * k2_p_dot + 2 * k3_p_dot + k4_p_dot) * dt / 6.0
+        )
 
         self.state_server.imu_state.orientation = q_new
         self.state_server.imu_state.velocity = v_new
@@ -488,7 +506,9 @@ class MSCKF(object):
             else:
                 num_tracked += 1
             # add the observation to the feature in the map server
-            obs = np.array([feature.u0, feature.v0, feature.u1, feature.v1], dtype=np.float64)
+            obs = np.array(
+                [feature.u0, feature.v0, feature.u1, feature.v1], dtype=np.float64
+            )
             self.map_server[feature.id].observations[imu_state_id] = obs
 
         # update the tracking rate
@@ -995,15 +1015,17 @@ class MSCKF(object):
         )
         T_cam_wrt_world = Isometry3d(R_world_wrt_cam.T, t_cam_wrt_world)
 
-        # tum conversion for error
+        # TUM trajectory logging for external evaluation.
         self.log_trajectory()
 
         return namedtuple("vio_result", ["timestamp", "pose", "velocity", "cam0_pose"])(
             time, T_body_wrt_world, body_velocity, T_cam_wrt_world
         )
-    
+
     # transform into TUM so that evo can us it
     def log_trajectory(self):
+        if self.traj_file is None:
+            return
 
         imu = self.state_server.imu_state
 
@@ -1011,5 +1033,9 @@ class MSCKF(object):
         p = imu.position
         q = imu.orientation
 
-        with open("../Output/traj_est.txt", "a") as f:
-            f.write(f"{t} {p[0]} {p[1]} {p[2]} {q[0]} {q[1]} {q[2]} {q[3]}\n")
+        # Keep the output strictly time-ordered for evo compatibility.
+        if t <= self.last_logged_timestamp:
+            return
+
+        self.traj_file.write(f"{t} {p[0]} {p[1]} {p[2]} {q[0]} {q[1]} {q[2]} {q[3]}\n")
+        self.last_logged_timestamp = t
