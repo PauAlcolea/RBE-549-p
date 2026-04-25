@@ -4,6 +4,8 @@ set -euo pipefail
 BLENDER_BIN="${BLENDER_BIN:-/Applications/Blender.app/Contents/MacOS/Blender}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 GEN_SCRIPT="$SCRIPT_DIR/generate.py"
+BASE_BLEND="$SCRIPT_DIR/data_gen.blend"
+TEXTURES_DIR="$SCRIPT_DIR/textures"
 TEXTURE_CHOICE="playrug"
 
 print_usage() {
@@ -13,7 +15,7 @@ Usage: ./run_blender.sh [--shape SHAPE] [--height METERS] [--texture NAME]
 Options:
 	-s, --shape SHAPE   Trajectory shape: square | figure8 | circle
 	--height METERS     Camera flight height in meters (e.g. 1.5)
-	-t, --texture NAME  Blend texture file to use (e.g. playrug, newyork, ispy, or leaves)
+	-t, --texture NAME  Texture image in textures/ (e.g. playrug, newyork, ispy, leaves, or toys)
 	-h, --help          Show this help message
 
 Environment:
@@ -64,16 +66,35 @@ while [[ $# -gt 0 ]]; do
 	esac
 done
 
-if [[ "$TEXTURE_CHOICE" == *.blend ]]; then
-	BLEND_FILE="$SCRIPT_DIR/$TEXTURE_CHOICE"
-else
-	BLEND_FILE="$SCRIPT_DIR/${TEXTURE_CHOICE}.blend"
+if [[ ! -f "$BASE_BLEND" ]]; then
+	echo "[run_blender] ERROR: Base blend file not found: $BASE_BLEND" >&2
+	exit 2
 fi
 
-if [[ ! -f "$BLEND_FILE" ]]; then
-	echo "[run_blender] ERROR: Blend file not found: $BLEND_FILE" >&2
-	echo "[run_blender] Available .blend files in $SCRIPT_DIR:" >&2
-	ls "$SCRIPT_DIR"/*.blend 2>/dev/null | xargs -n 1 basename >&2 || true
+if [[ ! -d "$TEXTURES_DIR" ]]; then
+	echo "[run_blender] ERROR: Textures directory not found: $TEXTURES_DIR" >&2
+	exit 2
+fi
+
+TEXTURE_FILE=""
+if [[ "$TEXTURE_CHOICE" == *.* ]]; then
+	if [[ -f "$TEXTURES_DIR/$TEXTURE_CHOICE" ]]; then
+		TEXTURE_FILE="$TEXTURES_DIR/$TEXTURE_CHOICE"
+	fi
+else
+	for ext in png jpg jpeg webp tif tiff; do
+		candidate="$TEXTURES_DIR/${TEXTURE_CHOICE}.${ext}"
+		if [[ -f "$candidate" ]]; then
+			TEXTURE_FILE="$candidate"
+			break
+		fi
+	done
+fi
+
+if [[ -z "$TEXTURE_FILE" ]]; then
+	echo "[run_blender] ERROR: Texture image not found for: $TEXTURE_CHOICE" >&2
+	echo "[run_blender] Available textures in $TEXTURES_DIR:" >&2
+	ls "$TEXTURES_DIR"/*.{png,jpg,jpeg,webp,tif,tiff} 2>/dev/null | xargs -n 1 basename >&2 || true
 	exit 2
 fi
 
@@ -83,7 +104,8 @@ fi
 if [[ -n "$HEIGHT_OVERRIDE" ]]; then
 	echo "[run_blender] Using camera height override: $HEIGHT_OVERRIDE m"
 fi
-echo "[run_blender] Using texture blend file: $(basename "$BLEND_FILE")"
+echo "[run_blender] Using base blend file: $(basename "$BASE_BLEND")"
+echo "[run_blender] Using texture image: $(basename "$TEXTURE_FILE")"
 
 env_cmd=()
 if [[ -n "$SHAPE_OVERRIDE" ]]; then
@@ -92,9 +114,11 @@ fi
 if [[ -n "$HEIGHT_OVERRIDE" ]]; then
 	env_cmd+=("DRONE_CAMERA_HEIGHT=$HEIGHT_OVERRIDE")
 fi
+env_cmd+=("DRONE_TEXTURE_NAME=${TEXTURE_CHOICE%.blend}")
+env_cmd+=("DRONE_TEXTURE_FILE=$TEXTURE_FILE")
 
 if [[ ${#env_cmd[@]} -gt 0 ]]; then
-	env "${env_cmd[@]}" "$BLENDER_BIN" "$BLEND_FILE" --background --python "$GEN_SCRIPT"
+	env "${env_cmd[@]}" "$BLENDER_BIN" "$BASE_BLEND" --background --python "$GEN_SCRIPT"
 else
-	"$BLENDER_BIN" "$BLEND_FILE" --background --python "$GEN_SCRIPT"
+	"$BLENDER_BIN" "$BASE_BLEND" --background --python "$GEN_SCRIPT"
 fi

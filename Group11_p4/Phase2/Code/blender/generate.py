@@ -57,6 +57,7 @@ FOCAL_MM       = 50       # millimetres — equivalent lens focal length
 OUTPUT_DIR     = "//../../Data/Generated"   # "//" = relative to the .blend file
 RENDER_IMAGES  = True             # False = export poses only (much faster)
 IMAGE_PREFIX   = "frame_"        # frames will be frame_0001.png etc.
+ALLOWED_TEXTURE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff")
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  ② HELPERS
@@ -222,6 +223,81 @@ def trajectory_descriptor(shape_name, common_cfg, shape_cfg):
         summary = shape_name
 
     return summary, meta
+
+def infer_texture_name():
+    """Resolve texture/domain tag from env first, then active .blend filename."""
+    texture_from_env = os.environ.get("DRONE_TEXTURE_NAME", "").strip()
+    if texture_from_env:
+        return texture_from_env
+
+    blend_path = bpy.data.filepath
+    if blend_path:
+        return os.path.splitext(os.path.basename(blend_path))[0]
+    return "unknown"
+
+
+def resolve_texture_image_path(texture_name):
+    """Resolve runtime texture image from env override or //textures folder."""
+    texture_file_env = os.environ.get("DRONE_TEXTURE_FILE", "").strip()
+    if texture_file_env:
+        candidate = bpy.path.abspath(texture_file_env)
+        if os.path.exists(candidate):
+            return candidate
+        raise ValueError(
+            f"DRONE_TEXTURE_FILE points to a missing file: {candidate}"
+        )
+
+    textures_dir = bpy.path.abspath("//textures")
+    requested = str(texture_name).strip()
+    if not requested:
+        raise ValueError("Texture name is empty. Set DRONE_TEXTURE_NAME.")
+
+    has_ext = os.path.splitext(requested)[1].lower() in ALLOWED_TEXTURE_EXTS
+    candidates = []
+    if has_ext:
+        candidates.append(os.path.join(textures_dir, requested))
+    else:
+        for ext in ALLOWED_TEXTURE_EXTS:
+            candidates.append(os.path.join(textures_dir, requested + ext))
+
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+
+    available = []
+    if os.path.isdir(textures_dir):
+        for name in sorted(os.listdir(textures_dir)):
+            ext = os.path.splitext(name)[1].lower()
+            if ext in ALLOWED_TEXTURE_EXTS:
+                available.append(name)
+    raise ValueError(
+        f"Texture image not found for '{requested}' in {textures_dir}. "
+        f"Available textures: {available}"
+    )
+
+
+def apply_texture_image(texture_image_path):
+    """Load one image and assign it to all TEX_IMAGE nodes in materials."""
+    image = bpy.data.images.load(texture_image_path, check_existing=True)
+    assigned = 0
+    for mat in bpy.data.materials:
+        node_tree = getattr(mat, "node_tree", None)
+        if node_tree is None:
+            continue
+        for node in node_tree.nodes:
+            if node.type == "TEX_IMAGE":
+                node.image = image
+                assigned += 1
+
+    if assigned == 0:
+        raise ValueError(
+            "No image texture nodes found in the blend file; cannot apply runtime texture."
+        )
+
+    print(
+        f"[DroneGen] Applied texture image '{os.path.basename(texture_image_path)}' "
+        f"to {assigned} image texture node(s)."
+    )
 
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -536,6 +612,8 @@ def main():
 
     # Validate trajectory early so outputs can be routed to Generated/<shape>/
     shape_name, common_cfg, shape_cfg = validate_trajectory_config()
+    texture_name = infer_texture_name()
+    texture_image_path = resolve_texture_image_path(texture_name)
 
     # Resolve output path (// = directory of the .blend file)
     base_output_dir = bpy.path.abspath(OUTPUT_DIR)
@@ -546,11 +624,15 @@ def main():
     # ── Camera ──────────────────────────────────────────────
     cam = get_or_create_camera()
     configure_camera_optics(cam)
+    apply_texture_image(texture_image_path)
 
     # ── Trajectory ──────────────────────────────────────────
     waypoints = build_path_waypoints(shape_name, common_cfg, shape_cfg)
     positions = interpolate_positions(waypoints, common_cfg["speed"], SIM_HZ)
     shape_summary, meta = trajectory_descriptor(shape_name, common_cfg, shape_cfg)
+    meta["texture"] = texture_name
+    meta["texture_image_file"] = os.path.basename(texture_image_path)
+    meta["blend_file"] = os.path.basename(bpy.data.filepath) if bpy.data.filepath else "unknown"
 
     print(
         f"[DroneGen] Shape={meta['shape']} ({shape_summary})  |  "
