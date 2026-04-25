@@ -20,8 +20,8 @@ TRAJECTORY_SHAPE = os.environ.get("DRONE_TRAJECTORY_SHAPE", "square")
 COMMON_TRAJECTORY_CFG = {
     "height": float(os.environ.get("DRONE_CAMERA_HEIGHT", "1.5")),
     # meters  — fixed altitude above the ground plane
-    "laps": 1,       # number of complete closed loops to fly
-    "speed": 0.5,    # m/s     — realistic slow drone cruising speed
+    "laps": 1,  # number of complete closed loops to fly
+    "speed": 0.5,  # m/s     — realistic slow drone cruising speed
 }
 
 # Shape-specific parameters. Keep each shape payload focused and explicit.
@@ -30,13 +30,13 @@ SHAPE_PARAMS = {
         "side": 2.0,  # meters
     },
     "figure8": {
-        "width": 3.0,           # meters (span along X)
-        "length": 2.0,          # meters (span along Y)
-        "samples_per_lap": 400, # control-point density before interpolation
+        "width": 3.0,  # meters (span along X)
+        "length": 2.0,  # meters (span along Y)
+        "samples_per_lap": 400,  # control-point density before interpolation
     },
     "circle": {
-        "radius": 1.0,          # meters
-        "samples_per_lap": 360, # control-point density before interpolation
+        "radius": 1.0,  # meters
+        "samples_per_lap": 360,  # control-point density before interpolation
     },
 }
 
@@ -44,20 +44,20 @@ SHAPE_PARAMS = {
 # The project asks for 1000 Hz data; every 10th frame is the "camera" image.
 # Keep SIM_HZ high so pose derivatives give good IMU ground truth.
 # For quick tests lower it to 100; for final data use 1000.
-SIM_HZ         = 100      # simulated sample rate (Hz) for both cam & IMU GT
+SIM_HZ = 100  # simulated sample rate (Hz) for both cam & IMU GT
 # NOTE: for the real submission set SIM_HZ = 1000 and use every 10th frame
 #       as camera input, all frames as IMU ground truth.
 
 # --- Camera ---
-CAMERA_YAW_DEG = 0.0      # yaw of the drone body (0 = +X forward in image)
-IMG_WIDTH      = 640      # pixels
-IMG_HEIGHT     = 480      # pixels
-FOCAL_MM       = 50       # millimetres — equivalent lens focal length
+CAMERA_YAW_DEG = 0.0  # yaw of the drone body (0 = +X forward in image)
+IMG_WIDTH = 640  # pixels
+IMG_HEIGHT = 480  # pixels
+FOCAL_MM = 50  # millimetres — equivalent lens focal length
 
 # --- Output ---
-OUTPUT_DIR     = "//../../Data/Generated"   # "//" = relative to the .blend file
-RENDER_IMAGES  = True             # False = export poses only (much faster)
-IMAGE_PREFIX   = "frame_"        # frames will be frame_0001.png etc.
+OUTPUT_DIR = "//../../Data/Generated"  # "//" = relative to the .blend file
+RENDER_IMAGES = True  # False = export poses only (much faster)
+IMAGE_PREFIX = "frame_"  # frames will be frame_0001.png etc.
 
 ALLOWED_SPLITS = {"train", "val", "test"}
 ALLOWED_TEXTURE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff")
@@ -66,6 +66,7 @@ ALLOWED_TEXTURE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff")
 #  ② HELPERS
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 def get_or_create_camera():
     """Return the scene camera.  If none exists, create one."""
     scene = bpy.context.scene
@@ -73,7 +74,7 @@ def get_or_create_camera():
         print(f"[DroneGen] Using existing camera: '{scene.camera.name}'")
         return scene.camera
     cam_data = bpy.data.cameras.new("DroneCamera")
-    cam_obj  = bpy.data.objects.new("DroneCamera", cam_data)
+    cam_obj = bpy.data.objects.new("DroneCamera", cam_data)
     bpy.context.collection.objects.link(cam_obj)
     scene.camera = cam_obj
     print("[DroneGen] Created new camera: 'DroneCamera'")
@@ -86,11 +87,11 @@ def configure_camera_optics(cam_obj):
     The sensor size is set to match the render resolution aspect ratio.
     """
     cam_data = cam_obj.data
-    cam_data.lens              = FOCAL_MM          # focal length in mm
-    cam_data.sensor_fit        = 'HORIZONTAL'
-    cam_data.sensor_width      = 36               # mm  (tiny drone cam sensor)
-    cam_data.clip_start        = 0.01
-    cam_data.clip_end          = 100.0
+    cam_data.lens = FOCAL_MM  # focal length in mm
+    cam_data.sensor_fit = "HORIZONTAL"
+    cam_data.sensor_width = 36  # mm  (tiny drone cam sensor)
+    cam_data.clip_start = 0.01
+    cam_data.clip_end = 100.0
 
 
 def compute_K(cam_obj):
@@ -98,22 +99,22 @@ def compute_K(cam_obj):
     Return the 3×3 intrinsic matrix K as a nested list.
     Uses Blender's camera data + current render resolution.
     """
-    scene  = bpy.context.scene
-    cam    = cam_obj.data
-    W, H   = scene.render.resolution_x, scene.render.resolution_y
-    scale  = scene.render.resolution_percentage / 100.0
-    W, H   = int(W * scale), int(H * scale)
+    scene = bpy.context.scene
+    cam = cam_obj.data
+    W, H = scene.render.resolution_x, scene.render.resolution_y
+    scale = scene.render.resolution_percentage / 100.0
+    W, H = int(W * scale), int(H * scale)
 
-    if cam.sensor_fit == 'VERTICAL' or (cam.sensor_fit == 'AUTO' and W < H):
+    if cam.sensor_fit == "VERTICAL" or (cam.sensor_fit == "AUTO" and W < H):
         f_px = (cam.lens / cam.sensor_height) * H
     else:
         f_px = (cam.lens / cam.sensor_width) * W
 
     cx, cy = W / 2.0, H / 2.0
     K = [
-        [f_px,  0.0,  cx],
-        [ 0.0, f_px,  cy],
-        [ 0.0,  0.0, 1.0],
+        [f_px, 0.0, cx],
+        [0.0, f_px, cy],
+        [0.0, 0.0, 1.0],
     ]
     return K, W, H
 
@@ -258,9 +259,7 @@ def resolve_texture_image_path(texture_name):
         candidate = bpy.path.abspath(texture_file_env)
         if os.path.exists(candidate):
             return candidate
-        raise ValueError(
-            f"DRONE_TEXTURE_FILE points to a missing file: {candidate}"
-        )
+        raise ValueError(f"DRONE_TEXTURE_FILE points to a missing file: {candidate}")
 
     textures_dir = bpy.path.abspath("//textures")
     requested = str(texture_name).strip()
@@ -348,8 +347,18 @@ def append_dataset_manifest(base_output_dir, row):
     """Append one sequence record to top-level dataset index.csv."""
     manifest_path = os.path.join(base_output_dir, "index.csv")
     fieldnames = [
-        "sequence_id", "split", "shape", "texture", "height_m", "speed_mps",
-        "laps", "sim_hz", "num_frames", "duration_s", "seed", "rel_path",
+        "sequence_id",
+        "split",
+        "shape",
+        "texture",
+        "height_m",
+        "speed_mps",
+        "laps",
+        "sim_hz",
+        "num_frames",
+        "duration_s",
+        "seed",
+        "rel_path",
         "timestamp_utc",
     ]
 
@@ -366,6 +375,7 @@ def append_dataset_manifest(base_output_dir, row):
 #  ③ TRAJECTORY BUILDERS
 # ───────────────────────────────────────────────────────────────────────────
 
+
 def build_square_waypoints(side, height, n_laps):
     """
     Returns corner waypoints for n_laps of a square centred at the origin.
@@ -376,15 +386,15 @@ def build_square_waypoints(side, height, n_laps):
     """
     h = side / 2.0
     corners = [
-        Vector((-h, -h, height)),   # bottom-left
-        Vector(( h, -h, height)),   # bottom-right
-        Vector(( h,  h, height)),   # top-right
-        Vector((-h,  h, height)),   # top-left
+        Vector((-h, -h, height)),  # bottom-left
+        Vector((h, -h, height)),  # bottom-right
+        Vector((h, h, height)),  # top-right
+        Vector((-h, h, height)),  # top-left
     ]
     waypoints = []
     for _ in range(n_laps):
         waypoints.extend(corners)
-    waypoints.append(corners[0])    # close the loop
+    waypoints.append(corners[0])  # close the loop
     return waypoints
 
 
@@ -481,13 +491,14 @@ def interpolate_positions(waypoints, speed, fps):
         for f in range(n_frames):
             t = f / n_frames
             positions.append(p0.lerp(p1, t))
-    positions.append(waypoints[-1])   # include the final endpoint
+    positions.append(waypoints[-1])  # include the final endpoint
     return positions
 
 
 # ───────────────────────────────────────────────────────────────────────────
 #  ④ KEYFRAME INSERTION
 # ───────────────────────────────────────────────────────────────────────────
+
 
 def setup_keyframes(cam_obj, positions, yaw_rad):
     """
@@ -504,11 +515,11 @@ def setup_keyframes(cam_obj, positions, yaw_rad):
     """
     scene = bpy.context.scene
     scene.frame_start = 1
-    scene.frame_end   = len(positions)
-    scene.render.fps  = SIM_HZ
+    scene.frame_end = len(positions)
+    scene.render.fps = SIM_HZ
 
     # Downward-facing rotation:  pitch 0°, roll 0°, yaw = yaw_rad
-    base_rot = Euler((0.0, 0.0, yaw_rad), 'XYZ')
+    base_rot = Euler((0.0, 0.0, yaw_rad), "XYZ")
 
     # Clear previous animation data
     cam_obj.animation_data_clear()
@@ -516,9 +527,9 @@ def setup_keyframes(cam_obj, positions, yaw_rad):
     for idx, pos in enumerate(positions):
         frame = idx + 1
         scene.frame_set(frame)
-        cam_obj.location       = pos
+        cam_obj.location = pos
         cam_obj.rotation_euler = base_rot
-        cam_obj.keyframe_insert(data_path="location",       frame=frame)
+        cam_obj.keyframe_insert(data_path="location", frame=frame)
         cam_obj.keyframe_insert(data_path="rotation_euler", frame=frame)
 
     # Force LINEAR interpolation -> constant speed, no easing artefacts.
@@ -529,18 +540,23 @@ def setup_keyframes(cam_obj, positions, yaw_rad):
         if fcurves is not None:
             for fc in fcurves:
                 for kp in fc.keyframe_points:
-                    kp.interpolation = 'LINEAR'
+                    kp.interpolation = "LINEAR"
         else:
-            print("[DroneGen] WARNING: Action has no 'fcurves' attribute; "
-                  "skipping interpolation override.")
+            print(
+                "[DroneGen] WARNING: Action has no 'fcurves' attribute; "
+                "skipping interpolation override."
+            )
 
-    print(f"[DroneGen] {len(positions)} keyframes inserted "
-          f"({len(positions)/SIM_HZ:.2f} s @ {SIM_HZ} Hz)")
+    print(
+        f"[DroneGen] {len(positions)} keyframes inserted "
+        f"({len(positions)/SIM_HZ:.2f} s @ {SIM_HZ} Hz)"
+    )
 
 
 # ───────────────────────────────────────────────────────────────────────────
 #  ⑤ POSE EXPORT
 # ───────────────────────────────────────────────────────────────────────────
+
 
 def export_poses(cam_obj, n_frames, output_dir):
     """
@@ -554,24 +570,30 @@ def export_poses(cam_obj, n_frames, output_dir):
     The relative pose between consecutive frames is what the network learns.
     Dead-reckoning these incremental poses gives the full odometry trajectory.
     """
-    scene    = bpy.context.scene
+    scene = bpy.context.scene
     csv_path = os.path.join(output_dir, "poses.csv")
 
-    with open(csv_path, 'w', newline='') as f:
+    with open(csv_path, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(['frame', 'tx', 'ty', 'tz', 'qw', 'qx', 'qy', 'qz'])
+        w.writerow(["frame", "tx", "ty", "tz", "qw", "qx", "qy", "qz"])
         for frame in range(1, n_frames + 1):
             scene.frame_set(frame)
             bpy.context.view_layer.update()
-            mat  = cam_obj.matrix_world
-            loc  = mat.to_translation()
-            quat = mat.to_quaternion()          # w x y z
-            w.writerow([
-                frame,
-                f"{loc.x:.8f}",  f"{loc.y:.8f}",  f"{loc.z:.8f}",
-                f"{quat.w:.8f}", f"{quat.x:.8f}",
-                f"{quat.y:.8f}", f"{quat.z:.8f}",
-            ])
+            mat = cam_obj.matrix_world
+            loc = mat.to_translation()
+            quat = mat.to_quaternion()  # w x y z
+            w.writerow(
+                [
+                    frame,
+                    f"{loc.x:.8f}",
+                    f"{loc.y:.8f}",
+                    f"{loc.z:.8f}",
+                    f"{quat.w:.8f}",
+                    f"{quat.x:.8f}",
+                    f"{quat.y:.8f}",
+                    f"{quat.z:.8f}",
+                ]
+            )
 
     print(f"[DroneGen] Poses  → {csv_path}")
 
@@ -579,8 +601,8 @@ def export_poses(cam_obj, n_frames, output_dir):
 def export_camera_K(cam_obj, output_dir):
     """Save the camera intrinsic matrix K to a human-readable text file."""
     K, W, H = compute_K(cam_obj)
-    k_path  = os.path.join(output_dir, "camera_K.txt")
-    with open(k_path, 'w') as f:
+    k_path = os.path.join(output_dir, "camera_K.txt")
+    with open(k_path, "w") as f:
         f.write(f"# Intrinsic matrix K  (image size: {W} x {H})\n")
         f.write(f"# fx  0   cx\n")
         f.write(f"# 0   fy  cy\n")
@@ -597,7 +619,7 @@ def export_camera_K(cam_obj, output_dir):
 def export_trajectory_summary(waypoints, positions, output_dir, meta):
     """Save a human-readable description of the planned trajectory."""
     t_path = os.path.join(output_dir, "trajectory.txt")
-    with open(t_path, 'w') as f:
+    with open(t_path, "w") as f:
         f.write("=== Drone Trajectory Summary ===\n\n")
         f.write(f"  Shape            : {meta['shape']}\n")
         if meta["shape"] == "square":
@@ -629,6 +651,7 @@ def export_trajectory_summary(waypoints, positions, output_dir, meta):
 #  ⑥ RENDER SETTINGS & IMAGE EXPORT
 # ───────────────────────────────────────────────────────────────────────────
 
+
 def setup_render(output_dir):
     """
     Configure Blender's render pipeline for fast, consistent output.
@@ -636,36 +659,36 @@ def setup_render(output_dir):
     photorealistic lighting since sim2real transfer is not required.
     """
     scene = bpy.context.scene
-    rd    = scene.render
+    rd = scene.render
 
     # Engine: EEVEE for speed (spec says material-preview is fine)
-    scene.render.engine = 'BLENDER_EEVEE'
+    scene.render.engine = "BLENDER_EEVEE"
 
     # Resolution
-    rd.resolution_x          = IMG_WIDTH
-    rd.resolution_y          = IMG_HEIGHT
+    rd.resolution_x = IMG_WIDTH
+    rd.resolution_y = IMG_HEIGHT
     rd.resolution_percentage = 100
 
     # Output format
-    rd.image_settings.file_format        = 'PNG'
-    rd.image_settings.color_mode        = 'RGB'
-    rd.image_settings.color_depth       = '8'
-    rd.filepath                          = os.path.join(
-                                               output_dir, "frames", IMAGE_PREFIX)
-    rd.use_file_extension                = True
-    rd.use_render_cache                  = False
+    rd.image_settings.file_format = "PNG"
+    rd.image_settings.color_mode = "RGB"
+    rd.image_settings.color_depth = "8"
+    rd.filepath = os.path.join(output_dir, "frames", IMAGE_PREFIX)
+    rd.use_file_extension = True
+    rd.use_render_cache = False
 
     # Colour management — keep it neutral / consistent
-    scene.view_settings.view_transform  = 'Standard'
-    scene.view_settings.look            = 'None'
+    scene.view_settings.view_transform = "Standard"
+    scene.view_settings.look = "None"
 
     # Frame rate must match SIM_HZ so frame numbers are meaningful
-    rd.fps                               = SIM_HZ
+    rd.fps = SIM_HZ
 
 
 # ───────────────────────────────────────────────────────────────────────────
 #  ⑦ MAIN
 # ───────────────────────────────────────────────────────────────────────────
+
 
 def main():
     print("\n" + "═" * 60)
@@ -702,7 +725,9 @@ def main():
     meta["split"] = split_name
     meta["sequence_id"] = sequence_id
     meta["seed"] = seed_tag
-    meta["blend_file"] = os.path.basename(bpy.data.filepath) if bpy.data.filepath else "unknown"
+    meta["blend_file"] = (
+        os.path.basename(bpy.data.filepath) if bpy.data.filepath else "unknown"
+    )
 
     print(
         f"[DroneGen] Shape={meta['shape']} ({shape_summary})  |  "
@@ -743,24 +768,29 @@ def main():
         "output_dir": output_dir,
         "relative_output_dir": rel_path,
         "trajectory_parameters": meta,
-        "generated_utc": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "generated_utc": datetime.now(timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z"),
     }
     write_sequence_metadata(output_dir, metadata)
-    append_dataset_manifest(base_output_dir, {
-        "sequence_id": sequence_id,
-        "split": split_name,
-        "shape": meta["shape"],
-        "texture": texture_name,
-        "height_m": f"{meta['height']:.6f}",
-        "speed_mps": f"{meta['speed']:.6f}",
-        "laps": str(meta["laps"]),
-        "sim_hz": str(meta["sim_hz"]),
-        "num_frames": str(len(positions)),
-        "duration_s": f"{len(positions)/SIM_HZ:.6f}",
-        "seed": seed_tag,
-        "rel_path": rel_path,
-        "timestamp_utc": metadata["generated_utc"],
-    })
+    append_dataset_manifest(
+        base_output_dir,
+        {
+            "sequence_id": sequence_id,
+            "split": split_name,
+            "shape": meta["shape"],
+            "texture": texture_name,
+            "height_m": f"{meta['height']:.6f}",
+            "speed_mps": f"{meta['speed']:.6f}",
+            "laps": str(meta["laps"]),
+            "sim_hz": str(meta["sim_hz"]),
+            "num_frames": str(len(positions)),
+            "duration_s": f"{len(positions)/SIM_HZ:.6f}",
+            "seed": seed_tag,
+            "rel_path": rel_path,
+            "timestamp_utc": metadata["generated_utc"],
+        },
+    )
 
     # ── Render ───────────────────────────────────────────────
     if RENDER_IMAGES:
