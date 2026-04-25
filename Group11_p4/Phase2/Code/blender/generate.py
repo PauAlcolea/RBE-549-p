@@ -3,6 +3,7 @@ import math
 import csv
 import os
 import json
+from datetime import datetime, timezone
 from mathutils import Vector, Euler, Matrix, Quaternion
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -57,6 +58,8 @@ FOCAL_MM       = 50       # millimetres — equivalent lens focal length
 OUTPUT_DIR     = "//../../Data/Generated"   # "//" = relative to the .blend file
 RENDER_IMAGES  = True             # False = export poses only (much faster)
 IMAGE_PREFIX   = "frame_"        # frames will be frame_0001.png etc.
+
+ALLOWED_SPLITS = {"train", "val", "test"}
 ALLOWED_TEXTURE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff")
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -224,6 +227,18 @@ def trajectory_descriptor(shape_name, common_cfg, shape_cfg):
 
     return summary, meta
 
+
+def validate_dataset_split(split_name):
+    """Validate split label and normalize to lowercase."""
+    split = str(split_name).strip().lower()
+    if split not in ALLOWED_SPLITS:
+        raise ValueError(
+            f"DRONE_DATASET_SPLIT='{split_name}' is invalid. "
+            f"Choose one of {sorted(ALLOWED_SPLITS)}"
+        )
+    return split
+
+
 def infer_texture_name():
     """Resolve texture/domain tag from env first, then active .blend filename."""
     texture_from_env = os.environ.get("DRONE_TEXTURE_NAME", "").strip()
@@ -298,6 +313,53 @@ def apply_texture_image(texture_image_path):
         f"[DroneGen] Applied texture image '{os.path.basename(texture_image_path)}' "
         f"to {assigned} image texture node(s)."
     )
+
+
+def resolve_sequence_output_dir(base_output_dir, split_name, requested_sequence_id):
+    """Create split/sequence output directory and return identifiers + paths."""
+    split_dir = os.path.join(base_output_dir, split_name)
+    os.makedirs(split_dir, exist_ok=True)
+
+    sequence_id = str(requested_sequence_id).strip()
+    if not sequence_id:
+        sequence_id = f"seq_{datetime.utcnow().strftime('%Y%m%d_%H%M%S_%f')}"
+
+    output_dir = os.path.join(split_dir, sequence_id)
+    if os.path.exists(output_dir):
+        raise ValueError(
+            f"Sequence output already exists: {output_dir}. "
+            "Use a unique --seq-id or remove the existing folder."
+        )
+
+    frames_dir = os.path.join(output_dir, "frames")
+    os.makedirs(frames_dir, exist_ok=False)
+    return sequence_id, output_dir, frames_dir
+
+
+def write_sequence_metadata(output_dir, metadata):
+    """Persist sequence metadata for reproducibility and dataset indexing."""
+    metadata_path = os.path.join(output_dir, "metadata.json")
+    with open(metadata_path, "w") as f:
+        json.dump(metadata, f, indent=2, sort_keys=True)
+    print(f"[DroneGen] Metadata → {metadata_path}")
+
+
+def append_dataset_manifest(base_output_dir, row):
+    """Append one sequence record to top-level dataset index.csv."""
+    manifest_path = os.path.join(base_output_dir, "index.csv")
+    fieldnames = [
+        "sequence_id", "split", "shape", "texture", "height_m", "speed_mps",
+        "laps", "sim_hz", "num_frames", "duration_s", "seed", "rel_path",
+        "timestamp_utc",
+    ]
+
+    write_header = not os.path.exists(manifest_path)
+    with open(manifest_path, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        if write_header:
+            writer.writeheader()
+        writer.writerow(row)
+    print(f"[DroneGen] Manifest → {manifest_path}")
 
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -610,16 +672,21 @@ def main():
     print("  DroneGen  –  Phase 2 VIO Data Generation")
     print("═" * 60)
 
-    # Validate trajectory early so outputs can be routed to Generated/<shape>/
+    # Validate trajectory and dataset context before creating output directories.
     shape_name, common_cfg, shape_cfg = validate_trajectory_config()
+    split_name = validate_dataset_split(os.environ.get("DRONE_DATASET_SPLIT", "train"))
+    requested_sequence_id = os.environ.get("DRONE_SEQUENCE_ID", "")
+    seed_tag = os.environ.get("DRONE_DATASET_SEED", "").strip()
     texture_name = infer_texture_name()
     texture_image_path = resolve_texture_image_path(texture_name)
 
     # Resolve output path (// = directory of the .blend file)
     base_output_dir = bpy.path.abspath(OUTPUT_DIR)
-    output_dir = os.path.join(base_output_dir, shape_name)
-    frames_dir = os.path.join(output_dir, "frames")
-    os.makedirs(frames_dir, exist_ok=True)
+    sequence_id, output_dir, frames_dir = resolve_sequence_output_dir(
+        base_output_dir,
+        split_name,
+        requested_sequence_id,
+    )
 
     # ── Camera ──────────────────────────────────────────────
     cam = get_or_create_camera()
@@ -632,12 +699,19 @@ def main():
     shape_summary, meta = trajectory_descriptor(shape_name, common_cfg, shape_cfg)
     meta["texture"] = texture_name
     meta["texture_image_file"] = os.path.basename(texture_image_path)
+    meta["split"] = split_name
+    meta["sequence_id"] = sequence_id
+    meta["seed"] = seed_tag
     meta["blend_file"] = os.path.basename(bpy.data.filepath) if bpy.data.filepath else "unknown"
 
     print(
         f"[DroneGen] Shape={meta['shape']} ({shape_summary})  |  "
         f"height={meta['height']:.2f} m  |  laps={meta['laps']}  |  "
         f"speed={meta['speed']:.2f} m/s"
+    )
+    print(
+        f"[DroneGen] Split={split_name}  |  Seq={sequence_id}  |  "
+        f"Texture={texture_name}"
     )
     print(
         f"[DroneGen] {len(positions)} frames  |  "
@@ -651,6 +725,42 @@ def main():
     export_poses(cam, len(positions), output_dir)
     export_camera_K(cam, output_dir)
     export_trajectory_summary(waypoints, positions, output_dir, meta)
+
+    rel_path = os.path.relpath(output_dir, base_output_dir)
+    metadata = {
+        "sequence_id": sequence_id,
+        "split": split_name,
+        "shape": meta["shape"],
+        "texture": texture_name,
+        "height_m": meta["height"],
+        "speed_mps": meta["speed"],
+        "laps": meta["laps"],
+        "sim_hz": meta["sim_hz"],
+        "num_frames": len(positions),
+        "duration_s": len(positions) / SIM_HZ,
+        "seed": seed_tag,
+        "blend_file": meta["blend_file"],
+        "output_dir": output_dir,
+        "relative_output_dir": rel_path,
+        "trajectory_parameters": meta,
+        "generated_utc": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+    }
+    write_sequence_metadata(output_dir, metadata)
+    append_dataset_manifest(base_output_dir, {
+        "sequence_id": sequence_id,
+        "split": split_name,
+        "shape": meta["shape"],
+        "texture": texture_name,
+        "height_m": f"{meta['height']:.6f}",
+        "speed_mps": f"{meta['speed']:.6f}",
+        "laps": str(meta["laps"]),
+        "sim_hz": str(meta["sim_hz"]),
+        "num_frames": str(len(positions)),
+        "duration_s": f"{len(positions)/SIM_HZ:.6f}",
+        "seed": seed_tag,
+        "rel_path": rel_path,
+        "timestamp_utc": metadata["generated_utc"],
+    })
 
     # ── Render ───────────────────────────────────────────────
     if RENDER_IMAGES:
