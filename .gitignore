@@ -3,8 +3,11 @@ Group11_p1/Phase2/Data/*
 Group11_p2/Phase2/Data/*
 Group11_p3/Data/*
 Group11_p3/Outputs/*
+Group11_p3/Outputs/Detections/
 Group11_p4/Phase1/Data/*
 Group11_p4/Phase1/Output/*.pdf
+Group11_p4/Phase1/Output/traj_est.txt
+Group11_p4/Phase2/Data/*
 
 # Figures for paper
 Group11_p1/Phase1/Output/*
@@ -33,8 +36,3 @@ __pycache__/
 
 # Model weights
 Group11_p3/Weights/*
-
-# Inference outputs
-Group11_p3/Outputs/Detections/
-
-Group11_p4/Phase1/Output/traj_est.txt
