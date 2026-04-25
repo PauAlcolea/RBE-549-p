@@ -3,7 +3,7 @@
 ### Data Generation
 
 ```
-Usage: bash run_blender.sh [--shape SHAPE]
+Usage: bash Code/blender/run_blender.sh [--shape SHAPE]
 
 Options:
         -s, --shape SHAPE   Trajectory shape: square | figure8 | circle
