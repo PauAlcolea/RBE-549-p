@@ -17,7 +17,8 @@ TRAJECTORY_SHAPE = os.environ.get("DRONE_TRAJECTORY_SHAPE", "square")
 
 # Common motion settings used by every trajectory shape.
 COMMON_TRAJECTORY_CFG = {
-    "height": 1.5,   # meters  — fixed altitude above the ground plane
+    "height": float(os.environ.get("DRONE_CAMERA_HEIGHT", "1.5")),
+    # meters  — fixed altitude above the ground plane
     "laps": 1,       # number of complete closed loops to fly
     "speed": 0.5,    # m/s     — realistic slow drone cruising speed
 }
