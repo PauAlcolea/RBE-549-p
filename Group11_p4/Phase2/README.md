@@ -26,6 +26,7 @@ Generate a dataset by sweeping combinations of:
   - trajectory shape
   - texture image
   - camera height
+Result is dataset of length SHAPES * TEXTURES * HEIGHTS sequences
 
 This script calls run_blender.sh once per combination.
 
