@@ -10,10 +10,33 @@ from mathutils import Vector, Euler, Matrix, Quaternion
 # ═══════════════════════════════════════════════════════════════════════════
 
 # --- Trajectory ---
-SQUARE_SIDE    = 2.0      # metres  — side length of the square flight path
-CAMERA_HEIGHT  = 1.5      # metres  — fixed altitude above the ground plane
-TOTAL_LAPS     = 2        # how many complete square laps to fly
-DRONE_SPEED    = 0.3      # m/s     — realistic slow drone cruising speed
+# Shape selector. Add future shapes by extending SHAPE_PARAMS and
+# build_path_waypoints().
+TRAJECTORY_SHAPE = os.environ.get("DRONE_TRAJECTORY_SHAPE", "square")
+# one of: "square", "figure8", "circle"
+
+# Common motion settings used by every trajectory shape.
+COMMON_TRAJECTORY_CFG = {
+    "height": 1.5,   # meters  — fixed altitude above the ground plane
+    "laps": 1,       # number of complete closed loops to fly
+    "speed": 0.5,    # m/s     — realistic slow drone cruising speed
+}
+
+# Shape-specific parameters. Keep each shape payload focused and explicit.
+SHAPE_PARAMS = {
+    "square": {
+        "side": 2.0,  # meters
+    },
+    "figure8": {
+        "width": 3.0,           # meters (span along X)
+        "length": 2.0,          # meters (span along Y)
+        "samples_per_lap": 400, # control-point density before interpolation
+    },
+    "circle": {
+        "radius": 1.0,          # meters
+        "samples_per_lap": 360, # control-point density before interpolation
+    },
+}
 
 # --- Data rate ---
 # The project asks for 1000 Hz data; every 10th frame is the "camera" image.
@@ -90,8 +113,118 @@ def compute_K(cam_obj):
     return K, W, H
 
 
+def validate_trajectory_config():
+    """
+    Validate and normalize trajectory configuration.
+    Returns (shape_name, common_cfg, shape_cfg) with clean value types.
+    """
+    allowed_shapes = {"square", "figure8", "circle"}
+
+    shape_name = str(TRAJECTORY_SHAPE).strip().lower()
+    if shape_name not in allowed_shapes:
+        raise ValueError(
+            f"TRAJECTORY_SHAPE='{TRAJECTORY_SHAPE}' is invalid. "
+            f"Choose one of {sorted(allowed_shapes)}"
+        )
+
+    required_common = {"height", "laps", "speed"}
+    missing_common = sorted(required_common.difference(COMMON_TRAJECTORY_CFG.keys()))
+    if missing_common:
+        raise ValueError(
+            f"COMMON_TRAJECTORY_CFG is missing required keys: {missing_common}"
+        )
+
+    common_cfg = {
+        "height": float(COMMON_TRAJECTORY_CFG["height"]),
+        "laps": int(COMMON_TRAJECTORY_CFG["laps"]),
+        "speed": float(COMMON_TRAJECTORY_CFG["speed"]),
+    }
+    if common_cfg["height"] <= 0.0:
+        raise ValueError("COMMON_TRAJECTORY_CFG['height'] must be > 0")
+    if common_cfg["laps"] < 1:
+        raise ValueError("COMMON_TRAJECTORY_CFG['laps'] must be >= 1")
+    if common_cfg["speed"] <= 0.0:
+        raise ValueError("COMMON_TRAJECTORY_CFG['speed'] must be > 0")
+    if SIM_HZ <= 0:
+        raise ValueError("SIM_HZ must be > 0")
+
+    if shape_name not in SHAPE_PARAMS:
+        raise ValueError(f"Missing SHAPE_PARAMS entry for shape '{shape_name}'")
+    raw_shape_cfg = SHAPE_PARAMS[shape_name]
+    if not isinstance(raw_shape_cfg, dict):
+        raise ValueError(f"SHAPE_PARAMS['{shape_name}'] must be a dict")
+
+    if shape_name == "square":
+        missing = sorted({"side"}.difference(raw_shape_cfg.keys()))
+        if missing:
+            raise ValueError(f"square config missing required keys: {missing}")
+        shape_cfg = {"side": float(raw_shape_cfg["side"])}
+        if shape_cfg["side"] <= 0.0:
+            raise ValueError("SHAPE_PARAMS['square']['side'] must be > 0")
+    elif shape_name == "figure8":
+        missing = sorted({"width", "length"}.difference(raw_shape_cfg.keys()))
+        if missing:
+            raise ValueError(f"figure8 config missing required keys: {missing}")
+        shape_cfg = {
+            "width": float(raw_shape_cfg["width"]),
+            "length": float(raw_shape_cfg["length"]),
+            "samples_per_lap": int(raw_shape_cfg.get("samples_per_lap", 400)),
+        }
+        if shape_cfg["width"] <= 0.0 or shape_cfg["length"] <= 0.0:
+            raise ValueError("figure8 width/length must both be > 0")
+        if shape_cfg["samples_per_lap"] < 8:
+            raise ValueError("figure8 samples_per_lap must be >= 8")
+    elif shape_name == "circle":
+        missing = sorted({"radius"}.difference(raw_shape_cfg.keys()))
+        if missing:
+            raise ValueError(f"circle config missing required keys: {missing}")
+        shape_cfg = {
+            "radius": float(raw_shape_cfg["radius"]),
+            "samples_per_lap": int(raw_shape_cfg.get("samples_per_lap", 360)),
+        }
+        if shape_cfg["radius"] <= 0.0:
+            raise ValueError("circle radius must be > 0")
+        if shape_cfg["samples_per_lap"] < 8:
+            raise ValueError("circle samples_per_lap must be >= 8")
+    else:
+        raise ValueError(f"Unsupported shape '{shape_name}'")
+
+    return shape_name, common_cfg, shape_cfg
+
+
+def trajectory_descriptor(shape_name, common_cfg, shape_cfg):
+    """Return human-readable shape summary and flat metadata for exports."""
+    meta = {
+        "shape": shape_name,
+        "height": common_cfg["height"],
+        "laps": common_cfg["laps"],
+        "speed": common_cfg["speed"],
+        "sim_hz": SIM_HZ,
+    }
+
+    if shape_name == "square":
+        meta["side"] = shape_cfg["side"]
+        summary = f"square side={shape_cfg['side']:.2f} m"
+    elif shape_name == "figure8":
+        meta["width"] = shape_cfg["width"]
+        meta["length"] = shape_cfg["length"]
+        meta["samples_per_lap"] = shape_cfg["samples_per_lap"]
+        summary = (
+            f"figure8 width={shape_cfg['width']:.2f} m, "
+            f"length={shape_cfg['length']:.2f} m"
+        )
+    elif shape_name == "circle":
+        meta["radius"] = shape_cfg["radius"]
+        meta["samples_per_lap"] = shape_cfg["samples_per_lap"]
+        summary = f"circle radius={shape_cfg['radius']:.2f} m"
+    else:
+        summary = shape_name
+
+    return summary, meta
+
+
 # ───────────────────────────────────────────────────────────────────────────
-#  ③ SQUARE TRAJECTORY BUILDER
+#  ③ TRAJECTORY BUILDERS
 # ───────────────────────────────────────────────────────────────────────────
 
 def build_square_waypoints(side, height, n_laps):
@@ -114,6 +247,83 @@ def build_square_waypoints(side, height, n_laps):
         waypoints.extend(corners)
     waypoints.append(corners[0])    # close the loop
     return waypoints
+
+
+def _repeat_closed_loop(base_loop, n_laps):
+    """Repeat a closed loop polyline for n_laps without duplicate joins."""
+    if n_laps < 1:
+        return []
+    if not base_loop:
+        return []
+
+    waypoints = []
+    for lap_idx in range(n_laps):
+        if lap_idx == 0:
+            waypoints.extend(base_loop)
+        else:
+            waypoints.extend(base_loop[1:])
+    return waypoints
+
+
+def build_figure8_waypoints(width, length, height, n_laps, samples_per_lap):
+    """
+    Build a centered figure-8 using a deterministic parametric curve:
+      x = a * sin(t),  y = b * sin(t) * cos(t),  t in [0, 2π]
+    """
+    a = width / 2.0
+    b = length / 2.0
+
+    base_loop = []
+    for i in range(samples_per_lap):
+        t = 2.0 * math.pi * (i / samples_per_lap)
+        x = a * math.sin(t)
+        y = b * math.sin(t) * math.cos(t)
+        base_loop.append(Vector((x, y, height)))
+    base_loop.append(base_loop[0].copy())
+
+    return _repeat_closed_loop(base_loop, n_laps)
+
+
+def build_circle_waypoints(radius, height, n_laps, samples_per_lap):
+    """Build a centered circular closed loop sampled uniformly in angle."""
+    base_loop = []
+    for i in range(samples_per_lap):
+        t = 2.0 * math.pi * (i / samples_per_lap)
+        x = radius * math.cos(t)
+        y = radius * math.sin(t)
+        base_loop.append(Vector((x, y, height)))
+    base_loop.append(base_loop[0].copy())
+
+    return _repeat_closed_loop(base_loop, n_laps)
+
+
+def build_path_waypoints(shape_name, common_cfg, shape_cfg):
+    """
+    Shape dispatcher that returns a closed-loop waypoint list.
+    Add future shapes by inserting a new branch here and in SHAPE_PARAMS.
+    """
+    if shape_name == "square":
+        return build_square_waypoints(
+            shape_cfg["side"],
+            common_cfg["height"],
+            common_cfg["laps"],
+        )
+    if shape_name == "figure8":
+        return build_figure8_waypoints(
+            shape_cfg["width"],
+            shape_cfg["length"],
+            common_cfg["height"],
+            common_cfg["laps"],
+            shape_cfg["samples_per_lap"],
+        )
+    if shape_name == "circle":
+        return build_circle_waypoints(
+            shape_cfg["radius"],
+            common_cfg["height"],
+            common_cfg["laps"],
+            shape_cfg["samples_per_lap"],
+        )
+    raise ValueError(f"Unsupported trajectory shape: {shape_name}")
 
 
 def interpolate_positions(waypoints, speed, fps):
@@ -245,18 +455,31 @@ def export_camera_K(cam_obj, output_dir):
     print(f"[DroneGen] Camera K → {k_path}")
 
 
-def export_trajectory_summary(waypoints, positions, output_dir):
+def export_trajectory_summary(waypoints, positions, output_dir, meta):
     """Save a human-readable description of the planned trajectory."""
     t_path = os.path.join(output_dir, "trajectory.txt")
     with open(t_path, 'w') as f:
-        f.write("=== Drone Square Trajectory Summary ===\n\n")
-        f.write(f"  Square side      : {SQUARE_SIDE} m\n")
-        f.write(f"  Camera height    : {CAMERA_HEIGHT} m\n")
-        f.write(f"  Number of laps   : {TOTAL_LAPS}\n")
-        f.write(f"  Drone speed      : {DRONE_SPEED} m/s\n")
-        f.write(f"  Sim rate (SIM_HZ): {SIM_HZ} Hz\n")
+        f.write("=== Drone Trajectory Summary ===\n\n")
+        f.write(f"  Shape            : {meta['shape']}\n")
+        if meta["shape"] == "square":
+            f.write(f"  Square side      : {meta['side']} m\n")
+        elif meta["shape"] == "figure8":
+            f.write(f"  Figure8 width    : {meta['width']} m\n")
+            f.write(f"  Figure8 length   : {meta['length']} m\n")
+            f.write(f"  Samples per lap  : {meta['samples_per_lap']}\n")
+        elif meta["shape"] == "circle":
+            f.write(f"  Circle radius    : {meta['radius']} m\n")
+            f.write(f"  Samples per lap  : {meta['samples_per_lap']}\n")
+        f.write(f"  Camera height    : {meta['height']} m\n")
+        f.write(f"  Number of laps   : {meta['laps']}\n")
+        f.write(f"  Drone speed      : {meta['speed']} m/s\n")
+        f.write(f"  Sim rate (SIM_HZ): {meta['sim_hz']} Hz\n")
         f.write(f"  Total frames     : {len(positions)}\n")
         f.write(f"  Total duration   : {len(positions)/SIM_HZ:.2f} s\n\n")
+
+        f.write("Effective parameters (JSON):\n")
+        f.write(json.dumps(meta, indent=2) + "\n\n")
+
         f.write("Waypoints (x, y, z):\n")
         for i, wp in enumerate(waypoints):
             f.write(f"  [{i:02d}]  ({wp.x:+.3f}, {wp.y:+.3f}, {wp.z:+.3f})\n")
@@ -306,26 +529,37 @@ def setup_render(output_dir):
 # ───────────────────────────────────────────────────────────────────────────
 
 def main():
-    # Resolve output path (// = directory of the .blend file)
-    output_dir = bpy.path.abspath(OUTPUT_DIR)
-    frames_dir = os.path.join(output_dir, "frames")
-    os.makedirs(frames_dir, exist_ok=True)
-
     print("\n" + "═" * 60)
     print("  DroneGen  –  Phase 2 VIO Data Generation")
     print("═" * 60)
+
+    # Validate trajectory early so outputs can be routed to Generated/<shape>/
+    shape_name, common_cfg, shape_cfg = validate_trajectory_config()
+
+    # Resolve output path (// = directory of the .blend file)
+    base_output_dir = bpy.path.abspath(OUTPUT_DIR)
+    output_dir = os.path.join(base_output_dir, shape_name)
+    frames_dir = os.path.join(output_dir, "frames")
+    os.makedirs(frames_dir, exist_ok=True)
 
     # ── Camera ──────────────────────────────────────────────
     cam = get_or_create_camera()
     configure_camera_optics(cam)
 
     # ── Trajectory ──────────────────────────────────────────
-    waypoints = build_square_waypoints(SQUARE_SIDE, CAMERA_HEIGHT, TOTAL_LAPS)
-    positions = interpolate_positions(waypoints, DRONE_SPEED, SIM_HZ)
+    waypoints = build_path_waypoints(shape_name, common_cfg, shape_cfg)
+    positions = interpolate_positions(waypoints, common_cfg["speed"], SIM_HZ)
+    shape_summary, meta = trajectory_descriptor(shape_name, common_cfg, shape_cfg)
 
-    print(f"[DroneGen] Square {SQUARE_SIDE}m × {SQUARE_SIDE}m  |  "
-          f"{TOTAL_LAPS} lap(s)  |  {len(positions)} frames  |  "
-          f"{len(positions)/SIM_HZ:.1f} s")
+    print(
+        f"[DroneGen] Shape={meta['shape']} ({shape_summary})  |  "
+        f"height={meta['height']:.2f} m  |  laps={meta['laps']}  |  "
+        f"speed={meta['speed']:.2f} m/s"
+    )
+    print(
+        f"[DroneGen] {len(positions)} frames  |  "
+        f"{len(positions)/SIM_HZ:.2f} s @ {SIM_HZ} Hz"
+    )
 
     # ── Keyframes ───────────────────────────────────────────
     setup_keyframes(cam, positions, math.radians(CAMERA_YAW_DEG))
@@ -333,7 +567,7 @@ def main():
     # ── Export meta-data ─────────────────────────────────────
     export_poses(cam, len(positions), output_dir)
     export_camera_K(cam, output_dir)
-    export_trajectory_summary(waypoints, positions, output_dir)
+    export_trajectory_summary(waypoints, positions, output_dir, meta)
 
     # ── Render ───────────────────────────────────────────────
     if RENDER_IMAGES:
