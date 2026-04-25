@@ -4,15 +4,16 @@ set -euo pipefail
 BLENDER_BIN="${BLENDER_BIN:-/Applications/Blender.app/Contents/MacOS/Blender}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 GEN_SCRIPT="$SCRIPT_DIR/generate.py"
-BLEND_FILE="$SCRIPT_DIR/data_gen.blend"
+TEXTURE_CHOICE="playrug"
 
 print_usage() {
 	cat <<'EOF'
-Usage: ./run_blender.sh [--shape SHAPE] [--height METERS]
+Usage: ./run_blender.sh [--shape SHAPE] [--height METERS] [--texture NAME]
 
 Options:
 	-s, --shape SHAPE   Trajectory shape: square | figure8 | circle
 	--height METERS     Camera flight height in meters (e.g. 1.5)
+	-t, --texture NAME  Blend texture file to use (e.g. playrug, newyork, ispy, or leaves)
 	-h, --help          Show this help message
 
 Environment:
@@ -42,6 +43,15 @@ while [[ $# -gt 0 ]]; do
 			HEIGHT_OVERRIDE="$2"
 			shift 2
 			;;
+		-t|--texture)
+			if [[ $# -lt 2 ]]; then
+				echo "[run_blender] ERROR: --texture requires a value." >&2
+				print_usage
+				exit 2
+			fi
+			TEXTURE_CHOICE="$2"
+			shift 2
+			;;
 		-h|--help)
 			print_usage
 			exit 0
@@ -54,12 +64,26 @@ while [[ $# -gt 0 ]]; do
 	esac
 done
 
+if [[ "$TEXTURE_CHOICE" == *.blend ]]; then
+	BLEND_FILE="$SCRIPT_DIR/$TEXTURE_CHOICE"
+else
+	BLEND_FILE="$SCRIPT_DIR/${TEXTURE_CHOICE}.blend"
+fi
+
+if [[ ! -f "$BLEND_FILE" ]]; then
+	echo "[run_blender] ERROR: Blend file not found: $BLEND_FILE" >&2
+	echo "[run_blender] Available .blend files in $SCRIPT_DIR:" >&2
+	ls "$SCRIPT_DIR"/*.blend 2>/dev/null | xargs -n 1 basename >&2 || true
+	exit 2
+fi
+
 if [[ -n "$SHAPE_OVERRIDE" ]]; then
 	echo "[run_blender] Using trajectory shape override: $SHAPE_OVERRIDE"
 fi
 if [[ -n "$HEIGHT_OVERRIDE" ]]; then
 	echo "[run_blender] Using camera height override: $HEIGHT_OVERRIDE m"
 fi
+echo "[run_blender] Using texture blend file: $(basename "$BLEND_FILE")"
 
 env_cmd=()
 if [[ -n "$SHAPE_OVERRIDE" ]]; then
