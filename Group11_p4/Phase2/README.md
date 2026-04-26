@@ -20,7 +20,7 @@ Environment:
 ```
 ### To generate a whole dataset (train/val/test):
 ```
-Usage: ./run_dataset_sweep.sh [--help]
+Usage: ./run_dataset_sweep.sh [--resume] [--help]
 
 Generate a dataset by sweeping combinations of:
   - trajectory shape
@@ -44,4 +44,10 @@ Split assignment:
 
 Output:
   Generated data written under Phase2/Data/Generated.
+
+Resume mode:
+  --resume will scan expected split/sequence folders and:
+    - skip sequences with complete outputs
+    - delete and regenerate incomplete sequences
+  This is useful if generation stopped mid-run.
 ```
