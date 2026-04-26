@@ -3,6 +3,7 @@ import math
 import csv
 import os
 import json
+import fcntl
 from datetime import datetime, timezone
 from mathutils import Vector, Euler, Matrix, Quaternion
 
@@ -346,6 +347,7 @@ def write_sequence_metadata(output_dir, metadata):
 def append_dataset_manifest(base_output_dir, row):
     """Append one sequence record to top-level dataset index.csv."""
     manifest_path = os.path.join(base_output_dir, "index.csv")
+    lock_path = manifest_path + ".lock"
     fieldnames = [
         "sequence_id",
         "split",
@@ -362,12 +364,16 @@ def append_dataset_manifest(base_output_dir, row):
         "timestamp_utc",
     ]
 
-    write_header = not os.path.exists(manifest_path)
-    with open(manifest_path, "a", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        if write_header:
-            writer.writeheader()
-        writer.writerow(row)
+    # Lock during append so parallel Blender jobs don't race on the manifest.
+    with open(lock_path, "w") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        write_header = not os.path.exists(manifest_path)
+        with open(manifest_path, "a", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            if write_header:
+                writer.writeheader()
+            writer.writerow(row)
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
     print(f"[DroneGen] Manifest → {manifest_path}")
 
 
