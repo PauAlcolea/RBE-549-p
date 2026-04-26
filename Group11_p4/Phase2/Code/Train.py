@@ -3,9 +3,9 @@ import sys
 
 sys.dont_write_bytecode = True
 
-import math
 import os
 import torch
+from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 from argparse import ArgumentParser
@@ -43,6 +43,16 @@ class Pipeline:
             self.model = VisualInertialModel()
 
 
+def _move_batch_to_device(batch, device):
+    moved = {}
+    for key, value in batch.items():
+        if torch.is_tensor(value):
+            moved[key] = value.to(device, non_blocking=True)
+        else:
+            moved[key] = value
+    return moved
+
+
 def train(
     train_data_dir,
     val_data_dir,
@@ -50,7 +60,12 @@ def train(
     batch_size,
     lr,
     log_dir=Path(output_dir) / "logs",
-    device="cuda",
+    device=(
+        "cuda"
+        if torch.cuda.is_available()
+        else "mps" if torch.backends.mps.is_available() else "cpu"
+    ),
+    num_workers=4,
     checkpoint_dir=Path(output_dir) / "checkpoints",
     model=ModelTypes.VISUAL,
 ):
@@ -75,13 +90,30 @@ def train(
     pipeline = Pipeline(model, train_data_dir, val_data_dir)
     train_dataset = pipeline.train_dataset
     val_dataset = pipeline.val_dataset
+
+    pin_memory = str(device).startswith("cuda")
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+    )
+
     model = pipeline.model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     start_epoch = 0
     best_val_loss = float("inf")
 
-    global_step = start_epoch * max(1, math.ceil(len(train_dataset) / batch_size))
+    global_step = start_epoch * max(1, len(train_loader))
 
     for epoch in range(start_epoch, num_epochs):
         #### train ####
@@ -89,46 +121,43 @@ def train(
 
         train_loss = 0.0
         num_train_samples = len(train_dataset)
-        num_train_iters = max(1, math.ceil(num_train_samples / batch_size))
-
-        for _ in tqdm(range(num_train_iters), desc=f"Train {epoch}"):
-            batch = train_dataset.get_batch(batch_size)
-            batch = {k: v.to(device) for k, v in batch.items()}
+        for batch in tqdm(train_loader, desc=f"Train {epoch}"):
+            batch = _move_batch_to_device(batch, device)
 
             optimizer.zero_grad()
             loss = model.compute_loss(batch)
             loss.backward()
             optimizer.step()
 
-            train_loss += loss.item() * batch_size
-
-            optimizer.zero_grad()
-            loss.backward()
-
-            optimizer.step()
+            current_batch_size = batch["target_rel_pose"].shape[0]
+            train_loss += loss.item() * current_batch_size
 
             # Logging
-            train_loss += loss.item()
             writer.add_scalar("Loss/Train", loss.item(), global_step)
             global_step += 1
 
-        train_loss /= num_train_samples
+        train_loss /= max(1, num_train_samples)
 
         #### validation ####
         model.eval()
         val_loss = 0.0
         num_val_samples = len(val_dataset)
-        num_val_iters = max(1, math.ceil(num_val_samples / batch_size))
 
         with torch.no_grad():
-            for _ in tqdm(range(num_val_iters), desc=f"Val {epoch}"):
-                batch = val_dataset.get_batch(batch_size)
-                batch = {k: v.to(device) for k, v in batch.items()}
+            for batch in tqdm(val_loader, desc=f"Val {epoch}"):
+                batch = _move_batch_to_device(batch, device)
 
                 loss = model.compute_loss(batch)
-                val_loss += loss.item() * batch_size
+                current_batch_size = batch["target_rel_pose"].shape[0]
+                val_loss += loss.item() * current_batch_size
 
-        val_loss /= num_val_samples
+        val_loss /= max(1, num_val_samples)
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+
+        # TODO: something that plots the predicted vs ground truth trajectory for tensorboard
+
+        # logging
         writer.add_scalar("Loss/Val", val_loss, epoch)
         print(
             f"Epoch {epoch}: Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}"
@@ -163,6 +192,12 @@ def _parse_args():
     parser.add_argument(
         "--lr", type=float, default=1e-3, help="Learning rate for the optimizer"
     )
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=4,
+        help="Number of DataLoader worker processes",
+    )
     type_group = parser.add_mutually_exclusive_group(required=True)
     type_group.add_argument("-v", action="store_true", help="Use Visual Model")
     type_group.add_argument("-i", action="store_true", help="Use Inertial Model")
@@ -189,6 +224,7 @@ def main():
         num_epochs=args.num_epochs,
         batch_size=args.batch_size,
         lr=args.lr,
+        num_workers=args.num_workers,
         model=model_type,
     )
 
