@@ -22,6 +22,8 @@ BATCH_SIZE=32
 LR=0.0001
 SEQUENCE_LENGTH=5
 LSTM_HIDDEN=512
+IMAGE_HEIGHT=240
+IMAGE_WIDTH=320
 
 # Run training
 python Train.py \
@@ -30,6 +32,8 @@ python Train.py \
     --num_epochs $NUM_EPOCHS \
     --batch_size $BATCH_SIZE \
     --lr $LR \
+    --image_height $IMAGE_HEIGHT \
+    --image_width $IMAGE_WIDTH \
     -v
 
 echo "Training complete! Check outputs at:"

@@ -30,6 +30,8 @@ class VisualDataset(Dataset):
         mode: str = "sequences",
         sequence_length: int = 10,
         sequence_stride: int = 1,
+        image_height: int = 360,
+        image_width: int = 480,
     ):
         self.data_dir = Path(data_dir)
         self.transform = transform
@@ -37,6 +39,8 @@ class VisualDataset(Dataset):
         self.mode = mode
         self.sequence_length = sequence_length
         self.sequence_stride = sequence_stride
+        self.image_height = image_height
+        self.image_width = image_width
 
         if mode not in ["pairs", "sequences"]:
             raise ValueError(f"mode must be 'pairs' or 'sequences', got '{mode}'")
@@ -302,11 +306,9 @@ class VisualDataset(Dataset):
             [dt_local.astype(np.float32), q_rel.astype(np.float32)], axis=0
         )
 
-    @staticmethod
-    def _load_image_as_tensor(image_path: Path, target_size=(480, 360)) -> torch.Tensor:
+    def _load_image_as_tensor(self, image_path: Path) -> torch.Tensor:
         image = Image.open(image_path).convert("RGB")
-        if target_size is not None:
-            image = image.resize(target_size, resample=Image.BILINEAR)
+        image = image.resize((self.image_width, self.image_height), resample=Image.BILINEAR)
         arr = np.array(image, dtype=np.float32) / 255.0
         # HWC -> CHW
         arr = np.transpose(arr, (2, 0, 1))

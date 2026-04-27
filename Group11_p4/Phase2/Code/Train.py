@@ -28,7 +28,14 @@ class ModelTypes(Enum):
 
 class Pipeline:
     def __init__(
-        self, model_type, train_dir, val_dir, sequence_length, lstm_hidden
+        self,
+        model_type,
+        train_dir,
+        val_dir,
+        sequence_length,
+        lstm_hidden,
+        image_height,
+        image_width,
     ):
         self.model_type = model_type
 
@@ -37,14 +44,20 @@ class Pipeline:
                 train_dir,
                 mode="sequences",
                 sequence_length=sequence_length,
+                image_height=image_height,
+                image_width=image_width,
             )
             self.val_dataset = VisualDataset(
                 val_dir,
                 mode="sequences",
                 sequence_length=sequence_length,
+                image_height=image_height,
+                image_width=image_width,
             )
             self.model = VisualModel(
                 lstm_hidden_size=lstm_hidden,
+                image_height=image_height,
+                image_width=image_width,
             )
         elif model_type == ModelTypes.INERTIAL:
             self.train_dataset = InertialDataset(train_dir)
@@ -83,6 +96,8 @@ def train(
     model=ModelTypes.VISUAL,
     sequence_length=10,
     lstm_hidden=1000,
+    image_height=360,
+    image_width=480,
 ):
     # specify log and checkpoint directories by model type to avoid conflicts
     log_dir = log_dir / model.name
@@ -112,6 +127,8 @@ def train(
         val_data_dir,
         sequence_length=sequence_length,
         lstm_hidden=lstm_hidden,
+        image_height=image_height,
+        image_width=image_width,
     )
     train_dataset = pipeline.train_dataset
     val_dataset = pipeline.val_dataset
@@ -192,10 +209,9 @@ def train(
                     "model_state_dict": model.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                     "val_loss": val_loss,
-                },               
+                },
                 checkpoint_path,
             )
-
 
         # TODO: something that plots the predicted vs ground truth trajectory for tensorboard
 
@@ -240,6 +256,19 @@ def _parse_args():
         default=4,
         help="Number of DataLoader worker processes",
     )
+    parser.add_argument(
+        "--image_height",
+        type=int,
+        default=360,
+        help="Image height for training (original: 480)",
+    )
+    parser.add_argument(
+        "--image_width",
+        type=int,
+        default=480,
+        help="Image width for training (original: 640)",
+    )
+
     type_group = parser.add_mutually_exclusive_group(required=True)
     type_group.add_argument("-v", action="store_true", help="Use Visual Model")
     type_group.add_argument("-i", action="store_true", help="Use Inertial Model")
@@ -267,6 +296,8 @@ def main():
         batch_size=args.batch_size,
         lr=args.lr,
         model=model_type,
+        image_height=args.image_height,
+        image_width=args.image_width,
     )
 
 
