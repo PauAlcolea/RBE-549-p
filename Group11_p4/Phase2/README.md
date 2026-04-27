@@ -55,3 +55,11 @@ Parallel mode:
   --jobs N (or -j N) runs up to N Blender processes concurrently.
   Default is 1 (sequential).
 ```
+### To download the dataset I've already generated:
+```
+cd Data
+
+pip install gdown
+
+gdown --folder https://drive.google.com/drive/folders/1bAZ7PcOv1Y9tyzkONsMrQvPXvdk_FXlf?usp=sharing --remaining-ok
+```
