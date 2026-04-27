@@ -26,13 +26,25 @@ class ModelTypes(Enum):
 
 
 class Pipeline:
-    def __init__(self, model_type, train_dir, val_dir):
+    def __init__(
+        self, model_type, train_dir, val_dir, sequence_length, lstm_hidden
+    ):
         self.model_type = model_type
 
         if model_type == ModelTypes.VISUAL:
-            self.train_dataset = VisualDataset(train_dir)
-            self.val_dataset = VisualDataset(val_dir)
-            self.model = VisualModel()
+            self.train_dataset = VisualDataset(
+                train_dir,
+                mode="sequences",
+                sequence_length=sequence_length,
+            )
+            self.val_dataset = VisualDataset(
+                val_dir,
+                mode="sequences",
+                sequence_length=sequence_length,
+            )
+            self.model = VisualModel(
+                lstm_hidden_size=lstm_hidden,
+            )
         elif model_type == ModelTypes.INERTIAL:
             self.train_dataset = InertialDataset(train_dir)
             self.val_dataset = InertialDataset(val_dir)
@@ -68,6 +80,8 @@ def train(
     num_workers=4,
     checkpoint_dir=Path(output_dir) / "checkpoints",
     model=ModelTypes.VISUAL,
+    sequence_length=10,
+    lstm_hidden=1000,
 ):
     # specify log and checkpoint directories by model type to avoid conflicts
     log_dir = log_dir / model.name
@@ -87,7 +101,13 @@ def train(
     # Prepare tensorboard logger
     writer = SummaryWriter(log_dir)
 
-    pipeline = Pipeline(model, train_data_dir, val_data_dir)
+    pipeline = Pipeline(
+        model,
+        train_data_dir,
+        val_data_dir,
+        sequence_length=sequence_length,
+        lstm_hidden=lstm_hidden,
+    )
     train_dataset = pipeline.train_dataset
     val_dataset = pipeline.val_dataset
 

@@ -12,8 +12,13 @@ class VisualDataset(Dataset):
     """
     Dataset for visual-only odometry from the generated sequence format.
 
-    Each sample is an adjacent frame pair (t, t+1) with relative pose target:
-    [dx, dy, dz, dqw, dqx, dqy, dqz].
+    Supports two modes:
+    - 'pairs': Each sample is an adjacent frame pair (t, t+1) with relative pose target
+    - 'sequences': Each sample is a subsequence of frames with multiple relative poses
+
+    Output format:
+    - Pairs mode: {'image_t', 'image_tp1', 'target_rel_pose': [dx, dy, dz, qw, qx, qy, qz]}
+    - Sequences mode: {'images': (seq_len, 3, H, W), 'target_rel_poses': (seq_len-1, 7)}
     """
 
     def __init__(
@@ -22,10 +27,22 @@ class VisualDataset(Dataset):
         split: Optional[str] = None,
         transform=None,
         strict: bool = False,
+        mode: str = "sequences",
+        sequence_length: int = 10,
+        sequence_stride: int = 1,
     ):
         self.data_dir = Path(data_dir)
         self.transform = transform
         self.strict = strict
+        self.mode = mode
+        self.sequence_length = sequence_length
+        self.sequence_stride = sequence_stride
+
+        if mode not in ["pairs", "sequences"]:
+            raise ValueError(f"mode must be 'pairs' or 'sequences', got '{mode}'")
+
+        if mode == "sequences" and sequence_length < 2:
+            raise ValueError(f"sequence_length must be >= 2, got {sequence_length}")
 
         self.generated_root, self.split = self._resolve_generated_root_and_split(
             self.data_dir, split
@@ -41,7 +58,7 @@ class VisualDataset(Dataset):
 
         if len(self.samples) == 0:
             raise ValueError(
-                f"No valid adjacent-frame samples found in split='{self.split}' under "
+                f"No valid samples found in split='{self.split}' under "
                 f"{self.generated_root}"
             )
 
@@ -79,9 +96,17 @@ class VisualDataset(Dataset):
             seq_idx = len(self.sequences)
             self.sequences.append(seq)
 
-            # Create adjacent frame-pair samples (t, t+1) for this sequence.
-            for local_idx in range(seq["num_samples"]):
-                self.samples.append((seq_idx, local_idx))
+            if self.mode == "pairs":
+                # Create adjacent frame-pair samples (t, t+1) for this sequence.
+                for local_idx in range(seq["num_samples"]):
+                    self.samples.append((seq_idx, local_idx))
+            elif self.mode == "sequences":
+                # Create subsequence samples with sliding window
+                num_frames = len(seq["frame_paths"])
+                for start_idx in range(
+                    0, num_frames - self.sequence_length + 1, self.sequence_stride
+                ):
+                    self.samples.append((seq_idx, start_idx))
 
     def _load_sequence(self, row: Dict[str, str]) -> Dict:
         seq_id = row["sequence_id"]
@@ -188,7 +213,9 @@ class VisualDataset(Dataset):
 
             for row in reader:
                 frame_ids.append(int(row["frame"]))
-                translations.append([float(row["tx"]), float(row["ty"]), float(row["tz"])])
+                translations.append(
+                    [float(row["tx"]), float(row["ty"]), float(row["tz"])]
+                )
                 quaternions.append(
                     [
                         float(row["qw"]),
@@ -239,15 +266,29 @@ class VisualDataset(Dataset):
         w, x, y, z = q
         return np.array(
             [
-                [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w)],
-                [2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w)],
-                [2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y)],
+                [
+                    1.0 - 2.0 * (y * y + z * z),
+                    2.0 * (x * y - z * w),
+                    2.0 * (x * z + y * w),
+                ],
+                [
+                    2.0 * (x * y + z * w),
+                    1.0 - 2.0 * (x * x + z * z),
+                    2.0 * (y * z - x * w),
+                ],
+                [
+                    2.0 * (x * z - y * w),
+                    2.0 * (y * z + x * w),
+                    1.0 - 2.0 * (x * x + y * y),
+                ],
             ],
             dtype=np.float32,
         )
 
     @classmethod
-    def _relative_pose(cls, t0: np.ndarray, q0: np.ndarray, t1: np.ndarray, q1: np.ndarray) -> np.ndarray:
+    def _relative_pose(
+        cls, t0: np.ndarray, q0: np.ndarray, t1: np.ndarray, q1: np.ndarray
+    ) -> np.ndarray:
         # Express translation in the local frame at time t.
         r0 = cls._quat_to_rotmat_np(q0)
         dt_world = t1 - t0
@@ -257,7 +298,9 @@ class VisualDataset(Dataset):
         q_rel = cls._quat_mul_np(cls._quat_conjugate_np(q0), q1)
         q_rel = cls._normalize_quaternion_np(q_rel[None, :])[0]
 
-        return np.concatenate([dt_local.astype(np.float32), q_rel.astype(np.float32)], axis=0)
+        return np.concatenate(
+            [dt_local.astype(np.float32), q_rel.astype(np.float32)], axis=0
+        )
 
     @staticmethod
     def _load_image_as_tensor(image_path: Path) -> torch.Tensor:
@@ -277,6 +320,13 @@ class VisualDataset(Dataset):
         seq_idx, local_idx = self.samples[idx]
         seq = self.sequences[seq_idx]
 
+        if self.mode == "pairs":
+            return self._get_pair_sample(seq, local_idx)
+        else:  # mode == 'sequences'
+            return self._get_sequence_sample(seq, local_idx)
+
+    def _get_pair_sample(self, seq: Dict, local_idx: int) -> Dict:
+        """Get a single frame pair sample."""
         frame_t_path = seq["frame_paths"][local_idx]
         frame_tp1_path = seq["frame_paths"][local_idx + 1]
 
@@ -301,6 +351,46 @@ class VisualDataset(Dataset):
             "sequence_id": seq["sequence_id"],
             "frame_t": int(seq["frame_ids"][local_idx]),
             "frame_tp1": int(seq["frame_ids"][local_idx + 1]),
+            "shape": seq["shape"],
+            "texture": seq["texture"],
+            "height_m": float(seq["height_m"]),
+        }
+
+    def _get_sequence_sample(self, seq: Dict, start_idx: int) -> Dict:
+        """Get a subsequence sample with multiple frames."""
+        end_idx = start_idx + self.sequence_length
+
+        # Load all images in the subsequence
+        images = []
+        for i in range(start_idx, end_idx):
+            frame_path = seq["frame_paths"][i]
+            image = self._load_image_as_tensor(frame_path)
+            if self.transform is not None:
+                image = self.transform(image)
+            images.append(image)
+
+        # Stack images: (seq_len, 3, H, W)
+        images_tensor = torch.stack(images, dim=0)
+
+        # Compute relative poses between consecutive frames
+        target_rel_poses = []
+        for i in range(start_idx, end_idx - 1):
+            t0 = seq["t_abs"][i]
+            q0 = seq["q_abs"][i]
+            t1 = seq["t_abs"][i + 1]
+            q1 = seq["q_abs"][i + 1]
+            rel_pose = self._relative_pose(t0, q0, t1, q1)
+            target_rel_poses.append(rel_pose)
+
+        # Stack relative poses: (seq_len-1, 7)
+        target_rel_poses_tensor = torch.from_numpy(np.stack(target_rel_poses, axis=0))
+
+        return {
+            "images": images_tensor,
+            "target_rel_poses": target_rel_poses_tensor,
+            "sequence_id": seq["sequence_id"],
+            "frame_start": int(seq["frame_ids"][start_idx]),
+            "frame_end": int(seq["frame_ids"][end_idx - 1]),
             "shape": seq["shape"],
             "texture": seq["texture"],
             "height_m": float(seq["height_m"]),
