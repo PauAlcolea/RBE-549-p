@@ -303,8 +303,10 @@ class VisualDataset(Dataset):
         )
 
     @staticmethod
-    def _load_image_as_tensor(image_path: Path) -> torch.Tensor:
+    def _load_image_as_tensor(image_path: Path, target_size=(480, 360)) -> torch.Tensor:
         image = Image.open(image_path).convert("RGB")
+        if target_size is not None:
+            image = image.resize(target_size, resample=Image.BILINEAR)
         arr = np.array(image, dtype=np.float32) / 255.0
         # HWC -> CHW
         arr = np.transpose(arr, (2, 0, 1))

@@ -18,10 +18,10 @@ VAL_DIR="../Data/Generated/val"
 
 # Training parameters
 NUM_EPOCHS=100
-BATCH_SIZE=8
+BATCH_SIZE=32
 LR=0.0001
-SEQUENCE_LENGTH=10
-LSTM_HIDDEN=1000
+SEQUENCE_LENGTH=5
+LSTM_HIDDEN=512
 
 # Run training
 python Train.py \
@@ -30,7 +30,6 @@ python Train.py \
     --num_epochs $NUM_EPOCHS \
     --batch_size $BATCH_SIZE \
     --lr $LR \
-    --num_workers 4 \
     -v
 
 echo "Training complete! Check outputs at:"

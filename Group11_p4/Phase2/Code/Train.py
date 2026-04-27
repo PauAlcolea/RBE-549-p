@@ -78,7 +78,7 @@ def train(
         if torch.cuda.is_available()
         else "mps" if torch.backends.mps.is_available() else "cpu"
     ),
-    num_workers=4,
+    num_workers=2,
     checkpoint_dir=Path(output_dir) / "checkpoints",
     model=ModelTypes.VISUAL,
     sequence_length=10,
@@ -98,6 +98,10 @@ def train(
 
     # make a folder for checkpoints in case it doesn't exist
     os.makedirs(checkpoint_dir, exist_ok=True)
+
+    if torch.cuda.is_available():
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
 
     # Prepare tensorboard logger
     writer = SummaryWriter(log_dir)
@@ -119,6 +123,7 @@ def train(
         shuffle=True,
         num_workers=num_workers,
         pin_memory=pin_memory,
+        prefetch_factor=2,
     )
     val_loader = DataLoader(
         val_dataset,
@@ -128,7 +133,7 @@ def train(
         pin_memory=pin_memory,
     )
 
-    model = pipeline.model.to(device)
+    model = torch.compile(pipeline.model.to(device))
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     # mixed precision scaler
@@ -146,7 +151,7 @@ def train(
         for batch in tqdm(train_loader, desc=f"Train {epoch}"):
             batch = _move_batch_to_device(batch, device)
 
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
             with autocast("cuda", enabled=scaler.is_enabled()):
                 loss = model.compute_loss(batch)
 
@@ -180,6 +185,17 @@ def train(
         val_loss /= max(1, num_val_samples)
         if val_loss < best_val_loss:
             best_val_loss = val_loss
+            checkpoint_path = checkpoint_dir / f"best_model.pth"
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "val_loss": val_loss,
+                },               
+                checkpoint_path,
+            )
+
 
         # TODO: something that plots the predicted vs ground truth trajectory for tensorboard
 
@@ -250,7 +266,6 @@ def main():
         num_epochs=args.num_epochs,
         batch_size=args.batch_size,
         lr=args.lr,
-        num_workers=args.num_workers,
         model=model_type,
     )
 
