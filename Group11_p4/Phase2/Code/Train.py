@@ -7,6 +7,7 @@ import os
 import torch
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
+from torch.amp import autocast, GradScaler
 from tqdm import tqdm
 from argparse import ArgumentParser
 from enum import Enum
@@ -130,11 +131,12 @@ def train(
     model = pipeline.model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
+    # mixed precision scaler
+    scaler = GradScaler(enabled=(torch.cuda.is_available() and "cuda" in str(device)))
+
     start_epoch = 0
     best_val_loss = float("inf")
-
     global_step = start_epoch * max(1, len(train_loader))
-
     for epoch in range(start_epoch, num_epochs):
         #### train ####
         model.train()
@@ -145,9 +147,13 @@ def train(
             batch = _move_batch_to_device(batch, device)
 
             optimizer.zero_grad()
-            loss = model.compute_loss(batch)
-            loss.backward()
-            optimizer.step()
+            with autocast("cuda", enabled=scaler.is_enabled()):
+                loss = model.compute_loss(batch)
+
+            # Back propagation and optimizer step with GradScaler
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
             current_batch_size = batch["target_rel_poses"].shape[0]
             train_loss += loss.item() * current_batch_size
