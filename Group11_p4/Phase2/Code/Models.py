@@ -14,8 +14,8 @@ class VisualModel(nn.Module):
 
     def __init__(
         self,
-        image_height=192,
-        image_width=384,
+        image_height=480,
+        image_width=640,
         lstm_hidden_size=1000,
         lstm_num_layers=2,
         dropout=0.2,
