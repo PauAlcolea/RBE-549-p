@@ -193,9 +193,10 @@ class VisualModel(nn.Module):
         target_poses = batch["target_rel_poses"]  # (B, T-1, 7)
 
         # Split into translation and rotation components
-        pred_trans = pred_poses[..., :3]
+        # ignore dz loss
+        pred_trans = pred_poses[..., :2]
         pred_quat = pred_poses[..., 3:]
-        target_trans = target_poses[..., :3]
+        target_trans = target_poses[..., :2]
         target_quat = target_poses[..., 3:]
 
         # Compute MSE for each component
