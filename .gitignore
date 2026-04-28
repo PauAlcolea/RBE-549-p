@@ -8,6 +8,7 @@ Group11_p4/Phase1/Data/*
 Group11_p4/Phase1/Output/*.pdf
 Group11_p4/Phase1/Output/traj_est.txt
 Group11_p4/Phase2/Data/*
+Group11_p4/Phase2/Output/Training/
 
 # Figures for paper
 Group11_p1/Phase1/Output/*
