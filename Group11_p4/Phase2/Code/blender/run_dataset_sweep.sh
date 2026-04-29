@@ -3,17 +3,19 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RUN_SCRIPT="$SCRIPT_DIR/run_blender.sh"
+IMU_SCRIPT="$SCRIPT_DIR/trajectory_imu.py"
 
 print_usage() {
   cat <<'EOF'
-Usage: ./run_dataset_sweep.sh [--resume] [--jobs N] [--help]
+Usage: ./run_dataset_sweep.sh [--resume] [--jobs N] [--imu] [--help]
 
 Generate a dataset by sweeping combinations of:
   - trajectory shape
   - texture image
   - camera height
 
-This script calls run_blender.sh once per combination.
+By default this script calls run_blender.sh once per combination.
+With --imu it calls trajectory_imu.py directly (no Blender/rendering).
 
 How to configure:
   Edit the sweep variables near the top of run_dataset_sweep.sh:
@@ -37,13 +39,14 @@ Resume mode:
   This is useful if generation stopped mid-run.
 
 Parallel mode:
-  --jobs N (or -j N) runs up to N Blender processes concurrently.
+  --jobs N (or -j N) runs up to N generation processes concurrently.
   Default is 1 (sequential).
 EOF
 }
 
 RESUME_MODE=0
 JOBS=1
+IMU_MODE=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --resume)
@@ -58,6 +61,10 @@ while [[ $# -gt 0 ]]; do
       fi
       JOBS="$2"
       shift 2
+      ;;
+    --imu)
+      IMU_MODE=1
+      shift
       ;;
     -h|--help)
       print_usage
@@ -113,6 +120,11 @@ assign_split() {
 
 is_sequence_complete() {
   local seq_dir="$1"
+  if (( IMU_MODE )); then
+    [[ -f "$seq_dir/poses.csv" && -f "$seq_dir/trajectory.txt" ]]
+    return
+  fi
+
   local metadata_path="$seq_dir/metadata.json"
   local frames_dir="$seq_dir/frames"
 
@@ -176,23 +188,41 @@ launch_sequence() {
   echo "[dataset_sweep] $label"
 
   if (( JOBS == 1 )); then
+    if (( IMU_MODE )); then
+      python3 "$IMU_SCRIPT" \
+        --data-root "$DATASET_ROOT" \
+        --shape "$shape" \
+        --height "$height" \
+        --split "$split" \
+        --seq-id "$seq_id"
+    else
+      bash "$RUN_SCRIPT" \
+        --shape "$shape" \
+        --texture "$texture" \
+        --height "$height" \
+        --split "$split" \
+        --seq-id "$seq_id" \
+        --seed "$seed"
+    fi
+    return
+  fi
+
+  if (( IMU_MODE )); then
+    python3 "$IMU_SCRIPT" \
+      --data-root "$DATASET_ROOT" \
+      --shape "$shape" \
+      --height "$height" \
+      --split "$split" \
+      --seq-id "$seq_id" &
+  else
     bash "$RUN_SCRIPT" \
       --shape "$shape" \
       --texture "$texture" \
       --height "$height" \
       --split "$split" \
       --seq-id "$seq_id" \
-      --seed "$seed"
-    return
+      --seed "$seed" &
   fi
-
-  bash "$RUN_SCRIPT" \
-    --shape "$shape" \
-    --texture "$texture" \
-    --height "$height" \
-    --split "$split" \
-    --seq-id "$seq_id" \
-    --seed "$seed" &
   local pid=$!
 
   active_pids+=("$pid")
@@ -212,6 +242,11 @@ fi
 
 echo "[dataset_sweep] Total sequences to generate: $total"
 echo "[dataset_sweep] Parallel jobs: $JOBS"
+if (( IMU_MODE )); then
+  echo "[dataset_sweep] Mode: IMU trajectory-only (trajectory_imu.py)"
+else
+  echo "[dataset_sweep] Mode: Blender visual generation (run_blender.sh)"
+fi
 
 combo_idx=0
 seq_num="$START_SEQ_NUM"
@@ -253,4 +288,8 @@ if (( failed_jobs > 0 )); then
   exit 1
 fi
 
-echo "[dataset_sweep] Done. Inspect Data/Generated/index.csv for the sequence manifest."
+if (( IMU_MODE )); then
+  echo "[dataset_sweep] Done. IMU trajectory poses written under Data/Generated/<split>/seq_xxxxxx."
+else
+  echo "[dataset_sweep] Done. Inspect Data/Generated/index.csv for the sequence manifest."
+fi
