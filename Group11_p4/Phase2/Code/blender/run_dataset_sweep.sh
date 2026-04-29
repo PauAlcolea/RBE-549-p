@@ -121,7 +121,7 @@ assign_split() {
 is_sequence_complete() {
   local seq_dir="$1"
   if (( IMU_MODE )); then
-    [[ -f "$seq_dir/poses.csv" && -f "$seq_dir/trajectory.txt" ]]
+    [[ -f "$seq_dir/poses_imu.csv" && -f "$seq_dir/trajectory_imu.txt" ]]
     return
   fi
 
@@ -260,15 +260,20 @@ for (( rep=1; rep<=REPEATS; rep++ )); do
         seed=$((SEED_BASE + combo_idx - 1))
 
         seq_dir="$DATASET_ROOT/$split/$seq_id"
-        if (( RESUME_MODE )) && [[ -d "$seq_dir" ]]; then
+        if (( RESUME_MODE || IMU_MODE )) && [[ -d "$seq_dir" ]]; then
           if is_sequence_complete "$seq_dir"; then
             echo "[dataset_sweep] [$combo_idx/$total] seq=$seq_id already complete; skipping."
             seq_num=$((seq_num + 1))
             continue
           fi
 
-          echo "[dataset_sweep] [$combo_idx/$total] seq=$seq_id exists but is incomplete; regenerating."
-          rm -rf "$seq_dir"
+          if (( IMU_MODE )); then
+            echo "[dataset_sweep] [$combo_idx/$total] seq=$seq_id exists; regenerating IMU files in-place."
+            rm -f "$seq_dir/poses_imu.csv" "$seq_dir/trajectory_imu.txt"
+          else
+            echo "[dataset_sweep] [$combo_idx/$total] seq=$seq_id exists but is incomplete; regenerating."
+            rm -rf "$seq_dir"
+          fi
         fi
 
         launch_sequence "$combo_idx" "$total" "$seq_id" "$split" "$shape" "$texture" "$height" "$seed"

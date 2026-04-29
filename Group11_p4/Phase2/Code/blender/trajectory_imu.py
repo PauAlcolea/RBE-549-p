@@ -3,7 +3,7 @@
 Standalone trajectory/pose generator for IMU pipelines.
 
 This script intentionally avoids Blender/rendering. It generates smooth trajectory
-poses directly and writes poses.csv in a sequence folder.
+poses directly and writes IMU-only files in a sequence folder.
 
 Output columns:
     frame, tx, ty, tz, qw, qx, qy, qz
@@ -236,13 +236,15 @@ def resolve_output_dir(data_root: Path, split: str, seq_id: str) -> Path:
     split_dir.mkdir(parents=True, exist_ok=True)
     out = split_dir / seq_id
     if out.exists():
-        raise FileExistsError(f"Sequence already exists: {out}")
+        if not out.is_dir():
+            raise FileExistsError(f"Output path exists and is not a directory: {out}")
+        return out
     out.mkdir(parents=False, exist_ok=False)
     return out
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate trajectory poses.csv for IMU use (no Blender)")
+    parser = argparse.ArgumentParser(description="Generate trajectory poses_imu.csv for IMU use (no Blender)")
     parser.add_argument("--data-root", type=Path, default=Path(__file__).resolve().parents[2] / "Data" / "Generated")
     parser.add_argument("--split", type=str, default="train", choices=["train", "val", "test"])
     parser.add_argument("--seq-id", type=str, required=True, help="Sequence folder name, e.g. seq_000123")
@@ -295,11 +297,11 @@ def main() -> None:
     else:
         yaws = [yaw_offset_rad] * len(positions)
 
-    write_poses_csv(out_dir / "poses.csv", positions, yaws)
-    write_trajectory_summary(out_dir / "trajectory.txt", common, cfg, len(positions), args.seq_id)
+    write_poses_csv(out_dir / "poses_imu.csv", positions, yaws)
+    write_trajectory_summary(out_dir / "trajectory_imu.txt", common, cfg, len(positions), args.seq_id)
 
     print(f"[OK] Generated sequence at: {out_dir}")
-    print(f"[OK] poses.csv frames: {len(positions)}")
+    print(f"[OK] poses_imu.csv frames: {len(positions)}")
 
 
 if __name__ == "__main__":
