@@ -46,7 +46,6 @@ class SequenceEvaluator:
         model,
         model_type: ModelTypes,
         sequence_path: Path,
-        sequence_length: int,
         image_height: int,
         image_width: int,
         device: str,
@@ -54,7 +53,6 @@ class SequenceEvaluator:
         self.model = model
         self.model_type = model_type
         self.sequence_path = sequence_path
-        self.sequence_length = sequence_length
         self.image_height = image_height
         self.image_width = image_width
         self.device = device
@@ -135,7 +133,7 @@ class SequenceEvaluator:
     
     def run_inference(self) -> Dict[str, np.ndarray]:
         """
-        Run model inference on the full sequence using sliding windows.
+        Run model inference on the full sequence using consecutive frame pairs.
         
         Returns:
             Dict with:
@@ -152,53 +150,40 @@ class SequenceEvaluator:
         
         self.model.eval()
         
-        # Collect relative poses using sliding windows
+        # Collect relative poses by processing consecutive frame pairs
         rel_positions = []
         rel_quaternions = []
         
         with torch.no_grad():
-            # Use non-overlapping consecutive windows
-            for start_idx in range(0, self.num_frames - self.sequence_length + 1, self.sequence_length - 1):
-                end_idx = min(start_idx + self.sequence_length, self.num_frames)
-                window_length = end_idx - start_idx
+            # Process all consecutive frame pairs
+            for i in range(self.num_frames - 1):
+                # Load frame pair (t, t+1)
+                frame_id_t = self.gt_poses['frames'][i]
+                frame_id_tp1 = self.gt_poses['frames'][i + 1]
                 
-                if window_length < 2:
-                    continue
+                img_t = self._load_image(frame_id_t)
+                img_tp1 = self._load_image(frame_id_tp1)
                 
-                # Load image sequence for this window
-                images = []
-                for i in range(start_idx, end_idx):
-                    frame_id = self.gt_poses['frames'][i]
-                    img = self._load_image(frame_id)
-                    images.append(img)
-                
-                # Stack into batch: (1, seq_len, 3, H, W)
-                images_batch = torch.stack(images, dim=0).unsqueeze(0).to(self.device)
-                
-                # Create batch dict
-                batch = {'images': images_batch}
+                # Create batch: (1, 3, H, W) for each image
+                batch = {
+                    'image_t': img_t.unsqueeze(0).to(self.device),
+                    'image_tp1': img_tp1.unsqueeze(0).to(self.device),
+                }
                 
                 # Run inference
-                pred_poses = self.model(batch)  # (1, seq_len-1, 7)
-                pred_poses = pred_poses.squeeze(0).cpu().numpy()  # (seq_len-1, 7)
+                pred_pose = self.model(batch)  # (1, 7)
+                pred_pose = pred_pose.squeeze(0).cpu().numpy()  # (7,)
                 
                 # Extract position and quaternion
-                pred_pos = pred_poses[:, :3]  # (seq_len-1, 3)
-                pred_quat = pred_poses[:, 3:]  # (seq_len-1, 4)
+                pred_pos = pred_pose[:3]  # (3,)
+                pred_quat = pred_pose[3:]  # (4,)
                 
-                # Add predictions (except last one if overlapping with next window)
-                if start_idx + self.sequence_length < self.num_frames:
-                    # Not the last window - exclude last prediction to avoid overlap
-                    rel_positions.append(pred_pos[:-1])
-                    rel_quaternions.append(pred_quat[:-1])
-                else:
-                    # Last window - include all predictions
-                    rel_positions.append(pred_pos)
-                    rel_quaternions.append(pred_quat)
+                rel_positions.append(pred_pos)
+                rel_quaternions.append(pred_quat)
         
-        # Concatenate all predictions
-        rel_positions = np.concatenate(rel_positions, axis=0)  # (N-1, 3)
-        rel_quaternions = np.concatenate(rel_quaternions, axis=0)  # (N-1, 4)
+        # Stack all predictions
+        rel_positions = np.stack(rel_positions, axis=0)  # (N-1, 3)
+        rel_quaternions = np.stack(rel_quaternions, axis=0)  # (N-1, 4)
         
         # Accumulate into absolute trajectory
         abs_positions, abs_quaternions = self._accumulate_trajectory(
@@ -509,15 +494,15 @@ class SequenceEvaluator:
         # Create figure with subplots
         fig = plt.figure(figsize=(16, 5))
         
-        # 1. Trajectory plot (X-Z top-down view)
+        # 1. Trajectory plot (X-Y view)
         ax1 = fig.add_subplot(131)
-        ax1.plot(gt_pos[:, 0], gt_pos[:, 2], 'o-', 
+        ax1.plot(gt_pos[:, 0], gt_pos[:, 1], 'o-', 
                 label='Ground Truth', color='tab:pink', linewidth=2.0, markersize=3)
-        ax1.plot(est_aligned[:, 0], est_aligned[:, 2], 'o-',
+        ax1.plot(est_aligned[:, 0], est_aligned[:, 1], 'o-',
                 label='Estimate', color='tab:blue', linewidth=1.7, markersize=2)
         ax1.set_xlabel('X [m]')
-        ax1.set_ylabel('Z [m]')
-        ax1.set_title('Trajectory (X-Z Top View)')
+        ax1.set_ylabel('Y [m]')
+        ax1.set_title('Trajectory (X-Y View)')
         ax1.axis('equal')
         ax1.grid(True, alpha=0.3)
         ax1.legend()
@@ -644,10 +629,6 @@ class SequenceEvaluator:
 def load_model(
     checkpoint_path: Path,
     model_type: ModelTypes,
-    sequence_length: int,
-    lstm_hidden: int,
-    image_height: int,
-    image_width: int,
     device: str
 ) -> torch.nn.Module:
     """
@@ -656,10 +637,6 @@ def load_model(
     Args:
         checkpoint_path: Path to checkpoint file
         model_type: Type of model to load
-        sequence_length: Sequence length used during training
-        lstm_hidden: LSTM hidden size
-        image_height: Image height
-        image_width: Image width
         device: Device to load model on
     
     Returns:
@@ -671,11 +648,7 @@ def load_model(
     # Create model architecture
     if model_type == ModelTypes.VISUAL:
         from Models import VisualModel
-        model = VisualModel(
-            lstm_hidden_size=lstm_hidden,
-            image_height=image_height,
-            image_width=image_width,
-        )
+        model = VisualModel()
     elif model_type == ModelTypes.INERTIAL:
         from Models import InertialModel
         model = InertialModel()
@@ -687,7 +660,15 @@ def load_model(
     
     # Load checkpoint
     checkpoint = torch.load(checkpoint_path, map_location=device)
-    model.load_state_dict(checkpoint['model_state_dict'])
+    
+    # Handle torch.compile() prefix (_orig_mod.) if present
+    state_dict = checkpoint['model_state_dict']
+    if any(key.startswith('_orig_mod.') for key in state_dict.keys()):
+        # Remove _orig_mod. prefix from all keys
+        state_dict = {key.replace('_orig_mod.', ''): value 
+                      for key, value in state_dict.items()}
+    
+    model.load_state_dict(state_dict)
     model.to(device)
     model.eval()
     
@@ -697,37 +678,40 @@ def load_model(
     return model
 
 
-def get_test_sequences(data_dir: Path, sequence_id: Optional[str] = None) -> List[Path]:
+def get_test_sequences(data_dir: Path, split: str = "test", sequence_id: Optional[str] = None) -> List[Path]:
     """
-    Get list of test sequence directories.
+    Get list of sequence directories to evaluate.
     
     Args:
-        data_dir: Root data directory (should contain 'test' subdirectory or be a test split)
-        sequence_id: Optional specific sequence ID to test
+        data_dir: Root data directory (should contain split subdirectories or be a split itself)
+        split: Which split to use ('train', 'val', or 'test')
+        sequence_id: Optional specific sequence ID to evaluate
     
     Returns:
         List of sequence paths
     """
-    # Try to find test split
-    if (data_dir / "test").exists():
-        test_dir = data_dir / "train"
-    elif data_dir.name == "test":
-        test_dir = data_dir
+    # Try to find the split directory
+    if (data_dir / split).exists():
+        # data_dir is the Generated root, use the split subdirectory
+        eval_dir = data_dir / split
+    elif data_dir.name in ["train", "val", "test"]:
+        # data_dir is already a split directory
+        eval_dir = data_dir
     else:
         # Assume data_dir itself contains sequences
-        test_dir = data_dir
+        eval_dir = data_dir
     
     if sequence_id:
-        # Test specific sequence
-        seq_path = test_dir / sequence_id
+        # Evaluate specific sequence
+        seq_path = eval_dir / sequence_id
         if not seq_path.exists():
             raise FileNotFoundError(f"Sequence not found: {seq_path}")
         return [seq_path]
     else:
-        # Test all sequences in directory
-        sequences = sorted([d for d in test_dir.iterdir() if d.is_dir() and d.name.startswith('seq_')])
+        # Evaluate all sequences in directory
+        sequences = sorted([d for d in eval_dir.iterdir() if d.is_dir() and d.name.startswith('seq_')])
         if not sequences:
-            raise ValueError(f"No test sequences found in {test_dir}")
+            raise ValueError(f"No sequences found in {eval_dir}")
         return sequences
 
 
@@ -735,7 +719,6 @@ def test_single_sequence(
     model: torch.nn.Module,
     model_type: ModelTypes,
     sequence_path: Path,
-    sequence_length: int,
     image_height: int,
     image_width: int,
     device: str,
@@ -755,7 +738,6 @@ def test_single_sequence(
         model=model,
         model_type=model_type,
         sequence_path=sequence_path,
-        sequence_length=sequence_length,
         image_height=image_height,
         image_width=image_width,
         device=device,
@@ -795,7 +777,6 @@ def test_batch(
     model: torch.nn.Module,
     model_type: ModelTypes,
     sequences: List[Path],
-    sequence_length: int,
     image_height: int,
     image_width: int,
     device: str,
@@ -809,7 +790,6 @@ def test_batch(
         model: Trained model
         model_type: Type of model
         sequences: List of sequence paths
-        sequence_length: Sequence length
         image_height: Image height
         image_width: Image width
         device: Device to run on
@@ -824,7 +804,6 @@ def test_batch(
                 model=model,
                 model_type=model_type,
                 sequence_path=seq_path,
-                sequence_length=sequence_length,
                 image_height=image_height,
                 image_width=image_width,
                 device=device,
@@ -902,17 +881,25 @@ def parse_args():
     )
     
     parser.add_argument(
-        '--test-data-dir',
+        '--data-dir',
         type=str,
         required=True,
-        help='Path to test data directory (contains test split or is test split)'
+        help='Path to data directory (contains train/val/test subdirectories or is a split directory)'
+    )
+    
+    parser.add_argument(
+        '--split',
+        type=str,
+        default='test',
+        choices=['train', 'val', 'test'],
+        help='Which data split to evaluate on (default: test)'
     )
     
     parser.add_argument(
         '--sequence-id',
         type=str,
         default=None,
-        help='Specific sequence ID to test (e.g., seq_000041). If not provided, tests all sequences.'
+        help='Specific sequence ID to evaluate (e.g., seq_000041). If not provided, evaluates all sequences in split.'
     )
     
     parser.add_argument(
@@ -920,20 +907,6 @@ def parse_args():
         type=str,
         default=None,
         help='Output directory for results. Default: ../Output/Testing/{MODEL_TYPE}/'
-    )
-    
-    parser.add_argument(
-        '--sequence-length',
-        type=int,
-        default=5,
-        help='Sequence length used during training (default: 5)'
-    )
-    
-    parser.add_argument(
-        '--lstm-hidden',
-        type=int,
-        default=512,
-        help='LSTM hidden size used during training (default: 512)'
     )
     
     parser.add_argument(
@@ -1009,16 +982,12 @@ def main():
     model = load_model(
         checkpoint_path=Path(args.checkpoint),
         model_type=model_type,
-        sequence_length=args.sequence_length,
-        lstm_hidden=args.lstm_hidden,
-        image_height=args.image_height,
-        image_width=args.image_width,
         device=device,
     )
     
-    # Get test sequences
-    sequences = get_test_sequences(Path(args.test_data_dir), args.sequence_id)
-    print(f"\nFound {len(sequences)} sequence(s) to test")
+    # Get sequences to evaluate
+    sequences = get_test_sequences(Path(args.data_dir), args.split, args.sequence_id)
+    print(f"\nFound {len(sequences)} sequence(s) to evaluate on '{args.split}' split")
     
     # Run testing
     if len(sequences) == 1:
@@ -1027,7 +996,6 @@ def main():
             model=model,
             model_type=model_type,
             sequence_path=sequences[0],
-            sequence_length=args.sequence_length,
             image_height=args.image_height,
             image_width=args.image_width,
             device=device,
@@ -1040,7 +1008,6 @@ def main():
             model=model,
             model_type=model_type,
             sequences=sequences,
-            sequence_length=args.sequence_length,
             image_height=args.image_height,
             image_width=args.image_width,
             device=device,

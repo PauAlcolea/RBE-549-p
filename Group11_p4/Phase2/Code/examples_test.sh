@@ -17,19 +17,9 @@ echo ""
 cd "$(dirname "$0")"
 
 # =========================================================
-# Example 1: Test on a single sequence
+# Example 1: Evaluate on test set (default)
 # =========================================================
-echo "Example 1: Testing on a single sequence (seq_000041)..."
-echo "Command: ./run_test.sh seq_000041"
-echo ""
-
-# Uncomment to run:
-# ./run_test.sh seq_000041
-
-# =========================================================
-# Example 2: Test on all test sequences (batch mode)
-# =========================================================
-echo "Example 2: Testing on all test sequences (batch mode)..."
+echo "Example 1: Evaluating on test set (all sequences)..."
 echo "Command: ./run_test.sh"
 echo ""
 
@@ -37,15 +27,44 @@ echo ""
 # ./run_test.sh
 
 # =========================================================
-# Example 3: Test with custom parameters
+# Example 2: Evaluate on training set
 # =========================================================
-echo "Example 3: Testing with custom checkpoint..."
+echo "Example 2: Evaluating on training set..."
+echo "Command: ./run_test.sh --split train"
+echo ""
+
+# Uncomment to run:
+# ./run_test.sh --split train
+
+# =========================================================
+# Example 3: Evaluate on validation set
+# =========================================================
+echo "Example 3: Evaluating on validation set..."
+echo "Command: ./run_test.sh --split val"
+echo ""
+
+# Uncomment to run:
+# ./run_test.sh --split val
+
+# =========================================================
+# Example 4: Evaluate on a single sequence
+# =========================================================
+echo "Example 4: Evaluating on a single sequence (seq_000041)..."
+echo "Command: ./run_test.sh seq_000041"
+echo ""
+
+# Uncomment to run:
+# ./run_test.sh seq_000041
+
+# =========================================================
+# Example 5: Evaluate with custom parameters
+# =========================================================
+echo "Example 5: Evaluating with custom checkpoint on validation set..."
 echo "Command:"
 echo "  python Test.py \\"
 echo "      --checkpoint ../Output/Training/checkpoints/VISUAL/best_model.pth \\"
-echo "      --test-data-dir ../Data/Generated/test \\"
-echo "      --sequence-length 5 \\"
-echo "      --lstm-hidden 512 \\"
+echo "      --data-dir ../Data/Generated \\"
+echo "      --split val \\"
 echo "      --image-height 240 \\"
 echo "      --image-width 320 \\"
 echo "      -v"
@@ -54,17 +73,16 @@ echo ""
 # Uncomment to run:
 # python Test.py \
 #     --checkpoint ../Output/Training/checkpoints/VISUAL/best_model.pth \
-#     --test-data-dir ../Data/Generated/test \
-#     --sequence-length 5 \
-#     --lstm-hidden 512 \
+#     --data-dir ../Data/Generated \
+#     --split val \
 #     --image-height 240 \
 #     --image-width 320 \
 #     -v
 
 # =========================================================
-# Example 4: Use EVO tools on outputs
+# Example 6: Use EVO tools on outputs
 # =========================================================
-echo "Example 4: Using EVO tools on test outputs..."
+echo "Example 6: Using EVO tools on evaluation outputs..."
 echo "Commands (run after testing):"
 echo ""
 echo "  # Navigate to sequence output directory"
@@ -91,9 +109,9 @@ echo "      --save_plot rpe.pdf"
 echo ""
 
 # =========================================================
-# Example 5: Batch analysis of results
+# Example 7: Batch analysis of results
 # =========================================================
-echo "Example 5: Analyzing batch test results..."
+echo "Example 7: Analyzing batch evaluation results..."
 echo "Commands:"
 echo ""
 echo "  # View summary statistics"

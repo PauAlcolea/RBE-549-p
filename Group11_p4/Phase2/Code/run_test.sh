@@ -4,16 +4,16 @@
 # Test DL-based Odometry Models
 # =========================================================
 # Usage examples:
-#   ./run_test.sh                    # Test visual model on all test sequences
-#   ./run_test.sh seq_000041         # Test on specific sequence
+#   ./run_test.sh                    # Evaluate visual model on all test sequences
+#   ./run_test.sh --split train      # Evaluate on training set
+#   ./run_test.sh seq_000041         # Evaluate on specific sequence
 #   ./run_test.sh --show-plots       # Display plots interactively
 # =========================================================
 
 # Default configuration
 CHECKPOINT="../Output/Training/checkpoints/VISUAL/best_model.pth"
-TEST_DATA_DIR="../Data/Generated/test"
-SEQUENCE_LENGTH=5
-LSTM_HIDDEN=512
+DATA_DIR="../Data/Generated"
+SPLIT="test"
 IMAGE_HEIGHT=240
 IMAGE_WIDTH=320
 MODEL_TYPE="-v"  # Visual model
@@ -28,8 +28,12 @@ while [[ $# -gt 0 ]]; do
             CHECKPOINT="$2"
             shift 2
             ;;
-        --test-data-dir)
-            TEST_DATA_DIR="$2"
+        --data-dir)
+            DATA_DIR="$2"
+            shift 2
+            ;;
+        --split)
+            SPLIT="$2"
             shift 2
             ;;
         --show-plots)
@@ -55,21 +59,24 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Options:"
             echo "  --checkpoint PATH       Path to model checkpoint (default: auto-detect from model type)"
-            echo "  --test-data-dir PATH    Path to test data directory (default: ../Data/Generated/test)"
+            echo "  --data-dir PATH         Path to data directory (default: ../Data/Generated)"
+            echo "  --split SPLIT           Data split to evaluate: train, val, or test (default: test)"
             echo "  --show-plots            Display plots interactively"
-            echo "  -i, --inertial          Test inertial model"
-            echo "  -vi, --visual-inertial  Test visual-inertial model"
+            echo "  -i, --inertial          Evaluate inertial model"
+            echo "  -vi, --visual-inertial  Evaluate visual-inertial model"
             echo "  -h, --help              Show this help message"
             echo ""
             echo "Arguments:"
-            echo "  SEQUENCE_ID             Specific sequence to test (e.g., seq_000041)"
-            echo "                          If not provided, tests all sequences in test split"
+            echo "  SEQUENCE_ID             Specific sequence to evaluate (e.g., seq_000041)"
+            echo "                          If not provided, evaluates all sequences in split"
             echo ""
             echo "Examples:"
-            echo "  $0                      # Test visual model on all test sequences"
-            echo "  $0 seq_000041           # Test on specific sequence"
+            echo "  $0                      # Evaluate visual model on test set"
+            echo "  $0 --split train        # Evaluate on training set"
+            echo "  $0 --split val          # Evaluate on validation set"
+            echo "  $0 seq_000041           # Evaluate on specific sequence"
             echo "  $0 --show-plots         # Display plots interactively"
-            echo "  $0 -i                   # Test inertial model"
+            echo "  $0 -i --split train     # Evaluate inertial model on training set"
             exit 0
             ;;
         *)
@@ -89,37 +96,35 @@ if [ ! -f "$CHECKPOINT" ]; then
     exit 1
 fi
 
-# Check if test data directory exists
-if [ ! -d "$TEST_DATA_DIR" ]; then
-    echo "ERROR: Test data directory not found: $TEST_DATA_DIR"
+# Check if data directory exists
+if [ ! -d "$DATA_DIR" ]; then
+    echo "ERROR: Data directory not found: $DATA_DIR"
     echo ""
-    echo "Make sure you have generated test data"
+    echo "Make sure the data directory exists"
     exit 1
 fi
 
 echo "============================================"
-echo "Testing DL-based Odometry Model"
+echo "Evaluating DL-based Odometry Model"
 echo "============================================"
 echo "Checkpoint:        $CHECKPOINT"
-echo "Test data:         $TEST_DATA_DIR"
-echo "Sequence length:   $SEQUENCE_LENGTH"
-echo "LSTM hidden:       $LSTM_HIDDEN"
+echo "Data directory:    $DATA_DIR"
+echo "Split:             $SPLIT"
 echo "Image size:        ${IMAGE_WIDTH}x${IMAGE_HEIGHT}"
 echo "Model type:        $MODEL_TYPE"
 if [ -n "$SEQUENCE_ID" ]; then
     echo "Sequence:          ${SEQUENCE_ID#--sequence-id }"
 else
-    echo "Mode:              Batch (all sequences)"
+    echo "Mode:              Batch (all sequences in $SPLIT split)"
 fi
 echo "============================================"
 echo ""
 
-# Run test
+# Run evaluation
 python Test.py \
     --checkpoint "$CHECKPOINT" \
-    --test-data-dir "$TEST_DATA_DIR" \
-    --sequence-length $SEQUENCE_LENGTH \
-    --lstm-hidden $LSTM_HIDDEN \
+    --data-dir "$DATA_DIR" \
+    --split "$SPLIT" \
     --image-height $IMAGE_HEIGHT \
     --image-width $IMAGE_WIDTH \
     $MODEL_TYPE \
@@ -131,11 +136,11 @@ EXIT_CODE=$?
 if [ $EXIT_CODE -eq 0 ]; then
     echo ""
     echo "============================================"
-    echo "Testing completed successfully!"
+    echo "Evaluation completed successfully!"
     echo "Results saved to: ../Output/Testing/"
     echo "============================================"
 else
     echo ""
-    echo "ERROR: Testing failed with exit code $EXIT_CODE"
+    echo "ERROR: Evaluation failed with exit code $EXIT_CODE"
     exit $EXIT_CODE
 fi
