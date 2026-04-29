@@ -5,6 +5,19 @@ from pathlib import Path
 from typing import List, Tuple
 import matplotlib.pyplot as plt
 import os
+import numpy as np
+
+from imu_noise_utils import (
+    acc_gen,
+    gyro_gen,
+    vib_from_env,
+    accel_low_accuracy,
+    accel_mid_accuracy,
+    accel_high_accuracy,
+    gyro_low_accuracy,
+    gyro_mid_accuracy,
+    gyro_high_accuracy,
+)
 
 
 # read from teh poses.csv
@@ -113,6 +126,7 @@ def diff_quat(quats, dt):
 
 
 # this calls the different derivative functions above and gets the acceleration and angular velocity
+# this is the ground truth before the noise
 def compute_imu(pos, quat, dt):
     vel = diff_vec(pos, dt)
     acc_world = diff_vec(vel, dt)
@@ -141,8 +155,37 @@ def compute_imu(pos, quat, dt):
     return acc_body, omega_body
 
 
+# # # use the script from https://github.com/prgumd/Oystersim/blob/master/code/ImuUtils.py to add noise
+def get_noise_params(profile):
+    profile = profile.lower()
+    if profile == "low":
+        return accel_low_accuracy, gyro_low_accuracy
+    if profile == "mid":
+        return accel_mid_accuracy, gyro_mid_accuracy
+    if profile == "high":
+        return accel_high_accuracy, gyro_high_accuracy
+    raise ValueError(f"Unknown noise profile '{profile}'. Use low|mid|high.")
+
+
+def add_imu_noise(acc_gt, omega_gt, hz, profile="mid", seed=None, acc_vib=None, gyro_vib=None):
+    if seed is not None:
+        np.random.seed(seed)
+
+    acc_err, gyro_err = get_noise_params(profile)
+
+    acc_np = np.asarray(acc_gt, dtype=np.float64)
+    omega_np = np.asarray(omega_gt, dtype=np.float64)
+
+    acc_vib_def = vib_from_env(acc_vib, hz) if acc_vib else None
+    gyro_vib_def = vib_from_env(gyro_vib, hz) if gyro_vib else None
+
+    acc_noisy = acc_gen(hz, acc_np, acc_err, acc_vib_def)
+    omega_noisy = gyro_gen(hz, omega_np, gyro_err, gyro_vib_def)
+    return acc_noisy.tolist(), omega_noisy.tolist()
+
+
 # visualization for the data
-def save_imu_plot(acc, omega, dt, output_dir, sequence_name):
+def save_imu_plot(acc, omega, dt, output_dir, sequence_name, acc_gt=None, omega_gt=None):
 
     t = [i * dt for i in range(len(acc))]
 
@@ -150,17 +193,25 @@ def save_imu_plot(acc, omega, dt, output_dir, sequence_name):
 
     labels = ["x", "y", "z"]
 
-    # --- Acceleration (top 3) ---
+    has_gt = acc_gt is not None and omega_gt is not None
+
+    # Top 3 acceleration
     for i in range(3):
-        axs[i].plot(t, [a[i] for a in acc])
+        axs[i].plot(t, [a[i] for a in acc], label="noisy")
+        if has_gt:
+            axs[i].plot(t, [a[i] for a in acc_gt], "--", label="gt", alpha=0.85)
         axs[i].set_ylabel(f"a_{labels[i]} (m/s²)")
         axs[i].grid()
+        axs[i].legend(loc="upper right", fontsize=8)
 
-    # --- Angular velocity (bottom 3) ---
+    # Bottom 3 angular velocity
     for i in range(3):
-        axs[i+3].plot(t, [w[i] for w in omega])
+        axs[i+3].plot(t, [w[i] for w in omega], label="noisy")
+        if has_gt:
+            axs[i+3].plot(t, [w[i] for w in omega_gt], "--", label="gt", alpha=0.85)
         axs[i+3].set_ylabel(f"ω_{labels[i]} (rad/s)")
         axs[i+3].grid()
+        axs[i+3].legend(loc="upper right", fontsize=8)
 
     axs[-1].set_xlabel("Time (s)")
 
@@ -175,34 +226,64 @@ def save_imu_plot(acc, omega, dt, output_dir, sequence_name):
     print(f"[PLOT SAVED] {save_path}")
 
 # this is the big file that gets called
-def process_file(pose_path, hz):
+def process_file(pose_path, hz, noise_profile, noise_seed, acc_vib, gyro_vib):
     dt = 1.0 / hz
 
     frames, pos, quat = read_poses(pose_path)
-    acc, omega = compute_imu(pos, quat, dt)
+    acc_gt, omega_gt = compute_imu(pos, quat, dt)
+    acc_noisy, omega_noisy = add_imu_noise(
+        acc_gt,
+        omega_gt,
+        hz,
+        profile=noise_profile,
+        seed=noise_seed,
+        acc_vib=acc_vib,
+        gyro_vib=gyro_vib,
+    )
 
     seq_dir = pose_path.parent
     seq_name = seq_dir.name
 
-    # Save IMU CSV
-    imu_path = seq_dir / "imu.csv"
-    write_imu(imu_path, frames, acc, omega, dt)
+    # Save GT and noisy IMU CSV
+    imu_gt_path = seq_dir / "imu_gt.csv"
+    imu_noisy_path = seq_dir / f"{seq_name}_imu.csv"
+    write_imu(imu_gt_path, frames, acc_gt, omega_gt, dt)
+    write_imu(imu_noisy_path, frames, acc_noisy, omega_noisy, dt)
 
     # Save plot into Output folder inside sequence
     output_dir = seq_dir
-    save_imu_plot(acc, omega, dt, output_dir, seq_name)
+    save_imu_plot(
+        acc_noisy,
+        omega_noisy,
+        dt,
+        output_dir,
+        seq_name,
+        acc_gt=acc_gt,
+        omega_gt=omega_gt,
+    )
 
-    print(f"[OK] {pose_path} -> {imu_path}")
+    print(f"[OK] {pose_path} -> {imu_gt_path} and {imu_noisy_path}")
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--hz", type=float, default=100)
+    parser.add_argument("--noise-profile", type=str, default="mid", choices=["low", "mid", "high"])
+    parser.add_argument("--noise-seed", type=int, default=None)
+    parser.add_argument("--acc-vib", type=str, default=None, help="e.g. '[0.03 0.01 0.01]-random'")
+    parser.add_argument("--gyro-vib", type=str, default=None, help="e.g. '[0.2 0.2 0.1]d-1Hz-sinusoidal'")
     args = parser.parse_args()
 
     # goes through all the poses.csv files in the Data directory
     for p in args.data_root.rglob("poses.csv"):
-        process_file(p, args.hz)
+        process_file(
+            p,
+            args.hz,
+            args.noise_profile,
+            args.noise_seed,
+            args.acc_vib,
+            args.gyro_vib,
+        )
 
 if __name__ == "__main__":
     main()
