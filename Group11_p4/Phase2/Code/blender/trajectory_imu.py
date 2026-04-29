@@ -104,12 +104,14 @@ def sample_circle(common: CommonCfg, cfg: ShapeCfg) -> List[Tuple[float, float, 
     total_len = 2.0 * math.pi * cfg.radius * common.laps
     total_time = total_len / common.speed
     n_steps = max(2, int(round(total_time * common.sim_hz)))
-    omega = common.speed / cfg.radius
+    # omega = common.speed / cfg.radius
 
     pts = []
     for k in range(n_steps + 1):
-        t = k / common.sim_hz
-        th = omega * t
+        # t = k / common.sim_hz
+        # th = omega * t
+        # Parameterize by mornalized index so that the final sample closes exactly
+        th = 2.0 * math.pi * common.laps * (k / n_steps)
         pts.append((cfg.radius * math.cos(th), cfg.radius * math.sin(th), common.height))
     return pts
 
