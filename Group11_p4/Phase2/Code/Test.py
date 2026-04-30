@@ -171,12 +171,12 @@ class SequenceEvaluator:
                 }
                 
                 # Run inference
-                pred_pose = self.model(batch)  # (1, 7)
-                pred_pose = pred_pose.squeeze(0).cpu().numpy()  # (7,)
+                pred_pose = self.model(batch)  # (1, 6) = [dx, dy, qw, qx, qy, qz]
+                pred_pose = pred_pose.squeeze(0).cpu().numpy()  # (6,)
                 
                 # Extract position and quaternion
-                pred_pos = pred_pose[:3]  # (3,)
-                pred_quat = pred_pose[3:]  # (4,)
+                pred_pos = np.array([pred_pose[0], pred_pose[1], 0.0])  # [dx, dy, 0] for ground plane
+                pred_quat = pred_pose[2:]  # (4,) [qw, qx, qy, qz]
                 
                 rel_positions.append(pred_pos)
                 rel_quaternions.append(pred_quat)
