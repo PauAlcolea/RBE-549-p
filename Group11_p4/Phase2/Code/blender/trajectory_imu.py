@@ -13,12 +13,13 @@ from __future__ import annotations
 
 import argparse
 import csv
+import fcntl
 import json
 import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 
 @dataclass
@@ -36,6 +37,13 @@ class ShapeCfg:
     radius: float = 1.0
     width: float = 3.0
     length: float = 2.0
+
+
+IMG_WIDTH = 640
+IMG_HEIGHT = 480
+FOCAL_MM = 50.0
+SENSOR_WIDTH_MM = 36.0
+ALLOWED_SPLITS = {"train", "val", "test"}
 
 
 def yaw_to_quat(yaw: float) -> Tuple[float, float, float, float]:
@@ -209,7 +217,16 @@ def write_poses_csv(
             )
 
 
-def write_trajectory_summary(path: Path, common: CommonCfg, cfg: ShapeCfg, n_frames: int, seq_id: str) -> None:
+def write_trajectory_summary(
+    path: Path,
+    common: CommonCfg,
+    cfg: ShapeCfg,
+    n_frames: int,
+    seq_id: str,
+    split: str,
+    texture: str,
+    seed: str,
+) -> None:
     meta = {
         "shape": cfg.shape,
         "height": common.height,
@@ -220,14 +237,32 @@ def write_trajectory_summary(path: Path, common: CommonCfg, cfg: ShapeCfg, n_fra
         "radius": cfg.radius,
         "width": cfg.width,
         "length": cfg.length,
+        "split": split,
+        "texture": texture,
         "sequence_id": seq_id,
+        "seed": seed,
         "generated_utc": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "frames": n_frames,
         "duration_s": n_frames / common.sim_hz,
     }
 
     with path.open("w") as f:
-        f.write("=== Trajectory Summary ===\n\n")
+        f.write("=== Drone Trajectory Summary ===\n\n")
+        f.write(f"  Shape            : {cfg.shape}\n")
+        if cfg.shape == "square":
+            f.write(f"  Square side      : {cfg.side} m\n")
+        elif cfg.shape == "figure8":
+            f.write(f"  Figure8 width    : {cfg.width} m\n")
+            f.write(f"  Figure8 length   : {cfg.length} m\n")
+        elif cfg.shape == "circle":
+            f.write(f"  Circle radius    : {cfg.radius} m\n")
+        f.write(f"  Camera height    : {common.height} m\n")
+        f.write(f"  Number of laps   : {common.laps}\n")
+        f.write(f"  Drone speed      : {common.speed} m/s\n")
+        f.write(f"  Sim rate (SIM_HZ): {common.sim_hz} Hz\n")
+        f.write(f"  Total frames     : {n_frames}\n")
+        f.write(f"  Total duration   : {n_frames / common.sim_hz:.2f} s\n\n")
+        f.write("Effective parameters (JSON):\n")
         f.write(json.dumps(meta, indent=2) + "\n")
 
 
@@ -243,11 +278,79 @@ def resolve_output_dir(data_root: Path, split: str, seq_id: str) -> Path:
     return out
 
 
+def write_camera_k(path: Path) -> None:
+    fx = (FOCAL_MM / SENSOR_WIDTH_MM) * IMG_WIDTH
+    fy = fx
+    cx = IMG_WIDTH / 2.0
+    cy = IMG_HEIGHT / 2.0
+
+    k = [
+        [fx, 0.0, cx],
+        [0.0, fy, cy],
+        [0.0, 0.0, 1.0],
+    ]
+
+    with path.open("w") as f:
+        f.write(f"# Intrinsic matrix K  (image size: {IMG_WIDTH} x {IMG_HEIGHT})\n")
+        f.write("# fx  0   cx\n")
+        f.write("# 0   fy  cy\n")
+        f.write("# 0   0   1\n\n")
+        for row in k:
+            f.write("  ".join(f"{v:12.6f}" for v in row) + "\n")
+        f.write(f"\nfx = {fx:.6f}\n")
+        f.write(f"fy = {fy:.6f}\n")
+        f.write(f"cx = {cx:.6f}\n")
+        f.write(f"cy = {cy:.6f}\n")
+
+
+def write_sequence_metadata(output_dir: Path, metadata: Dict) -> None:
+    metadata_path = output_dir / "metadata.json"
+    with metadata_path.open("w") as f:
+        json.dump(metadata, f, indent=2, sort_keys=True)
+
+
+def append_dataset_manifest(base_output_dir: Path, row: Dict[str, str]) -> None:
+    manifest_path = base_output_dir / "index.csv"
+    lock_path = manifest_path.with_suffix(manifest_path.suffix + ".lock")
+    fieldnames = [
+        "sequence_id",
+        "split",
+        "shape",
+        "texture",
+        "height_m",
+        "speed_mps",
+        "laps",
+        "sim_hz",
+        "num_frames",
+        "duration_s",
+        "seed",
+        "rel_path",
+        "timestamp_utc",
+    ]
+
+    with lock_path.open("w") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        write_header = not manifest_path.exists()
+        with manifest_path.open("a", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            if write_header:
+                writer.writeheader()
+            writer.writerow(row)
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate trajectory poses_imu.csv for IMU use (no Blender)")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Generate IMU trajectory sequences with the same dataset structure as "
+            "visual generation (except frames/ rendering)."
+        )
+    )
     parser.add_argument("--data-root", type=Path, default=Path(__file__).resolve().parents[2] / "Data" / "Generated")
     parser.add_argument("--split", type=str, default="train", choices=["train", "val", "test"])
     parser.add_argument("--seq-id", type=str, required=True, help="Sequence folder name, e.g. seq_000123")
+    parser.add_argument("--texture", type=str, default="playrug", help="Texture tag for metadata/manifest consistency")
+    parser.add_argument("--seed", type=str, default="", help="Optional seed tag for metadata/manifest consistency")
 
     parser.add_argument("--shape", type=str, default="square", choices=["square", "figure8", "circle"])
     parser.add_argument("--height", type=float, default=1.5)
@@ -288,7 +391,11 @@ def main() -> None:
     if cfg.shape == "figure8" and (cfg.width <= 0.0 or cfg.length <= 0.0):
         raise ValueError("--width and --length must be > 0 for figure8")
 
-    out_dir = resolve_output_dir(args.data_root, args.split, args.seq_id)
+    split = str(args.split).strip().lower()
+    if split not in ALLOWED_SPLITS:
+        raise ValueError(f"--split must be one of {sorted(ALLOWED_SPLITS)}")
+
+    out_dir = resolve_output_dir(args.data_root, split, args.seq_id)
 
     positions = generate_positions(common, cfg)
     yaw_offset_rad = math.radians(args.yaw_deg)
@@ -297,11 +404,76 @@ def main() -> None:
     else:
         yaws = [yaw_offset_rad] * len(positions)
 
-    write_poses_csv(out_dir / "poses_imu.csv", positions, yaws)
-    write_trajectory_summary(out_dir / "trajectory_imu.txt", common, cfg, len(positions), args.seq_id)
+    write_poses_csv(out_dir / "poses.csv", positions, yaws)
+    write_camera_k(out_dir / "camera_K.txt")
+    write_trajectory_summary(
+        out_dir / "trajectory.txt",
+        common,
+        cfg,
+        len(positions),
+        args.seq_id,
+        split=split,
+        texture=args.texture,
+        seed=str(args.seed).strip(),
+    )
+
+    rel_path = str((Path(split) / args.seq_id).as_posix())
+    generated_utc = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    metadata = {
+        "sequence_id": args.seq_id,
+        "split": split,
+        "shape": cfg.shape,
+        "texture": args.texture,
+        "height_m": common.height,
+        "speed_mps": common.speed,
+        "laps": common.laps,
+        "sim_hz": common.sim_hz,
+        "num_frames": len(positions),
+        "duration_s": len(positions) / common.sim_hz,
+        "seed": str(args.seed).strip(),
+        "blend_file": "trajectory_imu.py",
+        "output_dir": str(out_dir.resolve()),
+        "relative_output_dir": rel_path,
+        "trajectory_parameters": {
+            "shape": cfg.shape,
+            "height": common.height,
+            "laps": common.laps,
+            "speed": common.speed,
+            "sim_hz": common.sim_hz,
+            "side": cfg.side,
+            "radius": cfg.radius,
+            "width": cfg.width,
+            "length": cfg.length,
+            "texture": args.texture,
+            "split": split,
+            "sequence_id": args.seq_id,
+            "seed": str(args.seed).strip(),
+        },
+        "generated_utc": generated_utc,
+    }
+    write_sequence_metadata(out_dir, metadata)
+    append_dataset_manifest(
+        args.data_root,
+        {
+            "sequence_id": args.seq_id,
+            "split": split,
+            "shape": cfg.shape,
+            "texture": args.texture,
+            "height_m": f"{common.height:.6f}",
+            "speed_mps": f"{common.speed:.6f}",
+            "laps": str(common.laps),
+            "sim_hz": str(common.sim_hz),
+            "num_frames": str(len(positions)),
+            "duration_s": f"{len(positions) / common.sim_hz:.6f}",
+            "seed": str(args.seed).strip(),
+            "rel_path": rel_path,
+            "timestamp_utc": generated_utc,
+        },
+    )
 
     print(f"[OK] Generated sequence at: {out_dir}")
-    print(f"[OK] poses_imu.csv frames: {len(positions)}")
+    print(f"[OK] poses.csv frames: {len(positions)}")
+    print(f"[OK] metadata.json + index.csv updated")
 
 
 if __name__ == "__main__":

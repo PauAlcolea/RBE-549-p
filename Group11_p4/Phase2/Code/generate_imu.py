@@ -406,11 +406,8 @@ def main():
     parser.add_argument("--gyro-vib", type=str, default=None, help="e.g. '[0.2 0.2 0.1]d-1Hz-sinusoidal'")
     args = parser.parse_args()
 
-    # Prefer IMU-specific trajectories when present.
-    pose_files = sorted(args.data_root.rglob("poses_imu.csv"))
-    if not pose_files:
-        # Backward compatibility with older generated data.
-        pose_files = sorted(args.data_root.rglob("poses.csv"))
+    # Prefer the unified dataset layout (poses.csv), fallback for older IMU-only sets.
+    pose_files = sorted(args.data_root.rglob("poses.csv"))
 
     for p in pose_files:
         process_file(
