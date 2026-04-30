@@ -32,8 +32,6 @@ class Pipeline:
         model_type,
         train_dir,
         val_dir,
-        sequence_length,
-        lstm_hidden,
         image_height,
         image_width,
     ):
@@ -42,23 +40,15 @@ class Pipeline:
         if model_type == ModelTypes.VISUAL:
             self.train_dataset = VisualDataset(
                 train_dir,
-                mode="sequences",
-                sequence_length=sequence_length,
                 image_height=image_height,
                 image_width=image_width,
             )
             self.val_dataset = VisualDataset(
                 val_dir,
-                mode="sequences",
-                sequence_length=sequence_length,
                 image_height=image_height,
                 image_width=image_width,
             )
-            self.model = VisualModel(
-                lstm_hidden_size=lstm_hidden,
-                image_height=image_height,
-                image_width=image_width,
-            )
+            self.model = VisualModel()
         elif model_type == ModelTypes.INERTIAL:
             self.train_dataset = InertialDataset(train_dir)
             self.val_dataset = InertialDataset(val_dir)
@@ -94,8 +84,6 @@ def train(
     num_workers=2,
     checkpoint_dir=Path(output_dir) / "checkpoints",
     model=ModelTypes.VISUAL,
-    sequence_length=10,
-    lstm_hidden=1000,
     image_height=360,
     image_width=480,
 ):
@@ -125,8 +113,6 @@ def train(
         model,
         train_data_dir,
         val_data_dir,
-        sequence_length=sequence_length,
-        lstm_hidden=lstm_hidden,
         image_height=image_height,
         image_width=image_width,
     )
@@ -174,6 +160,11 @@ def train(
 
             # Back propagation and optimizer step with GradScaler
             scaler.scale(loss).backward()
+            
+            # Gradient clipping to prevent explosion
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            
             scaler.step(optimizer)
             scaler.update()
 
@@ -216,7 +207,7 @@ def train(
         # TODO: something that plots the predicted vs ground truth trajectory for tensorboard
 
         # logging
-        writer.add_scalar("Loss/Val", val_loss, epoch)
+        writer.add_scalar("Loss/Val", val_loss, global_step)
         print(
             f"Epoch {epoch}: Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}"
         )
@@ -283,11 +274,12 @@ def _parse_args():
 def main():
     args = _parse_args()
 
-    model_type = (
-        ModelTypes.VISUAL
-        if args.v
-        else (ModelTypes.INERTIAL if args.i else ModelTypes.VISUAL_INERTIAL)
-    )
+    if args.v:
+        model_type = ModelTypes.VISUAL
+    elif args.i:
+        model_type = ModelTypes.INERTIAL
+    else:
+        model_type = ModelTypes.VISUAL_INERTIAL
 
     train(
         train_data_dir=args.train_data_dir,
