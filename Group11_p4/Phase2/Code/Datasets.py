@@ -402,8 +402,195 @@ class VisualDataset(Dataset):
 
 
 class InertialDataset:
-    def __init__(self, *args, **kwargs):
-        raise NotImplementedError("InertialDataset is not implemented yet.")
+    """
+    Dataset for inertial-only odometry from generated sequence format.
+
+    Returns samples in sequence mode:
+    {
+        'imu': (seq_len, 6),                 # [ax, ay, az, wx, wy, wz]
+        'target_rel_poses': (seq_len-1, 7),  # [dx, dy, dz, qw, qx, qy, qz]
+        ...
+    }
+    """
+
+    def __init__(
+        self,
+        data_dir,
+        split: Optional[str] = None,
+        strict: bool = False,
+        sequence_length: int = 10,
+        sequence_stride: int = 1,
+    ):
+        self.data_dir = Path(data_dir)
+        self.strict = strict
+        self.sequence_length = sequence_length
+        self.sequence_stride = sequence_stride
+
+        if sequence_length < 2:
+            raise ValueError(f"sequence_length must be >= 2, got {sequence_length}")
+
+        self.generated_root, self.split = VisualDataset._resolve_generated_root_and_split(
+            self.data_dir, split
+        )
+        self.index_path = self.generated_root / "index.csv"
+
+        if not self.index_path.exists():
+            raise FileNotFoundError(f"Could not find index.csv at {self.index_path}")
+
+        self.sequences: List[Dict] = []
+        self.samples: List[Tuple[int, int]] = []
+        self._build_index()
+
+        if len(self.samples) == 0:
+            raise ValueError(
+                f"No valid samples found in split='{self.split}' under {self.generated_root}"
+            )
+
+    def _build_index(self) -> None:
+        with self.index_path.open("r", newline="") as f:
+            reader = csv.DictReader(f)
+            rows = [row for row in reader if row.get("split") == self.split]
+
+        if not rows:
+            raise ValueError(
+                f"No sequences found for split='{self.split}' in {self.index_path}"
+            )
+
+        for row in rows:
+            seq = self._load_sequence(row)
+            seq_idx = len(self.sequences)
+            self.sequences.append(seq)
+
+            num_frames = len(seq["frame_ids"])
+            for start_idx in range(
+                0, num_frames - self.sequence_length + 1, self.sequence_stride
+            ):
+                self.samples.append((seq_idx, start_idx))
+
+    def _load_sequence(self, row: Dict[str, str]) -> Dict:
+        seq_id = row["sequence_id"]
+        seq_path = self.generated_root / row["rel_path"]
+        poses_path = seq_path / "poses.csv"
+        imu_path = seq_path / f"{seq_id}_imu.csv"
+
+        required = [poses_path, imu_path]
+        for req_path in required:
+            if not req_path.exists():
+                msg = f"Missing required path for {seq_id}: {req_path}"
+                if self.strict:
+                    raise FileNotFoundError(msg)
+                return self._empty_sequence(row, seq_path)
+
+        poses = VisualDataset._read_poses(poses_path)
+        imu = self._read_imu(imu_path)
+
+        pose_frame_to_idx = {int(fid): i for i, fid in enumerate(poses["frame_ids"])}
+        imu_frame_to_idx = {int(fid): i for i, fid in enumerate(imu["frame_ids"])}
+        common_frames = sorted(set(pose_frame_to_idx.keys()) & set(imu_frame_to_idx.keys()))
+
+        if len(common_frames) < 2:
+            msg = f"Sequence {seq_id} has fewer than 2 aligned IMU/pose frames."
+            if self.strict:
+                raise ValueError(msg)
+            return self._empty_sequence(row, seq_path)
+
+        pose_keep = [pose_frame_to_idx[fid] for fid in common_frames]
+        imu_keep = [imu_frame_to_idx[fid] for fid in common_frames]
+
+        frame_ids = np.array(common_frames, dtype=np.int64)
+        t_abs = poses["translations"][pose_keep]
+        q_abs = poses["quaternions"][pose_keep]
+        imu_values = imu["values"][imu_keep]
+
+        return {
+            "sequence_id": seq_id,
+            "shape": row.get("shape", ""),
+            "texture": row.get("texture", ""),
+            "height_m": float(row.get("height_m", 0.0)),
+            "speed_mps": float(row.get("speed_mps", 0.0)),
+            "frame_ids": frame_ids,
+            "imu": imu_values,
+            "t_abs": t_abs,
+            "q_abs": q_abs,
+            "seq_path": seq_path,
+        }
+
+    @staticmethod
+    def _empty_sequence(row: Dict[str, str], seq_path: Path) -> Dict:
+        return {
+            "sequence_id": row.get("sequence_id", ""),
+            "shape": row.get("shape", ""),
+            "texture": row.get("texture", ""),
+            "height_m": float(row.get("height_m", 0.0)),
+            "speed_mps": float(row.get("speed_mps", 0.0)),
+            "frame_ids": np.array([], dtype=np.int64),
+            "imu": np.empty((0, 6), dtype=np.float32),
+            "t_abs": np.empty((0, 3), dtype=np.float32),
+            "q_abs": np.empty((0, 4), dtype=np.float32),
+            "seq_path": seq_path,
+        }
+
+    @staticmethod
+    def _read_imu(imu_path: Path) -> Dict[str, np.ndarray]:
+        frame_ids = []
+        values = []
+
+        with imu_path.open("r", newline="") as f:
+            reader = csv.DictReader(f)
+            required_cols = ["frame", "ax", "ay", "az", "wx", "wy", "wz"]
+            for col in required_cols:
+                if col not in reader.fieldnames:
+                    raise ValueError(f"Missing column '{col}' in {imu_path}")
+
+            for row in reader:
+                frame_ids.append(int(row["frame"]))
+                values.append(
+                    [
+                        float(row["ax"]),
+                        float(row["ay"]),
+                        float(row["az"]),
+                        float(row["wx"]),
+                        float(row["wy"]),
+                        float(row["wz"]),
+                    ]
+                )
+
+        return {
+            "frame_ids": np.array(frame_ids, dtype=np.int64),
+            "values": np.array(values, dtype=np.float32),
+        }
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        if idx < 0 or idx >= len(self.samples):
+            raise IndexError(f"Sample index out of range: {idx}")
+
+        seq_idx, start_idx = self.samples[idx]
+        seq = self.sequences[seq_idx]
+        end_idx = start_idx + self.sequence_length
+
+        imu_tensor = torch.from_numpy(seq["imu"][start_idx:end_idx])
+
+        target_rel_poses = []
+        for i in range(start_idx, end_idx - 1):
+            rel_pose = VisualDataset._relative_pose(
+                seq["t_abs"][i], seq["q_abs"][i], seq["t_abs"][i + 1], seq["q_abs"][i + 1]
+            )
+            target_rel_poses.append(rel_pose)
+        target_rel_poses_tensor = torch.from_numpy(np.stack(target_rel_poses, axis=0))
+
+        return {
+            "imu": imu_tensor,
+            "target_rel_poses": target_rel_poses_tensor,
+            "sequence_id": seq["sequence_id"],
+            "frame_start": int(seq["frame_ids"][start_idx]),
+            "frame_end": int(seq["frame_ids"][end_idx - 1]),
+            "shape": seq["shape"],
+            "texture": seq["texture"],
+            "height_m": float(seq["height_m"]),
+        }
 
 
 class VisualInertialDataset:
