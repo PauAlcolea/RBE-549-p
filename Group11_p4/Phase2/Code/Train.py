@@ -34,6 +34,7 @@ class Pipeline:
         val_dir,
         image_height,
         image_width,
+        use_augmentation,
     ):
         self.model_type = model_type
 
@@ -42,11 +43,13 @@ class Pipeline:
                 train_dir,
                 image_height=image_height,
                 image_width=image_width,
+                use_augmentation=use_augmentation,
             )
             self.val_dataset = VisualDataset(
                 val_dir,
                 image_height=image_height,
                 image_width=image_width,
+                use_augmentation=False,
             )
             self.model = VisualModel()
         elif model_type == ModelTypes.INERTIAL:
@@ -86,6 +89,7 @@ def train(
     model=ModelTypes.VISUAL,
     image_height=360,
     image_width=480,
+    use_augmentation=False,
 ):
     # specify log and checkpoint directories by model type to avoid conflicts
     log_dir = log_dir / model.name
@@ -115,6 +119,7 @@ def train(
         val_data_dir,
         image_height=image_height,
         image_width=image_width,
+        use_augmentation=use_augmentation,
     )
     train_dataset = pipeline.train_dataset
     val_dataset = pipeline.val_dataset
@@ -259,6 +264,11 @@ def _parse_args():
         default=480,
         help="Image width for training (original: 640)",
     )
+    parser.add_argument(
+        "--use_augmentation",
+        action="store_true",
+        help="Enable data augmentation (brightness, contrast, noise) for training",
+    )
 
     type_group = parser.add_mutually_exclusive_group(required=True)
     type_group.add_argument("-v", action="store_true", help="Use Visual Model")
@@ -290,6 +300,7 @@ def main():
         model=model_type,
         image_height=args.image_height,
         image_width=args.image_width,
+        use_augmentation=args.use_augmentation,
     )
 
 

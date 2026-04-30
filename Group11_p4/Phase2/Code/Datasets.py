@@ -26,17 +26,27 @@ class VisualDataset(Dataset):
         transform=None,
         image_height: int = 360,
         image_width: int = 480,
+        use_augmentation: bool = False,
     ):
         self.data_dir = Path(data_dir)
         self.transform = transform
         self.image_height = image_height
         self.image_width = image_width
+        self.use_augmentation = use_augmentation
 
-        if mode not in ["pairs", "sequences"]:
-            raise ValueError(f"mode must be 'pairs' or 'sequences', got '{mode}'")
+        # Initialize augmentation if enabled
+        self.augmentation = None
+        if self.use_augmentation:
+            from Augmentation import VisualOdometryAugmentation, PairAugmentation
 
-        if mode == "sequences" and sequence_length < 2:
-            raise ValueError(f"sequence_length must be >= 2, got {sequence_length}")
+            base_aug = VisualOdometryAugmentation(
+                brightness_range=(0.7, 1.3),
+                contrast_range=(0.7, 1.3),
+                gaussian_noise_std=0.02,
+                apply_prob=0.8,
+            )
+            self.augmentation = PairAugmentation(base_aug)
+
 
         self.generated_root, self.split = self._resolve_generated_root_and_split(
             self.data_dir, split
@@ -303,6 +313,10 @@ class VisualDataset(Dataset):
         if self.transform is not None:
             image_t = self.transform(image_t)
             image_tp1 = self.transform(image_tp1)
+
+        # Apply augmentation to both images with same parameters
+        if self.augmentation is not None:
+            image_t, image_tp1 = self.augmentation(image_t, image_tp1)
 
         t0 = seq["t_abs"][local_idx]
         q0 = seq["q_abs"][local_idx]
