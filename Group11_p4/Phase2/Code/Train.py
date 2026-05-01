@@ -144,7 +144,7 @@ def train(
 
     model = torch.compile(pipeline.model.to(device))
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=5, min_lr=1e-7, verbose=True)
+    scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=5, min_lr=1e-7)
 
     # mixed precision scaler
     scaler = GradScaler(enabled=(torch.cuda.is_available() and "cuda" in str(device)))
