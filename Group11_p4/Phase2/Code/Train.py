@@ -8,6 +8,7 @@ import torch
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from torch.amp import autocast, GradScaler
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from tqdm import tqdm
 from argparse import ArgumentParser
 from enum import Enum
@@ -143,6 +144,7 @@ def train(
 
     model = torch.compile(pipeline.model.to(device))
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=5, min_lr=1e-7, verbose=True)
 
     # mixed precision scaler
     scaler = GradScaler(enabled=(torch.cuda.is_available() and "cuda" in str(device)))
@@ -196,6 +198,7 @@ def train(
                 val_loss += loss.item() * current_batch_size
 
         val_loss /= max(1, num_val_samples)
+        scheduler.step(val_loss)
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             checkpoint_path = checkpoint_dir / f"best_model.pth"
