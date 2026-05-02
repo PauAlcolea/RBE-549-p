@@ -15,11 +15,6 @@ cd Code
 ./run_test.sh
 ```
 
-### Display Plots Interactively
-```bash
-./run_test.sh --show-plots
-```
-
 ## Usage
 
 ### Command Line
@@ -62,9 +57,6 @@ The `run_test.sh` script provides convenient defaults:
 
 # Test specific sequence
 ./run_test.sh seq_000041
-
-# Show plots
-./run_test.sh --show-plots
 
 # Test inertial model
 ./run_test.sh -i
