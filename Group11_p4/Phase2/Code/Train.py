@@ -5,6 +5,10 @@ sys.dont_write_bytecode = True
 
 import os
 import torch
+import numpy as np
+import matplotlib
+matplotlib.use("Agg")       # allows this to run headless 
+import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from torch.amp import autocast, GradScaler
@@ -69,6 +73,130 @@ class Pipeline:
             self.model = VisualInertialModel()
 
 
+def _quat_mul_np(q1, q2):
+    w1, x1, y1, z1 = q1
+    w2, x2, y2, z2 = q2
+    return np.array(
+        [
+            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+        ],
+        dtype=np.float64,
+    )
+
+
+def _quat_to_rotmat_np(q):
+    q = q / max(np.linalg.norm(q), 1e-12)
+    w, x, y, z = q
+    return np.array(
+        [
+            [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w)],
+            [2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w)],
+            [2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y)],
+        ],
+        dtype=np.float64,
+    )
+
+
+def _relative_poses_to_world_positions(rel_poses):
+    """
+    Convert relative local-frame poses [dx,dy,dz,qw,qx,qy,qz] into world XYZ path.
+    Returns (T, 3) positions, starting at the origin.
+    """
+    n = rel_poses.shape[0]
+    positions = np.zeros((n + 1, 3), dtype=np.float64)
+    q_world = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+
+    for i in range(n):
+        d_local = rel_poses[i, :3]
+        q_rel = rel_poses[i, 3:]
+        q_rel = q_rel / max(np.linalg.norm(q_rel), 1e-12)
+
+        r_world = _quat_to_rotmat_np(q_world)
+        d_world = r_world @ d_local
+        positions[i + 1] = positions[i] + d_world
+        q_world = _quat_mul_np(q_world, q_rel)
+        q_world = q_world / max(np.linalg.norm(q_world), 1e-12)
+
+    return positions
+
+
+def _save_val_trajectory_plot(model, val_loader, device, epoch, val_loss, plot_dir):
+    model.eval()
+    with torch.no_grad():
+        for batch in val_loader:
+            batch = _move_batch_to_device(batch, device)
+            pred = model.forward(batch)
+            gt = batch["target_rel_poses"]
+
+            pred_np = pred[0].detach().cpu().numpy()
+            gt_np = gt[0].detach().cpu().numpy()
+            seq_id = batch.get("sequence_id", ["unknown"])[0]
+
+            pred_xyz = _relative_poses_to_world_positions(pred_np)
+            gt_xyz = _relative_poses_to_world_positions(gt_np)
+
+            fig = plt.figure(figsize=(12, 10))
+
+            # 3D trajectory
+            ax3d = fig.add_subplot(2, 2, 1, projection="3d")
+            ax3d.plot(gt_xyz[:, 0], gt_xyz[:, 1], gt_xyz[:, 2], label="Ground Truth", linewidth=2.0)
+            ax3d.plot(pred_xyz[:, 0], pred_xyz[:, 1], pred_xyz[:, 2], label="Prediction", linewidth=2.0)
+            ax3d.set_title("3D")
+            ax3d.set_xlabel("X [m]")
+            ax3d.set_ylabel("Y [m]")
+            ax3d.set_zlabel("Z [m]")
+            ax3d.legend(loc="best")
+            ax3d.grid(True)
+
+            # XY plane
+            ax_xy = fig.add_subplot(2, 2, 2)
+            ax_xy.plot(gt_xyz[:, 0], gt_xyz[:, 1], linewidth=2.0, label="Ground Truth")
+            ax_xy.plot(pred_xyz[:, 0], pred_xyz[:, 1], linewidth=2.0, label="Prediction")
+            ax_xy.set_title("XY Plane")
+            ax_xy.set_xlabel("X [m]")
+            ax_xy.set_ylabel("Y [m]")
+            ax_xy.axis("equal")
+            ax_xy.grid(True)
+            ax_xy.legend(loc="best")
+
+            # YZ plane
+            ax_yz = fig.add_subplot(2, 2, 3)
+            ax_yz.plot(gt_xyz[:, 1], gt_xyz[:, 2], linewidth=2.0, label="Ground Truth")
+            ax_yz.plot(pred_xyz[:, 1], pred_xyz[:, 2], linewidth=2.0, label="Prediction")
+            ax_yz.set_title("YZ Plane")
+            ax_yz.set_xlabel("Y [m]")
+            ax_yz.set_ylabel("Z [m]")
+            ax_yz.axis("equal")
+            ax_yz.grid(True)
+            ax_yz.legend(loc="best")
+
+            # XZ plane
+            ax_xz = fig.add_subplot(2, 2, 4)
+            ax_xz.plot(gt_xyz[:, 0], gt_xyz[:, 2], linewidth=2.0, label="Ground Truth")
+            ax_xz.plot(pred_xyz[:, 0], pred_xyz[:, 2], linewidth=2.0, label="Prediction")
+            ax_xz.set_title("XZ Plane")
+            ax_xz.set_xlabel("X [m]")
+            ax_xz.set_ylabel("Z [m]")
+            ax_xz.axis("equal")
+            ax_xz.grid(True)
+            ax_xz.legend(loc="best")
+
+            fig.suptitle(
+                f"Val Trajectory Comparison - Epoch {epoch} - {seq_id} - Val Loss: {val_loss:.6f}",
+                fontsize=14,
+            )
+            fig.tight_layout()
+
+            os.makedirs(plot_dir, exist_ok=True)
+            save_path = plot_dir / f"epoch_{epoch:04d}_{seq_id}.png"
+            fig.savefig(save_path, dpi=150)
+            plt.close(fig)
+            break
+
+
 def _move_batch_to_device(batch, device):
     moved = {}
     for key, value in batch.items():
@@ -98,10 +226,12 @@ def train(
     lstm_hidden=1000,
     image_height=360,
     image_width=480,
+    plot_every=5,
 ):
     # specify log and checkpoint directories by model type to avoid conflicts
     log_dir = log_dir / model.name
     checkpoint_dir = checkpoint_dir / model.name
+    plot_dir = Path(output_dir) / "plots" / model.name
 
     # clear contents of current model type's log_dir
     if os.path.exists(log_dir):
@@ -213,7 +343,10 @@ def train(
                 checkpoint_path,
             )
 
-        # TODO: something that plots the predicted vs ground truth trajectory for tensorboard
+        if plot_every > 0 and (epoch % plot_every == 0 or epoch == num_epochs - 1):
+            _save_val_trajectory_plot(
+                model, val_loader, device, epoch, val_loss, plot_dir
+            )
 
         # logging
         writer.add_scalar("Loss/Val", val_loss, epoch)
@@ -268,6 +401,12 @@ def _parse_args():
         default=480,
         help="Image width for training (original: 640)",
     )
+    parser.add_argument(
+        "--plot_every",
+        type=int,
+        default=5,
+        help="Save val GT-vs-predicted 3D trajectory plot every N epochs (<=0 disables)",
+    )
 
     type_group = parser.add_mutually_exclusive_group(required=True)
     type_group.add_argument("-v", action="store_true", help="Use Visual Model")
@@ -298,6 +437,7 @@ def main():
         model=model_type,
         image_height=args.image_height,
         image_width=args.image_width,
+        plot_every=args.plot_every,
     )
 
 

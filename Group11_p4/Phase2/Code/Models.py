@@ -219,7 +219,7 @@ class InertialModel(nn.Module):
         lstm_hidden_size=256,
         lstm_num_layers=2,
         dropout=0.2,
-        beta_translation=100.0,
+        beta_translation=1.0,
         beta_rotation=1.0,
     ):
         super(InertialModel, self).__init__()
@@ -289,24 +289,6 @@ class InertialModel(nn.Module):
         return torch.cat([translation, quaternion_normalized], dim=-1)
 
     def compute_loss(self, batch):
-        pred_poses = self.forward(batch)  # (B, T-1, 7)
-        target_poses = batch["target_rel_poses"]  # (B, T-1, 7)
-
-        # Match the VisualModel loss behavior (ignore dz term)
-        pred_trans = pred_poses[..., :2]
-        pred_quat = pred_poses[..., 3:]
-        target_trans = target_poses[..., :2]
-        target_quat = target_poses[..., 3:]
-
-        loss_translation = F.mse_loss(pred_trans, target_trans)
-        loss_rotation = F.mse_loss(pred_quat, target_quat)
-
-        return (
-            self.beta_translation * loss_translation
-            + self.beta_rotation * loss_rotation
-        )
-
-    def compute_loss(self, batch):
         """
         Compute weighted MSE loss for pose prediction.
 
@@ -323,10 +305,9 @@ class InertialModel(nn.Module):
         target_poses = batch["target_rel_poses"]  # (B, T-1, 7)
 
         # Split into translation and rotation components
-        # ignore dz loss
-        pred_trans = pred_poses[..., :2]
+        pred_trans = pred_poses[..., :3]
         pred_quat = pred_poses[..., 3:]
-        target_trans = target_poses[..., :2]
+        target_trans = target_poses[..., :3]
         target_quat = target_poses[..., 3:]
 
         # Compute MSE for each component

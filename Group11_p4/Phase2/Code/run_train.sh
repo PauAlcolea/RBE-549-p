@@ -26,6 +26,7 @@ IMAGE_HEIGHT=240
 IMAGE_WIDTH=320
 
 # Run training
+# -i makes it so that it runs the inertial model instead of the visual one
 python Train.py \
     --train_data_dir $TRAIN_DIR \
     --val_data_dir $VAL_DIR \

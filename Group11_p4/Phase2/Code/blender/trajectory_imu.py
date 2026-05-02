@@ -16,6 +16,9 @@ import csv
 import fcntl
 import json
 import math
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -217,6 +220,35 @@ def write_poses_csv(
             )
 
 
+def save_trajectory_plot(
+    out_png: Path,
+    positions: Sequence[Tuple[float, float, float]],
+    seq_id: str,
+    shape: str,
+) -> None:
+    if not positions:
+        return
+
+    xs = [p[0] for p in positions]
+    ys = [p[1] for p in positions]
+    zs = [p[2] for p in positions]
+
+    fig = plt.figure(figsize=(8, 6))
+    ax = fig.add_subplot(111, projection="3d")
+    ax.plot(xs, ys, zs, linewidth=2.0, color="#1f77b4", label="trajectory")
+
+    ax.set_title(f"3D Trajectory - {seq_id} ({shape})")
+    ax.set_xlabel("X [m]")
+    ax.set_ylabel("Y [m]")
+    ax.set_zlabel("Z [m]")
+    ax.legend(loc="best")
+    ax.grid(True)
+
+    fig.tight_layout()
+    fig.savefig(out_png, dpi=150)
+    plt.close(fig)
+
+
 def write_trajectory_summary(
     path: Path,
     common: CommonCfg,
@@ -405,6 +437,7 @@ def main() -> None:
         yaws = [yaw_offset_rad] * len(positions)
 
     write_poses_csv(out_dir / "poses.csv", positions, yaws)
+    save_trajectory_plot(out_dir / "trajectory_3d.png", positions, args.seq_id, cfg.shape)
     write_camera_k(out_dir / "camera_K.txt")
     write_trajectory_summary(
         out_dir / "trajectory.txt",
