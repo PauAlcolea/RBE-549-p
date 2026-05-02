@@ -593,6 +593,222 @@ class InertialDataset:
         }
 
 
-class VisualInertialDataset:
-    def __init__(self, *args, **kwargs):
-        raise NotImplementedError("VisualInertialDataset is not implemented yet.")
+class VisualInertialDataset(VisualDataset):
+    """
+    Dataset for visual-inertial odometry with synchronized camera and IMU data.
+    
+    Extends VisualDataset to include IMU measurements (1000 Hz) synchronized with
+    camera frames (100 Hz). Each image frame has an associated IMU window.
+    
+    Output format (sequences mode):
+        {
+            'images': (seq_len, 3, H, W),
+            'target_rel_poses': (seq_len-1, 7),
+            'imu_windows': (seq_len, imu_window_size, 6),  # 6 = [ax, ay, az, wx, wy, wz]
+            'imu_timestamps': (seq_len, imu_window_size),
+            ...
+        }
+    
+    IMU window: For each frame i, provides IMU samples from previous frame to current frame.
+    With 100 Hz images and 1000 Hz IMU, each window contains 10 IMU samples.
+    """
+    
+    def __init__(
+        self,
+        data_dir,
+        split: Optional[str] = None,
+        transform=None,
+        strict: bool = False,
+        mode: str = "sequences",
+        sequence_length: int = 10,
+        sequence_stride: int = 1,
+        image_height: int = 360,
+        image_width: int = 480,
+        imu_hz: float = 1000.0,
+        image_hz: float = 100.0,
+    ):
+        # Initialize visual dataset components
+        super().__init__(
+            data_dir=data_dir,
+            split=split,
+            transform=transform,
+            strict=strict,
+            mode=mode,
+            sequence_length=sequence_length,
+            sequence_stride=sequence_stride,
+            image_height=image_height,
+            image_width=image_width,
+        )
+        
+        self.imu_hz = imu_hz
+        self.image_hz = image_hz
+        self.imu_window_size = int(imu_hz / image_hz)
+        
+        # Load IMU data for all sequences
+        self._load_imu_data()
+    
+    def _load_imu_data(self) -> None:
+        """Load IMU data for all sequences."""
+        for seq in self.sequences:
+            seq_path = seq["seq_path"]
+            
+            # Try to find IMU file (prefer 1000hz version)
+            hz_suffix = f"_{int(self.imu_hz)}hz" if self.imu_hz != 100 else ""
+            imu_candidates = [
+                seq_path / f"{seq['sequence_id']}_imu{hz_suffix}.csv",
+                seq_path / f"{seq['sequence_id']}_imu.csv",
+                seq_path / f"imu_gt{hz_suffix}.csv",
+                seq_path / "imu_gt.csv",
+            ]
+            
+            imu_path = None
+            for candidate in imu_candidates:
+                if candidate.exists():
+                    imu_path = candidate
+                    break
+            
+            if imu_path is None:
+                if self.strict:
+                    raise FileNotFoundError(
+                        f"No IMU file found for sequence {seq['sequence_id']} in {seq_path}"
+                    )
+                # Create empty IMU data
+                seq["imu_data"] = np.empty((0, 6), dtype=np.float32)
+                seq["imu_timestamps"] = np.empty((0,), dtype=np.float32)
+                seq["has_imu"] = False
+                continue
+            
+            # Read IMU CSV
+            imu_data, imu_timestamps = self._read_imu_csv(imu_path)
+            seq["imu_data"] = imu_data
+            seq["imu_timestamps"] = imu_timestamps
+            seq["has_imu"] = True
+    
+    @staticmethod
+    def _read_imu_csv(imu_path: Path) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Read IMU CSV file.
+        
+        Expected columns: frame, t, ax, ay, az, wx, wy, wz
+        
+        Returns:
+            imu_data: (N, 6) array of [ax, ay, az, wx, wy, wz]
+            timestamps: (N,) array of timestamps
+        """
+        imu_data = []
+        timestamps = []
+        
+        with imu_path.open("r", newline="") as f:
+            reader = csv.DictReader(f)
+            required_cols = ["frame", "t", "ax", "ay", "az", "wx", "wy", "wz"]
+            
+            for col in required_cols:
+                if col not in reader.fieldnames:
+                    raise ValueError(f"Missing column '{col}' in {imu_path}")
+            
+            for row in reader:
+                timestamps.append(float(row["t"]))
+                imu_data.append([
+                    float(row["ax"]),
+                    float(row["ay"]),
+                    float(row["az"]),
+                    float(row["wx"]),
+                    float(row["wy"]),
+                    float(row["wz"]),
+                ])
+        
+        return (
+            np.array(imu_data, dtype=np.float32),
+            np.array(timestamps, dtype=np.float32),
+        )
+    
+    def _get_imu_window(
+        self, seq: Dict, frame_idx: int
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Get IMU window for a specific frame.
+        
+        For frame i at 100 Hz, get IMU samples from frame i-1 to i (10 samples at 1000 Hz).
+        For the first frame, return the first window.
+        
+        Args:
+            seq: Sequence dictionary
+            frame_idx: Index into frame_paths/frame_ids
+        
+        Returns:
+            imu_window: (window_size, 6) IMU measurements
+            timestamps: (window_size,) timestamps
+        """
+        if not seq["has_imu"]:
+            # Return zeros if no IMU data
+            return (
+                np.zeros((self.imu_window_size, 6), dtype=np.float32),
+                np.zeros((self.imu_window_size,), dtype=np.float32),
+            )
+        
+        imu_data = seq["imu_data"]
+        imu_timestamps = seq["imu_timestamps"]
+        
+        # IMU indices: for frame i, get samples [i*window_size : (i+1)*window_size]
+        start_idx = frame_idx * self.imu_window_size
+        end_idx = (frame_idx + 1) * self.imu_window_size
+        
+        # Handle boundary cases
+        if end_idx > len(imu_data):
+            # Pad with zeros if not enough IMU samples
+            available = imu_data[start_idx:]
+            available_ts = imu_timestamps[start_idx:]
+            pad_size = self.imu_window_size - len(available)
+            
+            if pad_size > 0:
+                imu_window = np.vstack([
+                    available,
+                    np.zeros((pad_size, 6), dtype=np.float32)
+                ])
+                timestamps = np.hstack([
+                    available_ts,
+                    np.zeros((pad_size,), dtype=np.float32)
+                ])
+            else:
+                imu_window = available
+                timestamps = available_ts
+        else:
+            imu_window = imu_data[start_idx:end_idx]
+            timestamps = imu_timestamps[start_idx:end_idx]
+        
+        return imu_window, timestamps
+    
+    def _get_pair_sample(self, seq: Dict, local_idx: int) -> Dict:
+        """Get a single frame pair sample with IMU data."""
+        # Get visual data from parent class
+        sample = super()._get_pair_sample(seq, local_idx)
+        
+        # Add IMU window for frame t+1
+        imu_window, imu_ts = self._get_imu_window(seq, local_idx + 1)
+        sample["imu_window"] = torch.from_numpy(imu_window)
+        sample["imu_timestamps"] = torch.from_numpy(imu_ts)
+        
+        return sample
+    
+    def _get_sequence_sample(self, seq: Dict, start_idx: int) -> Dict:
+        """Get a subsequence sample with multiple frames and IMU windows."""
+        # Get visual data from parent class
+        sample = super()._get_sequence_sample(seq, start_idx)
+        
+        # Add IMU windows for all frames in the sequence
+        end_idx = start_idx + self.sequence_length
+        imu_windows = []
+        imu_timestamps_list = []
+        
+        for i in range(start_idx, end_idx):
+            imu_window, imu_ts = self._get_imu_window(seq, i)
+            imu_windows.append(imu_window)
+            imu_timestamps_list.append(imu_ts)
+        
+        # Stack: (seq_len, window_size, 6)
+        sample["imu_windows"] = torch.from_numpy(np.stack(imu_windows, axis=0))
+        # Stack: (seq_len, window_size)
+        sample["imu_timestamps"] = torch.from_numpy(np.stack(imu_timestamps_list, axis=0))
+        
+        return sample
+

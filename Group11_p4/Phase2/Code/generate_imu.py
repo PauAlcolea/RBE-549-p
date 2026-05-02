@@ -355,12 +355,15 @@ def process_file(pose_path, hz, noise_profile, noise_seed, acc_vib, gyro_vib):
 
     seq_dir = pose_path.parent
     seq_name = seq_dir.name
+    
+    # Determine output suffix based on sampling rate
+    hz_suffix = f"_{int(hz)}hz" if hz != 100 else ""
 
     # Save GT and noisy IMU CSV
-    imu_gt_path = seq_dir / "imu_gt.csv"
-    imu_noisy_path = seq_dir / f"{seq_name}_imu.csv"
-    imu_gt_fixed_path = seq_dir / "imu_gt_fixed_heading.csv"
-    imu_noisy_fixed_path = seq_dir / f"{seq_name}_fixed_heading_imu.csv"
+    imu_gt_path = seq_dir / f"imu_gt{hz_suffix}.csv"
+    imu_noisy_path = seq_dir / f"{seq_name}_imu{hz_suffix}.csv"
+    imu_gt_fixed_path = seq_dir / f"imu_gt_fixed_heading{hz_suffix}.csv"
+    imu_noisy_fixed_path = seq_dir / f"{seq_name}_fixed_heading_imu{hz_suffix}.csv"
     write_imu(imu_gt_path, frames, acc_gt, omega_gt, dt)
     write_imu(imu_noisy_path, frames, acc_noisy, omega_noisy, dt)
     write_imu(imu_gt_fixed_path, frames, acc_gt_fixed, omega_gt_fixed, dt)
@@ -374,8 +377,8 @@ def process_file(pose_path, hz, noise_profile, noise_seed, acc_vib, gyro_vib):
         omega_noisy,
         dt,
         output_dir,
-        f"{seq_name}_imu_plot.png",
-        f"IMU (Tangent Heading Body Frame) - {seq_name}",
+        f"{seq_name}_imu{hz_suffix}_plot.png",
+        f"IMU (Tangent Heading Body Frame) @ {int(hz)} Hz - {seq_name}",
         acc_gt=acc_gt,
         omega_gt=omega_gt,
     )
@@ -385,8 +388,8 @@ def process_file(pose_path, hz, noise_profile, noise_seed, acc_vib, gyro_vib):
         omega_noisy_fixed,
         dt,
         output_dir,
-        f"{seq_name}_imu_fixed_heading_plot.png",
-        f"IMU (Fixed Heading Body Frame) - {seq_name}",
+        f"{seq_name}_imu_fixed_heading{hz_suffix}_plot.png",
+        f"IMU (Fixed Heading Body Frame) @ {int(hz)} Hz - {seq_name}",
         acc_gt=acc_gt_fixed,
         omega_gt=omega_gt_fixed,
     )
@@ -406,8 +409,11 @@ def main():
     parser.add_argument("--gyro-vib", type=str, default=None, help="e.g. '[0.2 0.2 0.1]d-1Hz-sinusoidal'")
     args = parser.parse_args()
 
-    # Prefer the unified dataset layout (poses.csv), fallback for older IMU-only sets.
-    pose_files = sorted(args.data_root.rglob("poses.csv"))
+    # Prefer high-rate upsampled trajectories first, then standard poses.
+    pose_files = sorted(args.data_root.rglob("poses_1000hz.csv"))
+    if not pose_files:
+        # Backward compatibility with older generated data.
+        pose_files = sorted(args.data_root.rglob("poses.csv"))
 
     for p in pose_files:
         process_file(
