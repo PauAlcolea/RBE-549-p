@@ -130,6 +130,46 @@ class SequenceEvaluator:
 
         return img_tensor
 
+    def _load_aligned_imu(self) -> np.ndarray:
+        """
+        Load IMU readings aligned to ground-truth frame IDs.
+
+        Returns:
+            imu: (N, 6) IMU sequence [ax, ay, az, wx, wy, wz], where N == num_frames
+        """
+        imu_path = self.sequence_path / f"{self.sequence_id}_imu.csv"
+        if not imu_path.exists():
+            raise FileNotFoundError(f"IMU file not found: {imu_path}")
+
+        imu_by_frame = {}
+        with open(imu_path, "r", newline="") as f:
+            reader = csv.DictReader(f)
+            required_cols = ["frame", "ax", "ay", "az", "wx", "wy", "wz"]
+            for col in required_cols:
+                if col not in (reader.fieldnames or []):
+                    raise ValueError(f"Missing IMU column '{col}' in {imu_path}")
+
+            for row in reader:
+                frame_id = int(row["frame"])
+                imu_by_frame[frame_id] = [
+                    float(row["ax"]),
+                    float(row["ay"]),
+                    float(row["az"]),
+                    float(row["wx"]),
+                    float(row["wy"]),
+                    float(row["wz"]),
+                ]
+
+        aligned_imu = []
+        for frame_id in self.gt_poses["frames"]:
+            if int(frame_id) not in imu_by_frame:
+                raise ValueError(
+                    f"Missing IMU sample for frame {int(frame_id)} in {imu_path}"
+                )
+            aligned_imu.append(imu_by_frame[int(frame_id)])
+
+        return np.asarray(aligned_imu, dtype=np.float32)
+
     def run_inference(self) -> Dict[str, np.ndarray]:
         """
         Run model inference on the full sequence using consecutive frame pairs.
@@ -141,10 +181,10 @@ class SequenceEvaluator:
                 - 'abs_positions': (N, 3) accumulated absolute positions
                 - 'abs_quaternions': (N, 4) accumulated absolute quaternions
         """
-        if self.model_type != ModelTypes.VISUAL:
+        if self.model_type not in (ModelTypes.VISUAL, ModelTypes.INERTIAL):
             raise NotImplementedError(
                 f"Inference for {self.model_type.name} not yet implemented. "
-                "Currently only VISUAL model is supported."
+                "Currently only VISUAL and INERTIAL models are supported."
             )
 
         self.model.eval()
@@ -154,33 +194,21 @@ class SequenceEvaluator:
         rel_quaternions = []
 
         with torch.no_grad():
-            # Process all consecutive frame pairs
-            for i in range(self.num_frames - 1):
-                # Load frame pair (t, t+1)
-                frame_id_t = self.gt_poses["frames"][i]
-                frame_id_tp1 = self.gt_poses["frames"][i + 1]
+            if self.model_type == ModelTypes.VISUAL:
+                images = [self._load_image(int(fid)) for fid in self.gt_poses["frames"]]
+                images = torch.stack(images, dim=0).unsqueeze(0).to(self.device)  # (1, N, 3, H, W)
+                batch = {"images": images}
+                pred_poses = self.model(batch).squeeze(0).cpu().numpy()  # (N-1, 7)
+            else:
+                imu = self._load_aligned_imu()
+                imu = torch.from_numpy(imu).unsqueeze(0).to(self.device)  # (1, N, 6)
+                batch = {"imu": imu}
+                pred_poses = self.model(batch).squeeze(0).cpu().numpy()  # (N-1, 7)
 
-                img_t = self._load_image(frame_id_t)
-                img_tp1 = self._load_image(frame_id_tp1)
-
-                # Create batch: (1, 3, H, W) for each image
-                batch = {
-                    "image_t": img_t.unsqueeze(0).to(self.device),
-                    "image_tp1": img_tp1.unsqueeze(0).to(self.device),
-                }
-
-                # Run inference
-                pred_pose = self.model(batch)  # (1, 6) = [dx, dy, qw, qx, qy, qz]
-                pred_pose = pred_pose.squeeze(0).cpu().numpy()  # (6,)
-
-                # Extract position and quaternion
-                pred_pos = np.array(
-                    [pred_pose[0], pred_pose[1], 0.0]
-                )  # [dx, dy, 0] for ground plane
-                pred_quat = pred_pose[2:]  # (4,) [qw, qx, qy, qz]
-
-                rel_positions.append(pred_pos)
-                rel_quaternions.append(pred_quat)
+            # Split [dx, dy, dz, qw, qx, qy, qz] into translation and quaternion
+            for i in range(pred_poses.shape[0]):
+                rel_positions.append(pred_poses[i, :3])
+                rel_quaternions.append(pred_poses[i, 3:])
 
         # Stack all predictions
         rel_positions = np.stack(rel_positions, axis=0)  # (N-1, 3)
