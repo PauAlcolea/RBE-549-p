@@ -121,7 +121,7 @@ assign_split() {
 is_sequence_complete() {
   local seq_dir="$1"
   if (( IMU_MODE )); then
-    [[ -f "$seq_dir/poses_imu.csv" && -f "$seq_dir/trajectory_imu.txt" ]]
+    [[ -f "$seq_dir/poses.csv" && -f "$seq_dir/trajectory.txt" && -f "$seq_dir/metadata.json" ]]
     return
   fi
 
@@ -194,7 +194,9 @@ launch_sequence() {
         --shape "$shape" \
         --height "$height" \
         --split "$split" \
-        --seq-id "$seq_id"
+        --seq-id "$seq_id" \
+        --texture "$texture" \
+        --seed "$seed"
     else
       bash "$RUN_SCRIPT" \
         --shape "$shape" \
@@ -213,7 +215,9 @@ launch_sequence() {
       --shape "$shape" \
       --height "$height" \
       --split "$split" \
-      --seq-id "$seq_id" &
+      --seq-id "$seq_id" \
+      --texture "$texture" \
+      --seed "$seed" &
   else
     bash "$RUN_SCRIPT" \
       --shape "$shape" \
@@ -268,8 +272,8 @@ for (( rep=1; rep<=REPEATS; rep++ )); do
           fi
 
           if (( IMU_MODE )); then
-            echo "[dataset_sweep] [$combo_idx/$total] seq=$seq_id exists; regenerating IMU files in-place."
-            rm -f "$seq_dir/poses_imu.csv" "$seq_dir/trajectory_imu.txt"
+            echo "[dataset_sweep] [$combo_idx/$total] seq=$seq_id exists; regenerating IMU sequence."
+            rm -rf "$seq_dir"
           else
             echo "[dataset_sweep] [$combo_idx/$total] seq=$seq_id exists but is incomplete; regenerating."
             rm -rf "$seq_dir"
@@ -294,7 +298,7 @@ if (( failed_jobs > 0 )); then
 fi
 
 if (( IMU_MODE )); then
-  echo "[dataset_sweep] Done. IMU trajectory poses written under Data/Generated/<split>/seq_xxxxxx."
+  echo "[dataset_sweep] Done. IMU sequences written under Data/Generated/<split>/seq_xxxxxx with index.csv updated."
 else
   echo "[dataset_sweep] Done. Inspect Data/Generated/index.csv for the sequence manifest."
 fi

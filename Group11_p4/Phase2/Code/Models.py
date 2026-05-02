@@ -213,8 +213,114 @@ class VisualModel(nn.Module):
 
 
 class InertialModel(nn.Module):
-    def __init__(self):
+    def __init__(
+        self,
+        imu_input_size=6,
+        lstm_hidden_size=256,
+        lstm_num_layers=2,
+        dropout=0.2,
+        beta_translation=1.0,
+        beta_rotation=1.0,
+    ):
         super(InertialModel, self).__init__()
+
+        self.imu_input_size = imu_input_size
+        self.lstm_hidden_size = lstm_hidden_size
+        self.lstm_num_layers = lstm_num_layers
+        self.beta_translation = beta_translation
+        self.beta_rotation = beta_rotation
+
+        # 2-layer LSTM over IMU sequence
+        self.lstm = nn.LSTM(
+            input_size=imu_input_size,
+            hidden_size=lstm_hidden_size,
+            num_layers=lstm_num_layers,
+            batch_first=True,
+            dropout=dropout if lstm_num_layers > 1 else 0,
+        )
+
+        # 2 linear layers for pose regression
+        self.fc1 = nn.Linear(lstm_hidden_size, 128)
+        self.fc_pose = nn.Linear(128, 7)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, batch):
+        """
+        Forward pass through the model.
+
+        Args:
+            batch: Dictionary containing:
+                - 'imu': (batch_size, seq_len, 6) IMU sequences [ax, ay, az, wx, wy, wz]
+
+        Returns:
+            poses: (batch_size, seq_len-1, 7) predicted relative poses
+        """
+        imu = batch["imu"]  # (B, T, 6)
+        batch_size, seq_len, _ = imu.shape
+
+        # Pass through LSTM: (B, T, hidden_size)
+        lstm_out, _ = self.lstm(imu)
+
+        # For pose prediction, we need relative poses between consecutive frames
+        lstm_features = lstm_out[:, :-1, :]  # (B, T-1, hidden_size)
+
+        # Pose regression
+        fc1_out = F.relu(self.fc1(lstm_features))
+        fc1_out = self.dropout(fc1_out)
+        poses = self.fc_pose(fc1_out)
+
+        # Normalize quaternion component (last 4 values)
+        poses = self._normalize_quaternions(poses)
+
+        return poses
+
+    def _normalize_quaternions(self, poses):
+        """Normalize the quaternion part of the pose vector."""
+        # Split translation and quaternion
+        translation = poses[..., :3]  # (B, T-1, 3)
+        quaternion = poses[..., 3:]  # (B, T-1, 4)
+
+        # Normalize quaternion
+        quat_norm = torch.norm(quaternion, p=2, dim=-1, keepdim=True)
+        quat_norm = torch.clamp(quat_norm, min=1e-12)
+        quaternion_normalized = quaternion / quat_norm
+
+        # Concatenate back
+        return torch.cat([translation, quaternion_normalized], dim=-1)
+
+    def compute_loss(self, batch):
+        """
+        Compute weighted MSE loss for pose prediction.
+
+        Args:
+            batch: Dictionary containing:
+                - 'images': (B, T, 3, H, W) image sequences
+                - 'target_rel_poses': (B, T-1, 7) ground truth relative poses
+
+        Returns:
+            loss: Scalar weighted MSE loss
+        """
+        # Forward pass
+        pred_poses = self.forward(batch)  # (B, T-1, 7)
+        target_poses = batch["target_rel_poses"]  # (B, T-1, 7)
+
+        # Split into translation and rotation components
+        pred_trans = pred_poses[..., :3]
+        pred_quat = pred_poses[..., 3:]
+        target_trans = target_poses[..., :3]
+        target_quat = target_poses[..., 3:]
+
+        # Compute MSE for each component
+        loss_translation = F.mse_loss(pred_trans, target_trans)
+        loss_rotation = F.mse_loss(pred_quat, target_quat)
+
+        # Weighted combination
+        loss = (
+            self.beta_translation * loss_translation
+            + self.beta_rotation * loss_rotation
+        )
+
+        return loss
 
 
 class VisualInertialModel(nn.Module):

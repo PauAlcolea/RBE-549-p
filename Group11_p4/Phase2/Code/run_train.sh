@@ -26,6 +26,7 @@ IMAGE_HEIGHT=240
 IMAGE_WIDTH=320
 
 # Run training
+# -i makes it so that it runs the inertial model instead of the visual one
 python Train.py \
     --train_data_dir $TRAIN_DIR \
     --val_data_dir $VAL_DIR \
@@ -34,8 +35,8 @@ python Train.py \
     --lr $LR \
     --image_height $IMAGE_HEIGHT \
     --image_width $IMAGE_WIDTH \
-    -v
+    -i
 
 echo "Training complete! Check outputs at:"
-echo "  - Logs: ../Output/Training/logs/VISUAL/"
-echo "  - Checkpoints: ../Output/Training/checkpoints/VISUAL/"
+echo "  - Logs: ../Output/Training/logs/INERTIAL/"
+echo "  - Checkpoints: ../Output/Training/checkpoints/INERTIAL/"
