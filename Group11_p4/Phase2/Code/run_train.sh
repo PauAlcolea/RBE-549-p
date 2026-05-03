@@ -18,12 +18,14 @@ VAL_DIR="../Data/Generated/val"
 
 # Training parameters
 NUM_EPOCHS=100
-BATCH_SIZE=32
+BATCH_SIZE=8
 LR=0.0001
-SEQUENCE_LENGTH=5
-LSTM_HIDDEN=512
 IMAGE_HEIGHT=240
 IMAGE_WIDTH=320
+
+# LSTM parameters - optimized for better temporal learning
+# For frame-pair mode, comment out LSTM_MODE and restore BATCH_SIZE=24, LR=0.00001
+LSTM_MODE="--use_lstm --sequence_length 8 --lstm_hidden 256 --lstm_layers 2 --stride 1"
 
 # Run training
 python Train.py \
@@ -34,7 +36,10 @@ python Train.py \
     --lr $LR \
     --image_height $IMAGE_HEIGHT \
     --image_width $IMAGE_WIDTH \
-    -v
+    -v \
+    --use_augmentation \
+    $LSTM_MODE
+
 
 echo "Training complete! Check outputs at:"
 echo "  - Logs: ../Output/Training/logs/VISUAL/"
