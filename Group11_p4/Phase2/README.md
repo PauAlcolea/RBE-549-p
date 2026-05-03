@@ -8,7 +8,7 @@ Usage: ./run_blender.sh [--shape SHAPE] [--height METERS] [--texture NAME]
                         [--split SPLIT] [--seq-id ID] [--seed N]
 
 Options:
-        -s, --shape SHAPE   Trajectory shape: square | figure8 | circle
+        -s, --shape SHAPE   Trajectory shape: square | figure8 | circle | triangle
         --height METERS     Camera flight height in meters (e.g. 1.5)
         -t, --texture NAME  Texture image in textures/ (e.g. playrug, newyork, ispy, leaves, or toys)
         --split SPLIT       Dataset split label (default: train)

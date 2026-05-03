@@ -39,6 +39,10 @@ SHAPE_PARAMS = {
         "radius": 1.0,  # meters
         "samples_per_lap": 360,  # control-point density before interpolation
     },
+    "triangle": {
+        "side": 2.0,  # meters
+        "samples_per_lap": 360,  # control-point density before interpolation
+    },
 }
 
 # --- Data rate ---
@@ -125,7 +129,7 @@ def validate_trajectory_config():
     Validate and normalize trajectory configuration.
     Returns (shape_name, common_cfg, shape_cfg) with clean value types.
     """
-    allowed_shapes = {"square", "figure8", "circle"}
+    allowed_shapes = {"square", "figure8", "circle", "triangle"}
 
     shape_name = str(TRAJECTORY_SHAPE).strip().lower()
     if shape_name not in allowed_shapes:
@@ -193,6 +197,18 @@ def validate_trajectory_config():
             raise ValueError("circle radius must be > 0")
         if shape_cfg["samples_per_lap"] < 8:
             raise ValueError("circle samples_per_lap must be >= 8")
+    elif shape_name == "triangle":
+        missing = sorted({"side"}.difference(raw_shape_cfg.keys()))
+        if missing:
+            raise ValueError(f"triangle config missing required keys: {missing}")
+        shape_cfg = {
+            "side": float(raw_shape_cfg["side"]),
+            "samples_per_lap": int(raw_shape_cfg.get("samples_per_lap", 360)),
+        }
+        if shape_cfg["side"] <= 0.0:
+            raise ValueError("SHAPE_PARAMS['triangle']['side'] must be > 0")
+        if shape_cfg["samples_per_lap"] < 3:
+            raise ValueError("triangle samples_per_lap must be >= 3")
     else:
         raise ValueError(f"Unsupported shape '{shape_name}'")
 
@@ -224,6 +240,10 @@ def trajectory_descriptor(shape_name, common_cfg, shape_cfg):
         meta["radius"] = shape_cfg["radius"]
         meta["samples_per_lap"] = shape_cfg["samples_per_lap"]
         summary = f"circle radius={shape_cfg['radius']:.2f} m"
+    elif shape_name == "triangle":
+        meta["side"] = shape_cfg["side"]
+        meta["samples_per_lap"] = shape_cfg["samples_per_lap"]
+        summary = f"triangle side={shape_cfg['side']:.2f} m"
     else:
         summary = shape_name
 
@@ -451,6 +471,38 @@ def build_circle_waypoints(radius, height, n_laps, samples_per_lap):
 
     return _repeat_closed_loop(base_loop, n_laps)
 
+def build_triangle_waypoints(side, height, n_laps, samples_per_lap):
+    """
+    Build a centered equilateral triangle with dense sampling between corners.
+    
+    Corner order (CCW from bottom when viewed from above):
+        BL → TR → BR → BL …
+    """
+    h = side / 2.0
+    r = side * math.sin(math.radians(60))  # radius of circumscribed circle
+    corners = [
+        Vector((-h, -r / 3, height)),  # bottom-left
+        Vector((0, 2 * r / 3, height)),  # top
+        Vector((h, -r / 3, height)),  # bottom-right
+    ]
+    
+    # Create densely sampled triangle by interpolating along edges
+    samples_per_edge = samples_per_lap // 3
+    base_loop = []
+    
+    for i in range(3):
+        start_corner = corners[i]
+        end_corner = corners[(i + 1) % 3]
+        
+        for j in range(samples_per_edge):
+            t = j / samples_per_edge
+            point = start_corner.lerp(end_corner, t)
+            base_loop.append(point)
+    
+    base_loop.append(corners[0].copy())  # close the loop
+    
+    return _repeat_closed_loop(base_loop, n_laps)
+
 
 def build_path_waypoints(shape_name, common_cfg, shape_cfg):
     """
@@ -474,6 +526,13 @@ def build_path_waypoints(shape_name, common_cfg, shape_cfg):
     if shape_name == "circle":
         return build_circle_waypoints(
             shape_cfg["radius"],
+            common_cfg["height"],
+            common_cfg["laps"],
+            shape_cfg["samples_per_lap"],
+        )
+    if shape_name == "triangle":
+        return build_triangle_waypoints(
+            shape_cfg["side"],
             common_cfg["height"],
             common_cfg["laps"],
             shape_cfg["samples_per_lap"],
