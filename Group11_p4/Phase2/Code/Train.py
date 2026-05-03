@@ -15,7 +15,7 @@ from enum import Enum
 from pathlib import Path
 
 from Datasets import VisualDataset, InertialDataset, VisualInertialDataset
-from Models import VisualModel, InertialModel, VisualInertialModel
+from Models import VisualModel, InertialModel, VisualInertialModel, LSTMVisualModel
 
 current_dir = Path(__file__).parent
 output_dir = current_dir.parent / "Output" / "Training"
@@ -36,23 +36,53 @@ class Pipeline:
         image_height,
         image_width,
         use_augmentation,
+        use_lstm=False,
+        sequence_length=8,
+        stride=1,
+        lstm_hidden=256,
+        lstm_layers=2,
     ):
         self.model_type = model_type
+        self.use_lstm = use_lstm
 
         if model_type == ModelTypes.VISUAL:
-            self.train_dataset = VisualDataset(
-                train_dir,
-                image_height=image_height,
-                image_width=image_width,
-                use_augmentation=use_augmentation,
-            )
-            self.val_dataset = VisualDataset(
-                val_dir,
-                image_height=image_height,
-                image_width=image_width,
-                use_augmentation=False,
-            )
-            self.model = VisualModel()
+            if use_lstm:
+                # LSTM mode: sequence dataset
+                self.train_dataset = VisualDataset(
+                    train_dir,
+                    image_height=image_height,
+                    image_width=image_width,
+                    use_augmentation=use_augmentation,
+                    sequence_length=sequence_length,
+                    stride=stride,
+                )
+                self.val_dataset = VisualDataset(
+                    val_dir,
+                    image_height=image_height,
+                    image_width=image_width,
+                    use_augmentation=False,
+                    sequence_length=sequence_length,
+                    stride=stride,
+                )
+                self.model = LSTMVisualModel(
+                    lstm_hidden=lstm_hidden,
+                    lstm_layers=lstm_layers,
+                )
+            else:
+                # Frame-pair mode
+                self.train_dataset = VisualDataset(
+                    train_dir,
+                    image_height=image_height,
+                    image_width=image_width,
+                    use_augmentation=use_augmentation,
+                )
+                self.val_dataset = VisualDataset(
+                    val_dir,
+                    image_height=image_height,
+                    image_width=image_width,
+                    use_augmentation=False,
+                )
+                self.model = VisualModel()
         elif model_type == ModelTypes.INERTIAL:
             self.train_dataset = InertialDataset(train_dir)
             self.val_dataset = InertialDataset(val_dir)
@@ -91,10 +121,19 @@ def train(
     image_height=360,
     image_width=480,
     use_augmentation=False,
+    use_lstm=False,
+    sequence_length=8,
+    stride=1,
+    lstm_hidden=256,
+    lstm_layers=2,
 ):
     # specify log and checkpoint directories by model type to avoid conflicts
     log_dir = log_dir / model.name
     checkpoint_dir = checkpoint_dir / model.name
+    
+    if use_lstm:
+        log_dir = log_dir / "lstm"
+        checkpoint_dir = checkpoint_dir / "lstm"
 
     # clear contents of current model type's log_dir
     if os.path.exists(log_dir):
@@ -121,6 +160,11 @@ def train(
         image_height=image_height,
         image_width=image_width,
         use_augmentation=use_augmentation,
+        use_lstm=use_lstm,
+        sequence_length=sequence_length,
+        stride=stride,
+        lstm_hidden=lstm_hidden,
+        lstm_layers=lstm_layers,
     )
     train_dataset = pipeline.train_dataset
     val_dataset = pipeline.val_dataset
@@ -272,6 +316,37 @@ def _parse_args():
         action="store_true",
         help="Enable data augmentation (brightness, contrast, noise) for training",
     )
+    
+    # LSTM-specific arguments
+    parser.add_argument(
+        "--use_lstm",
+        action="store_true",
+        help="Use LSTM model for temporal sequence processing (better trajectory generalization)",
+    )
+    parser.add_argument(
+        "--sequence_length",
+        type=int,
+        default=8,
+        help="Number of frames in each sequence (for LSTM mode)",
+    )
+    parser.add_argument(
+        "--stride",
+        type=int,
+        default=1,
+        help="Stride for sequence sampling (1=dense, >1=skip frames)",
+    )
+    parser.add_argument(
+        "--lstm_hidden",
+        type=int,
+        default=256,
+        help="LSTM hidden size",
+    )
+    parser.add_argument(
+        "--lstm_layers",
+        type=int,
+        default=2,
+        help="Number of LSTM layers",
+    )
 
     type_group = parser.add_mutually_exclusive_group(required=True)
     type_group.add_argument("-v", action="store_true", help="Use Visual Model")
@@ -304,6 +379,11 @@ def main():
         image_height=args.image_height,
         image_width=args.image_width,
         use_augmentation=args.use_augmentation,
+        use_lstm=args.use_lstm,
+        sequence_length=args.sequence_length,
+        stride=args.stride,
+        lstm_hidden=args.lstm_hidden,
+        lstm_layers=args.lstm_layers,
     )
 
 

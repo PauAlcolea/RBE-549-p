@@ -12,10 +12,16 @@ class VisualDataset(Dataset):
     """
     Dataset for visual-only odometry from the generated sequence format.
 
-    Each sample is an adjacent frame pair (t, t+1) with relative pose target
+    Modes:
+    - Frame-pair mode (sequence_length=None): Returns (t, t+1) pairs
+    - Sequence mode (sequence_length>1): Returns sequences for LSTM
 
-    Output format:
+    Output format (pair mode):
     - {'image_t', 'image_tp1', 'target_rel_pose': [dx, dy, qw, qx, qy, qz]}
+    
+    Output format (sequence mode):
+    - {'image_seq': (seq_len, 3, H, W), 'target_poses': (seq_len-1, 6)}
+    
     Note: dz is excluded for ground plane motion assumption
     """
 
@@ -27,12 +33,17 @@ class VisualDataset(Dataset):
         image_height: int = 360,
         image_width: int = 480,
         use_augmentation: bool = False,
+        sequence_length: Optional[int] = None,
+        stride: int = 1,
     ):
         self.data_dir = Path(data_dir)
         self.transform = transform
         self.image_height = image_height
         self.image_width = image_width
         self.use_augmentation = use_augmentation
+        self.sequence_length = sequence_length
+        self.stride = stride
+        self.is_sequence_mode = sequence_length is not None and sequence_length > 1
 
         # Initialize augmentation if enabled
         self.augmentation = None
@@ -100,8 +111,15 @@ class VisualDataset(Dataset):
             seq_idx = len(self.sequences)
             self.sequences.append(seq)
 
-            for local_idx in range(seq["num_samples"]):
-                self.samples.append((seq_idx, local_idx))
+            if self.is_sequence_mode:
+                # Sequence mode: create sliding windows
+                num_frames = len(seq["frame_paths"])
+                for start_idx in range(0, num_frames - self.sequence_length * self.stride + 1, self.stride):
+                    self.samples.append((seq_idx, start_idx))
+            else:
+                # Frame-pair mode: each consecutive pair
+                for local_idx in range(seq["num_samples"]):
+                    self.samples.append((seq_idx, local_idx))
 
     def _load_sequence(self, row: Dict[str, str]) -> Dict:
         seq_id = row["sequence_id"]
@@ -299,8 +317,50 @@ class VisualDataset(Dataset):
 
         seq_idx, local_idx = self.samples[idx]
         seq = self.sequences[seq_idx]
-
-        return self._get_pair_sample(seq, local_idx)
+        
+        if self.is_sequence_mode:
+            return self._get_sequence_sample(seq, local_idx)
+        else:
+            return self._get_pair_sample(seq, local_idx)
+    
+    def _get_sequence_sample(self, seq: Dict, start_idx: int) -> Dict:
+        """Get a sequence of frames for LSTM training."""
+        images = []
+        target_poses = []
+        
+        for i in range(self.sequence_length):
+            frame_idx = start_idx + i * self.stride
+            image = self._load_image_as_tensor(seq["frame_paths"][frame_idx])
+            
+            if self.transform is not None:
+                image = self.transform(image)
+            
+            images.append(image)
+            
+            # Compute relative pose for consecutive pairs
+            if i < self.sequence_length - 1:
+                next_frame_idx = start_idx + (i + 1) * self.stride
+                t0 = seq["t_abs"][frame_idx]
+                q0 = seq["q_abs"][frame_idx]
+                t1 = seq["t_abs"][next_frame_idx]
+                q1 = seq["q_abs"][next_frame_idx]
+                
+                rel_pose = torch.from_numpy(self._relative_pose(t0, q0, t1, q1))
+                target_poses.append(rel_pose)
+        
+        # Stack into tensors
+        image_seq = torch.stack(images, dim=0)  # (seq_len, 3, H, W)
+        target_poses = torch.stack(target_poses, dim=0)  # (seq_len-1, 6)
+        
+        return {
+            "image_seq": image_seq,
+            "target_poses": target_poses,
+            "sequence_id": seq["sequence_id"],
+            "start_frame": int(seq["frame_ids"][start_idx]),
+            "shape": seq["shape"],
+            "texture": seq["texture"],
+            "height_m": float(seq["height_m"]),
+        }
 
     def _get_pair_sample(self, seq: Dict, local_idx: int) -> Dict:
         """Get a single frame pair sample."""

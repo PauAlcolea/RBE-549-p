@@ -159,6 +159,259 @@ class VisualModel(nn.Module):
         return total_loss
 
 
+class LSTMVisualModel(nn.Module):
+    """
+    LSTM-based visual odometry model for temporal sequence processing.
+    
+    Processes sequences of frames to capture temporal motion patterns.
+    Better generalization to different trajectory shapes vs independent frame pairs.
+    
+    Architecture:
+    1. Siamese CNN extracts features from each frame
+    2. Features from consecutive pairs are concatenated
+    3. LSTM processes sequence of pair features
+    4. FC layers predict 6D pose for each pair
+    
+    Input: Sequence of frames (B, seq_len, 3, H, W)
+    Output: Sequence of relative poses (B, seq_len-1, 6)
+    """
+    
+    def __init__(
+        self,
+        feature_size=512,
+        lstm_hidden=256,
+        lstm_layers=2,
+        dropout=0.2,
+        beta_translation=100.0,
+        beta_rotation=1.0,
+        use_geodesic_loss=True,
+    ):
+        super(LSTMVisualModel, self).__init__()
+        
+        self.feature_size = feature_size
+        self.lstm_hidden = lstm_hidden
+        self.beta_translation = beta_translation
+        self.beta_rotation = beta_rotation
+        self.use_geodesic_loss = use_geodesic_loss
+        
+        # Shared CNN backbone for feature extraction
+        self.cnn = self._build_cnn_layers()
+        
+        # Feature projection
+        self.feature_bottleneck = nn.Sequential(
+            nn.Conv2d(1024, 256, kernel_size=1, stride=1, padding=0, bias=False),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+        )
+        self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.feature_proj = nn.Linear(256, feature_size)
+        self.feature_norm = nn.LayerNorm(feature_size)
+        
+        # Pairwise feature fusion (from two consecutive frames)
+        self.pair_fusion = nn.Sequential(
+            nn.Linear(feature_size * 2, feature_size),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+        )
+        
+        # LSTM for temporal modeling
+        self.lstm = nn.LSTM(
+            input_size=feature_size,
+            hidden_size=lstm_hidden,
+            num_layers=lstm_layers,
+            batch_first=True,
+            dropout=dropout if lstm_layers > 1 else 0,
+        )
+        
+        # Pose regression head
+        self.fc1 = nn.Linear(lstm_hidden, 128)
+        self.fc_pose = nn.Linear(128, 6)
+        self.dropout = nn.Dropout(dropout)
+    
+    def _build_cnn_layers(self):
+        """Build FlowNet-style CNN encoder (same as VisualModel)."""
+        layers = []
+        layers.extend([nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3), nn.BatchNorm2d(64), nn.ReLU(inplace=True)])
+        layers.extend([nn.Conv2d(64, 128, kernel_size=5, stride=2, padding=2), nn.BatchNorm2d(128), nn.ReLU(inplace=True)])
+        layers.extend([nn.Conv2d(128, 256, kernel_size=5, stride=2, padding=2), nn.BatchNorm2d(256), nn.ReLU(inplace=True)])
+        layers.extend([nn.Conv2d(256, 512, kernel_size=3, stride=2, padding=1), nn.BatchNorm2d(512), nn.ReLU(inplace=True)])
+        layers.extend([nn.Conv2d(512, 512, kernel_size=3, stride=2, padding=1), nn.BatchNorm2d(512), nn.ReLU(inplace=True)])
+        layers.extend([nn.Conv2d(512, 1024, kernel_size=3, stride=2, padding=1), nn.BatchNorm2d(1024), nn.ReLU(inplace=True)])
+        return nn.Sequential(*layers)
+    
+    def _extract_features(self, image):
+        """Extract features from a single image."""
+        x = self.cnn(image)
+        x = self.feature_bottleneck(x)
+        x = self.global_pool(x)
+        x = x.flatten(1)
+        x = self.feature_proj(x)
+        x = self.feature_norm(x)
+        return x
+    
+    def forward(self, batch):
+        """
+        Forward pass through LSTM model.
+        
+        Args:
+            batch: Dictionary containing either:
+                - 'image_seq': (B, seq_len, 3, H, W) sequence of frames (training mode)
+                OR
+                - 'image_t' and 'image_tp1': (B, 3, H, W) frame pairs (inference/test mode)
+        
+        Returns:
+            poses: (B, seq_len-1, 6) or (B, 6) depending on input format
+        """
+        # Check if we have sequence input or frame pair input
+        if "image_seq" in batch:
+            # Sequence mode (training)
+            image_seq = batch["image_seq"]  # (B, seq_len, 3, H, W)
+            B, seq_len = image_seq.shape[:2]
+            
+            # Extract features for all frames in the sequence
+            # Reshape to (B*seq_len, 3, H, W) for batch processing
+            image_seq_flat = image_seq.view(B * seq_len, *image_seq.shape[2:])
+            features_flat = self._extract_features(image_seq_flat)  # (B*seq_len, feature_size)
+            
+            # Reshape back to (B, seq_len, feature_size)
+            features = features_flat.view(B, seq_len, self.feature_size)
+            
+            # Create pair features from consecutive frames
+            pair_features = []
+            for t in range(seq_len - 1):
+                feat_t = features[:, t]      # (B, feature_size)
+                feat_tp1 = features[:, t+1]  # (B, feature_size)
+                
+                # Concatenate and fuse
+                pair_feat = torch.cat([feat_t, feat_tp1], dim=-1)  # (B, feature_size*2)
+                pair_feat = self.pair_fusion(pair_feat)  # (B, feature_size)
+                pair_features.append(pair_feat)
+            
+            # Stack into sequence: (B, seq_len-1, feature_size)
+            pair_features = torch.stack(pair_features, dim=1)
+            
+            # Process with LSTM
+            lstm_out, (h_n, c_n) = self.lstm(pair_features)  # (B, seq_len-1, lstm_hidden)
+            
+            # Predict pose for each timestep
+            x = F.relu(self.fc1(lstm_out))  # (B, seq_len-1, 128)
+            x = self.dropout(x)
+            poses = self.fc_pose(x)  # (B, seq_len-1, 6)
+            
+            # Normalize quaternions
+            poses = self._normalize_quaternions(poses)
+            
+            return poses
+            
+        elif "image_t" in batch and "image_tp1" in batch:
+            # Frame pair mode (inference/testing compatibility)
+            # Process as a sequence of length 2
+            image_t = batch["image_t"]      # (B, 3, H, W)
+            image_tp1 = batch["image_tp1"]  # (B, 3, H, W)
+            
+            B = image_t.shape[0]
+            
+            # Extract features from both frames
+            feat_t = self._extract_features(image_t)      # (B, feature_size)
+            feat_tp1 = self._extract_features(image_tp1)  # (B, feature_size)
+            
+            # Create pair feature
+            pair_feat = torch.cat([feat_t, feat_tp1], dim=-1)  # (B, feature_size*2)
+            pair_feat = self.pair_fusion(pair_feat)  # (B, feature_size)
+            
+            # Add sequence dimension: (B, 1, feature_size)
+            pair_features = pair_feat.unsqueeze(1)
+            
+            # Process with LSTM (even though it's just one timestep)
+            lstm_out, (h_n, c_n) = self.lstm(pair_features)  # (B, 1, lstm_hidden)
+            
+            # Predict pose
+            x = F.relu(self.fc1(lstm_out))  # (B, 1, 128)
+            x = self.dropout(x)
+            poses = self.fc_pose(x)  # (B, 1, 6)
+            
+            # Remove sequence dimension and normalize
+            poses = poses.squeeze(1)  # (B, 6)
+            poses = self._normalize_quaternions(poses)
+            
+            return poses
+        else:
+            raise ValueError(
+                "Batch must contain either 'image_seq' or both 'image_t' and 'image_tp1'"
+            )
+    
+    def _normalize_quaternions(self, poses):
+        """Normalize quaternion part of pose sequence or single pose."""
+        # poses: (B, seq_len-1, 6) or (B, 6)
+        translation = poses[..., :2]  # Extract translation
+        quaternion = poses[..., 2:]   # Extract quaternion
+        
+        quat_norm = torch.norm(quaternion, p=2, dim=-1, keepdim=True)
+        quat_norm = torch.clamp(quat_norm, min=1e-12)
+        
+        return torch.cat([translation, quaternion / quat_norm], dim=-1)
+    
+    def compute_loss(self, batch, return_components=False):
+        """
+        Compute weighted loss for sequence of pose predictions.
+        
+        Args:
+            batch: Dictionary containing:
+                - 'image_seq': (B, seq_len, 3, H, W)
+                - 'target_poses': (B, seq_len-1, 6) ground truth poses
+        
+        Returns:
+            loss: Scalar loss (or dict if return_components=True)
+        """
+        pred_poses = self.forward(batch)        # (B, seq_len-1, 6)
+        target_poses = batch["target_poses"]    # (B, seq_len-1, 6)
+        
+        # Flatten sequences for loss computation
+        pred_poses_flat = pred_poses.reshape(-1, 6)      # (B*(seq_len-1), 6)
+        target_poses_flat = target_poses.reshape(-1, 6)  # (B*(seq_len-1), 6)
+        
+        # Translation loss (dx, dy)
+        pred_trans = pred_poses_flat[..., :2]
+        target_trans = target_poses_flat[..., :2]
+        loss_translation = F.mse_loss(pred_trans, target_trans)
+        rmse_translation = torch.sqrt(loss_translation)
+        
+        # Rotation loss
+        if self.use_geodesic_loss:
+            pred_quat = F.normalize(pred_poses_flat[..., 2:], dim=-1)
+            target_quat = F.normalize(target_poses_flat[..., 2:], dim=-1)
+            
+            dot_product = torch.abs(torch.sum(pred_quat * target_quat, dim=-1))
+            dot_product = torch.clamp(dot_product, 0.0, 1.0 - 1e-7)
+            angle_error_rad = 2.0 * torch.acos(dot_product)
+            
+            loss_rotation = torch.mean(angle_error_rad)
+            mean_angle_error_deg = torch.mean(angle_error_rad) * 180.0 / 3.14159265359
+        else:
+            loss_rotation = F.mse_loss(pred_poses_flat[..., 2:], target_poses_flat[..., 2:])
+            
+            pred_quat = F.normalize(pred_poses_flat[..., 2:], dim=-1)
+            target_quat = F.normalize(target_poses_flat[..., 2:], dim=-1)
+            dot_product = torch.abs(torch.sum(pred_quat * target_quat, dim=-1))
+            dot_product = torch.clamp(dot_product, 0.0, 1.0 - 1e-7)
+            angle_error_rad = 2.0 * torch.acos(dot_product)
+            mean_angle_error_deg = torch.mean(angle_error_rad) * 180.0 / 3.14159265359
+        
+        total_loss = self.beta_translation * loss_translation + self.beta_rotation * loss_rotation
+        
+        if return_components:
+            return {
+                'loss': total_loss,
+                'loss_translation': loss_translation,
+                'loss_rotation': loss_rotation,
+                'rmse_translation_m': rmse_translation,
+                'mean_angle_error_deg': mean_angle_error_deg,
+                'angle_error_rad': torch.mean(angle_error_rad),
+            }
+        
+        return total_loss
+
+
 class InertialModel(nn.Module):
     def __init__(self):
         super(InertialModel, self).__init__()
