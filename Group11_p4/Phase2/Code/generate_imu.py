@@ -227,11 +227,31 @@ def get_noise_params(profile):
     raise ValueError(f"Unknown noise profile '{profile}'. Use low|mid|high.")
 
 
-def add_imu_noise(acc_gt, omega_gt, hz, profile="mid", seed=None, acc_vib=None, gyro_vib=None):
+def scale_noise_params(acc_err, gyro_err, noise_scale):
+    if noise_scale <= 0:
+        raise ValueError(f"noise_scale must be > 0, got {noise_scale}")
+
+    acc_scaled = {
+        "b": acc_err["b"],
+        "b_drift": acc_err["b_drift"] * noise_scale,
+        "b_corr": acc_err["b_corr"],
+        "vrw": acc_err["vrw"] * noise_scale,
+    }
+    gyro_scaled = {
+        "b": gyro_err["b"],
+        "b_drift": gyro_err["b_drift"] * noise_scale,
+        "b_corr": gyro_err["b_corr"],
+        "arw": gyro_err["arw"] * noise_scale,
+    }
+    return acc_scaled, gyro_scaled
+
+
+def add_imu_noise(acc_gt, omega_gt, hz, profile="mid", seed=None, acc_vib=None, gyro_vib=None, noise_scale=1.0):
     if seed is not None:
         np.random.seed(seed)
 
     acc_err, gyro_err = get_noise_params(profile)
+    acc_err, gyro_err = scale_noise_params(acc_err, gyro_err, noise_scale)
 
     acc_np = np.asarray(acc_gt, dtype=np.float64)
     omega_np = np.asarray(omega_gt, dtype=np.float64)
@@ -322,7 +342,7 @@ def save_imu_plot_with_name(acc, omega, dt, output_dir, file_name, title, acc_gt
     print(f"[PLOT SAVED] {save_path}")
 
 # this is the big file that gets called
-def process_file(pose_path, hz, noise_profile, noise_seed, acc_vib, gyro_vib):
+def process_file(pose_path, hz, noise_profile, noise_seed, acc_vib, gyro_vib, noise_scale):
     dt = 1.0 / hz
 
     frames, pos, quat = read_poses(pose_path)
@@ -341,6 +361,7 @@ def process_file(pose_path, hz, noise_profile, noise_seed, acc_vib, gyro_vib):
         seed=noise_seed,
         acc_vib=acc_vib,
         gyro_vib=gyro_vib,
+        noise_scale=noise_scale,
     )
     fixed_seed = None if noise_seed is None else noise_seed + 1
     acc_noisy_fixed, omega_noisy_fixed = add_imu_noise(
@@ -351,6 +372,7 @@ def process_file(pose_path, hz, noise_profile, noise_seed, acc_vib, gyro_vib):
         seed=fixed_seed,
         acc_vib=acc_vib,
         gyro_vib=gyro_vib,
+        noise_scale=noise_scale,
     )
 
     seq_dir = pose_path.parent
@@ -402,6 +424,7 @@ def main():
     parser.add_argument("--hz", type=float, default=100)
     parser.add_argument("--noise-profile", type=str, default="mid", choices=["low", "mid", "high"])
     parser.add_argument("--noise-seed", type=int, default=None)
+    parser.add_argument("--noise-scale", type=float, default=1.0, help="Scales IMU stochastic noise terms (vrw/arw/b_drift).")
     parser.add_argument("--acc-vib", type=str, default=None, help="e.g. '[0.03 0.01 0.01]-random'")
     parser.add_argument("--gyro-vib", type=str, default=None, help="e.g. '[0.2 0.2 0.1]d-1Hz-sinusoidal'")
     args = parser.parse_args()
@@ -417,6 +440,7 @@ def main():
             args.noise_seed,
             args.acc_vib,
             args.gyro_vib,
+            args.noise_scale,
         )
 
 if __name__ == "__main__":
