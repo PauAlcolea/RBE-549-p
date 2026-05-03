@@ -157,6 +157,24 @@ def sample_square(common: CommonCfg, cfg: ShapeCfg) -> List[Tuple[float, float, 
     return resample_polyline_constant_speed(loop, common.speed, common.sim_hz)
 
 
+def sample_triangle(common: CommonCfg, cfg: ShapeCfg) -> List[Tuple[float, float, float]]:
+    """Sample an equilateral triangle trajectory."""
+    h = cfg.side / 2.0
+    r = cfg.side * math.sin(math.radians(60))  # radius of circumscribed circle
+    corners = [
+        (-h, -r / 3, common.height),  # bottom-left
+        (0, 2 * r / 3, common.height),  # top
+        (h, -r / 3, common.height),  # bottom-right
+    ]
+
+    loop: List[Tuple[float, float, float]] = []
+    for _ in range(common.laps):
+        loop.extend(corners)
+    loop.append(corners[0])
+
+    return resample_polyline_constant_speed(loop, common.speed, common.sim_hz)
+
+
 def compute_tangent_yaws(
     positions: Sequence[Tuple[float, float, float]],
     yaw_offset_rad: float,
@@ -193,6 +211,8 @@ def generate_positions(common: CommonCfg, cfg: ShapeCfg) -> List[Tuple[float, fl
         return sample_figure8(common, cfg)
     if cfg.shape == "square":
         return sample_square(common, cfg)
+    if cfg.shape == "triangle":
+        return sample_triangle(common, cfg)
     raise ValueError(f"Unsupported shape '{cfg.shape}'")
 
 
@@ -283,6 +303,8 @@ def write_trajectory_summary(
         f.write(f"  Shape            : {cfg.shape}\n")
         if cfg.shape == "square":
             f.write(f"  Square side      : {cfg.side} m\n")
+        elif cfg.shape == "triangle":
+            f.write(f"  Triangle side    : {cfg.side} m\n")
         elif cfg.shape == "figure8":
             f.write(f"  Figure8 width    : {cfg.width} m\n")
             f.write(f"  Figure8 length   : {cfg.length} m\n")
@@ -384,7 +406,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--texture", type=str, default="playrug", help="Texture tag for metadata/manifest consistency")
     parser.add_argument("--seed", type=str, default="", help="Optional seed tag for metadata/manifest consistency")
 
-    parser.add_argument("--shape", type=str, default="square", choices=["square", "figure8", "circle"])
+    parser.add_argument("--shape", type=str, default="square", choices=["square", "figure8", "circle", "triangle"])
     parser.add_argument("--height", type=float, default=1.5)
     parser.add_argument("--laps", type=int, default=1)
     parser.add_argument("--speed", type=float, default=0.5)
@@ -418,6 +440,8 @@ def main() -> None:
 
     if cfg.shape == "square" and cfg.side <= 0.0:
         raise ValueError("--side must be > 0 for square")
+    if cfg.shape == "triangle" and cfg.side <= 0.0:
+        raise ValueError("--side must be > 0 for triangle")
     if cfg.shape == "circle" and cfg.radius <= 0.0:
         raise ValueError("--radius must be > 0 for circle")
     if cfg.shape == "figure8" and (cfg.width <= 0.0 or cfg.length <= 0.0):
