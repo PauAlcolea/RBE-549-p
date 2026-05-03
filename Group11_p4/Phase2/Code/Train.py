@@ -50,6 +50,7 @@ class Pipeline:
                 # LSTM mode: sequence dataset
                 self.train_dataset = VisualDataset(
                     train_dir,
+                    mode="sequences",
                     image_height=image_height,
                     image_width=image_width,
                     use_augmentation=use_augmentation,
@@ -58,6 +59,7 @@ class Pipeline:
                 )
                 self.val_dataset = VisualDataset(
                     val_dir,
+                    mode="sequences",
                     image_height=image_height,
                     image_width=image_width,
                     use_augmentation=False,
@@ -72,12 +74,14 @@ class Pipeline:
                 # Frame-pair mode
                 self.train_dataset = VisualDataset(
                     train_dir,
+                    mode="pairs",
                     image_height=image_height,
                     image_width=image_width,
                     use_augmentation=use_augmentation,
                 )
                 self.val_dataset = VisualDataset(
                     val_dir,
+                    mode="pairs",
                     image_height=image_height,
                     image_width=image_width,
                     use_augmentation=False,
@@ -219,7 +223,8 @@ def train(
             scaler.step(optimizer)
             scaler.update()
 
-            current_batch_size = batch["target_rel_poses"].shape[0]
+            # Get batch size from first tensor in batch
+            current_batch_size = next(iter(batch.values())).shape[0]
             train_loss += loss.item() * current_batch_size
 
             # Logging
@@ -238,7 +243,7 @@ def train(
                 batch = _move_batch_to_device(batch, device)
 
                 loss = model.compute_loss(batch)
-                current_batch_size = batch["target_rel_poses"].shape[0]
+                current_batch_size = next(iter(batch.values())).shape[0]
                 val_loss += loss.item() * current_batch_size
 
         val_loss /= max(1, num_val_samples)
