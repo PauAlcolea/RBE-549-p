@@ -123,7 +123,7 @@ def _relative_poses_to_world_positions(rel_poses):
     return positions
 
 
-def _save_val_trajectory_plot(model, val_loader, device, epoch, val_loss, plot_dir):
+def _save_val_trajectory_plot(model, val_loader, device, epoch, val_loss, writer):
     model.eval()
     with torch.no_grad():
         for batch in val_loader:
@@ -190,9 +190,8 @@ def _save_val_trajectory_plot(model, val_loader, device, epoch, val_loss, plot_d
             )
             fig.tight_layout()
 
-            os.makedirs(plot_dir, exist_ok=True)
-            save_path = plot_dir / f"epoch_{epoch:04d}_{seq_id}.png"
-            fig.savefig(save_path, dpi=150)
+            # Log to TensorBoard
+            writer.add_figure(f"Validation_Trajectory/{seq_id}", fig, epoch)
             plt.close(fig)
             break
 
@@ -231,7 +230,6 @@ def train(
     # specify log and checkpoint directories by model type to avoid conflicts
     log_dir = log_dir / model.name
     checkpoint_dir = checkpoint_dir / model.name
-    plot_dir = Path(output_dir) / "plots" / model.name
 
     # clear contents of current model type's log_dir
     if os.path.exists(log_dir):
@@ -345,7 +343,7 @@ def train(
 
         if plot_every > 0 and (epoch % plot_every == 0 or epoch == num_epochs - 1):
             _save_val_trajectory_plot(
-                model, val_loader, device, epoch, val_loss, plot_dir
+                model, val_loader, device, epoch, val_loss, writer
             )
 
         # logging
