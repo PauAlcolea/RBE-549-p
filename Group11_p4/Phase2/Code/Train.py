@@ -10,6 +10,7 @@ import matplotlib
 matplotlib.use("Agg")       # allows this to run headless 
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
+from torch.utils.data import WeightedRandomSampler
 from torch.utils.tensorboard import SummaryWriter
 from torch.amp import autocast, GradScaler
 from torch.optim.lr_scheduler import ReduceLROnPlateau
@@ -17,6 +18,7 @@ from tqdm import tqdm
 from argparse import ArgumentParser
 from enum import Enum
 from pathlib import Path
+from collections import Counter
 
 from Datasets import VisualDataset, InertialDataset, VisualInertialDataset
 from Models import VisualModel, InertialModel, VisualInertialModel, LSTMVisualModel
@@ -50,55 +52,46 @@ class Pipeline:
         self.use_lstm = use_lstm
 
         if model_type == ModelTypes.VISUAL:
-            if use_lstm:
-                # LSTM mode: sequence dataset
-                self.train_dataset = VisualDataset(
-                    train_dir,
-                    mode="sequences",
-                    image_height=image_height,
-                    image_width=image_width,
-                    use_augmentation=use_augmentation,
-                    sequence_length=sequence_length,
-                    stride=stride,
-                )
-                self.val_dataset = VisualDataset(
-                    val_dir,
-                    mode="sequences",
-                    image_height=image_height,
-                    image_width=image_width,
-                    use_augmentation=False,
-                    sequence_length=sequence_length,
-                    stride=stride,
-                )
-                self.model = LSTMVisualModel(
-                    lstm_hidden=lstm_hidden,
-                    lstm_layers=lstm_layers,
-                )
-            else:
-                # Frame-pair mode
-                self.train_dataset = VisualDataset(
-                    train_dir,
-                    mode="pairs",
-                    image_height=image_height,
-                    image_width=image_width,
-                    use_augmentation=use_augmentation,
-                )
-                self.val_dataset = VisualDataset(
-                    val_dir,
-                    mode="pairs",
-                    image_height=image_height,
-                    image_width=image_width,
-                    use_augmentation=False,
-                )
-                self.model = VisualModel()
+            self.train_dataset = VisualDataset(
+                train_dir,
+                mode="sequences",
+                sequence_length=sequence_length,
+                image_height=image_height,
+                image_width=image_width,
+            )
+            self.val_dataset = VisualDataset(
+                val_dir,
+                mode="sequences",
+                sequence_length=sequence_length,
+                image_height=image_height,
+                image_width=image_width,
+            )
+            self.model = VisualModel(
+                lstm_hidden_size=lstm_hidden,
+                image_height=image_height,
+                image_width=image_width,
+            )
         elif model_type == ModelTypes.INERTIAL:
             self.train_dataset = InertialDataset(train_dir)
             self.val_dataset = InertialDataset(val_dir)
             self.model = InertialModel()
         elif model_type == ModelTypes.VISUAL_INERTIAL:
-            self.train_dataset = VisualInertialDataset(train_dir)
-            self.val_dataset = VisualInertialDataset(val_dir)
-            self.model = VisualInertialModel()
+            self.train_dataset = VisualInertialDataset(
+                train_dir,
+                image_height=image_height,
+                image_width=image_width,
+                use_augmentation=True,
+            )
+            self.val_dataset = VisualInertialDataset(
+                val_dir,
+                image_height=image_height,
+                image_width=image_width,
+            )
+            self.model = VisualInertialModel(
+                feature_size=256,
+                hidden_size=512,
+                lstm_hidden_size=lstm_hidden,
+            )
 
 
 def _quat_mul_np(q1, q2):
@@ -130,7 +123,12 @@ def _quat_to_rotmat_np(q):
 
 def _relative_poses_to_world_positions(rel_poses):
     """
-    Convert relative local-frame poses [dx,dy,dz,qw,qx,qy,qz] into world XYZ path.
+    Convert relative local-frame poses into world XYZ path.
+    
+    Supports both formats:
+    - 6D: [dx, dy, qw, qx, qy, qz] (ground plane motion, dz=0)
+    - 7D: [dx, dy, dz, qw, qx, qy, qz] (full 3D motion)
+    
     Returns (T, 3) positions, starting at the origin.
     """
     n = rel_poses.shape[0]
@@ -138,8 +136,16 @@ def _relative_poses_to_world_positions(rel_poses):
     q_world = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
 
     for i in range(n):
-        d_local = rel_poses[i, :3]
-        q_rel = rel_poses[i, 3:]
+        # Handle both 6D and 7D pose formats
+        if rel_poses.shape[1] == 6:
+            # 6D format: [dx, dy, qw, qx, qy, qz]
+            d_local = np.array([rel_poses[i, 0], rel_poses[i, 1], 0.0], dtype=np.float64)
+            q_rel = rel_poses[i, 2:]
+        else:
+            # 7D format: [dx, dy, dz, qw, qx, qy, qz]
+            d_local = rel_poses[i, :3]
+            q_rel = rel_poses[i, 3:]
+        
         q_rel = q_rel / max(np.linalg.norm(q_rel), 1e-12)
 
         r_world = _quat_to_rotmat_np(q_world)
@@ -151,16 +157,26 @@ def _relative_poses_to_world_positions(rel_poses):
     return positions
 
 
-def _save_val_trajectory_plot(model, val_loader, device, epoch, val_loss, plot_dir):
+def _save_val_trajectory_plot(model, val_loader, device, epoch, val_loss, writer):
     model.eval()
     with torch.no_grad():
         for batch in val_loader:
             batch = _move_batch_to_device(batch, device)
             pred = model.forward(batch)
-            gt = batch["target_rel_poses"]
-
-            pred_np = pred[0].detach().cpu().numpy()
-            gt_np = gt[0].detach().cpu().numpy()
+            
+            # Get ground truth and prediction for first sample in batch
+            gt = batch["target_rel_pose"]
+            
+            # Handle both sequence mode (shape: B, T-1, D) and pair mode (shape: B, D)
+            if gt.ndim == 3:
+                # Sequence mode: multiple poses per sample
+                pred_np = pred[0].detach().cpu().numpy()
+                gt_np = gt[0].detach().cpu().numpy()
+            else:
+                # Pair mode: single pose per sample
+                pred_np = pred[0:1].detach().cpu().numpy()  # Keep as (1, 6) or (1, 7)
+                gt_np = gt[0:1].detach().cpu().numpy()
+            
             seq_id = batch.get("sequence_id", ["unknown"])[0]
 
             pred_xyz = _relative_poses_to_world_positions(pred_np)
@@ -218,9 +234,8 @@ def _save_val_trajectory_plot(model, val_loader, device, epoch, val_loss, plot_d
             )
             fig.tight_layout()
 
-            os.makedirs(plot_dir, exist_ok=True)
-            save_path = plot_dir / f"epoch_{epoch:04d}_{seq_id}.png"
-            fig.savefig(save_path, dpi=150)
+            # Log to TensorBoard
+            writer.add_figure(f"Validation_Trajectory/{seq_id}", fig, epoch)
             plt.close(fig)
             break
 
@@ -233,6 +248,45 @@ def _move_batch_to_device(batch, device):
         else:
             moved[key] = value
     return moved
+
+
+def _build_shape_balanced_sampler(dataset):
+    if not hasattr(dataset, "samples") or not hasattr(dataset, "sequences"):
+        return None
+
+    seq_shapes = [seq.get("shape", "unknown") for seq in dataset.sequences]
+    if not seq_shapes:
+        return None
+
+    shape_counts = Counter()
+    for seq_idx, _ in dataset.samples:
+        shape_counts[seq_shapes[seq_idx]] += 1
+
+    if len(shape_counts) <= 1:
+        return None
+
+    weights = []
+    for seq_idx, _ in dataset.samples:
+        shape = seq_shapes[seq_idx]
+        weights.append(1.0 / max(1, shape_counts[shape]))
+
+    return WeightedRandomSampler(
+        weights=torch.tensor(weights, dtype=torch.double),
+        num_samples=len(weights),
+        replacement=True,
+    )
+
+
+def _compute_loss(model, batch):
+    try:
+        loss_out = model.compute_loss(batch, return_components=True)
+    except TypeError:
+        loss_out = model.compute_loss(batch)
+
+    if isinstance(loss_out, dict):
+        return loss_out.get("loss", loss_out), loss_out
+
+    return loss_out, None
 
 
 def train(
@@ -263,11 +317,6 @@ def train(
     # specify log and checkpoint directories by model type to avoid conflicts
     log_dir = log_dir / model.name
     checkpoint_dir = checkpoint_dir / model.name
-    
-    if use_lstm:
-        log_dir = log_dir / "lstm"
-        checkpoint_dir = checkpoint_dir / "lstm"
-    plot_dir = Path(output_dir) / "plots" / model.name
 
     # clear contents of current model type's log_dir
     if os.path.exists(log_dir):
@@ -304,10 +353,12 @@ def train(
     val_dataset = pipeline.val_dataset
 
     pin_memory = str(device).startswith("cuda")
+    train_sampler = _build_shape_balanced_sampler(train_dataset)
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=(train_sampler is None),
+        sampler=train_sampler,
         num_workers=num_workers,
         pin_memory=pin_memory,
         prefetch_factor=2,
@@ -335,13 +386,15 @@ def train(
         model.train()
 
         train_loss = 0.0
+        train_trans_loss = 0.0
+        train_rot_loss = 0.0
         num_train_samples = len(train_dataset)
         for batch in tqdm(train_loader, desc=f"Train {epoch}"):
             batch = _move_batch_to_device(batch, device)
 
             optimizer.zero_grad(set_to_none=True)
             with autocast("cuda", enabled=scaler.is_enabled()):
-                loss = model.compute_loss(batch)
+                loss, loss_dict = _compute_loss(model, batch)
 
             # Back propagation and optimizer step with GradScaler
             scaler.scale(loss).backward()
@@ -356,16 +409,36 @@ def train(
             # Get batch size from first tensor in batch
             current_batch_size = next(iter(batch.values())).shape[0]
             train_loss += loss.item() * current_batch_size
+            
+            # Track component losses
+            if isinstance(loss_dict, dict):
+                if "loss_translation" in loss_dict:
+                    train_trans_loss += loss_dict["loss_translation"].item() * current_batch_size
+                if "loss_rotation" in loss_dict:
+                    train_rot_loss += loss_dict["loss_rotation"].item() * current_batch_size
 
             # Logging
             writer.add_scalar("Loss/Train", loss.item(), global_step)
+            if isinstance(loss_dict, dict):
+                if "loss_translation" in loss_dict:
+                    writer.add_scalar("Loss/Train_Translation", loss_dict["loss_translation"].item(), global_step)
+                if "loss_rotation" in loss_dict:
+                    writer.add_scalar("Loss/Train_Rotation", loss_dict["loss_rotation"].item(), global_step)
+                if "rmse_translation_m" in loss_dict:
+                    writer.add_scalar("Metrics/Train_RMSE_m", loss_dict["rmse_translation_m"].item(), global_step)
+                if "mean_angle_error_deg" in loss_dict:
+                    writer.add_scalar("Metrics/Train_AngleError_deg", loss_dict["mean_angle_error_deg"].item(), global_step)
             global_step += 1
 
         train_loss /= max(1, num_train_samples)
+        train_trans_loss /= max(1, num_train_samples)
+        train_rot_loss /= max(1, num_train_samples)
 
         #### validation ####
         model.eval()
         val_loss = 0.0
+        val_trans_loss = 0.0
+        val_rot_loss = 0.0
         num_val_samples = len(val_dataset)
 
         with torch.no_grad():
@@ -375,8 +448,17 @@ def train(
                 loss = model.compute_loss(batch)
                 current_batch_size = next(iter(batch.values())).shape[0]
                 val_loss += loss.item() * current_batch_size
+                
+                # Track component losses
+                if isinstance(loss_dict, dict):
+                    if "loss_translation" in loss_dict:
+                        val_trans_loss += loss_dict["loss_translation"].item() * current_batch_size
+                    if "loss_rotation" in loss_dict:
+                        val_rot_loss += loss_dict["loss_rotation"].item() * current_batch_size
 
         val_loss /= max(1, num_val_samples)
+        val_trans_loss /= max(1, num_val_samples)
+        val_rot_loss /= max(1, num_val_samples)
         scheduler.step(val_loss)
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -393,13 +475,18 @@ def train(
 
         if plot_every > 0 and (epoch % plot_every == 0 or epoch == num_epochs - 1):
             _save_val_trajectory_plot(
-                model, val_loader, device, epoch, val_loss, plot_dir
+                model, val_loader, device, epoch, val_loss, writer
             )
 
         # logging
         writer.add_scalar("Loss/Val", val_loss, global_step)
+        writer.add_scalar("Loss/Val_Translation", val_trans_loss, epoch)
+        writer.add_scalar("Loss/Val_Rotation", val_rot_loss, epoch)
+        
         print(
-            f"Epoch {epoch}: Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}"
+            f"Epoch {epoch}: "
+            f"Train Loss = {train_loss:.6f} (trans={train_trans_loss:.6f}, rot={train_rot_loss:.6f}), "
+            f"Val Loss = {val_loss:.6f} (trans={val_trans_loss:.6f}, rot={val_rot_loss:.6f})"
         )
 
     writer.close()
@@ -430,12 +517,6 @@ def _parse_args():
     )
     parser.add_argument(
         "--lr", type=float, default=1e-3, help="Learning rate for the optimizer"
-    )
-    parser.add_argument(
-        "--num_workers",
-        type=int,
-        default=4,
-        help="Number of DataLoader worker processes",
     )
     parser.add_argument(
         "--image_height",

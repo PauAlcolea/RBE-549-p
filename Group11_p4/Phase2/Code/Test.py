@@ -170,6 +170,47 @@ class SequenceEvaluator:
 
         return np.asarray(aligned_imu, dtype=np.float32)
 
+    def _load_vi_imu(self) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Load high-rate IMU data for visual-inertial inference.
+
+        Tries the 1000Hz file first ({seq_id}_imu_1000hz.csv), then falls back
+        to the base IMU file ({seq_id}_imu.csv).
+
+        Returns:
+            imu_values: (M, 6) float32 array of [ax, ay, az, wx, wy, wz]
+            imu_frame_ids: (M,) int64 array of frame IDs corresponding to each IMU sample
+        """
+        imu_path = self.sequence_path / f"{self.sequence_id}_imu_1000hz.csv"
+        if not imu_path.exists():
+            imu_path = self.sequence_path / f"{self.sequence_id}_imu.csv"
+        if not imu_path.exists():
+            raise FileNotFoundError(
+                f"No IMU file found for VI inference in {self.sequence_path}. "
+                f"Expected {self.sequence_id}_imu_1000hz.csv or {self.sequence_id}_imu.csv"
+            )
+
+        frame_ids = []
+        values = []
+
+        with open(imu_path, "r", newline="") as f:
+            reader = csv.DictReader(f)
+            required_cols = ["frame", "ax", "ay", "az", "wx", "wy", "wz"]
+            for col in required_cols:
+                if col not in (reader.fieldnames or []):
+                    raise ValueError(f"Missing IMU column '{col}' in {imu_path}")
+            for row in reader:
+                frame_ids.append(int(row["frame"]))
+                values.append([
+                    float(row["ax"]), float(row["ay"]), float(row["az"]),
+                    float(row["wx"]), float(row["wy"]), float(row["wz"]),
+                ])
+
+        return (
+            np.array(values, dtype=np.float32),
+            np.array(frame_ids, dtype=np.int64),
+        )
+
     def run_inference(self) -> Dict[str, np.ndarray]:
         """
         Run model inference on the full sequence using consecutive frame pairs.
@@ -181,34 +222,84 @@ class SequenceEvaluator:
                 - 'abs_positions': (N, 3) accumulated absolute positions
                 - 'abs_quaternions': (N, 4) accumulated absolute quaternions
         """
-        if self.model_type not in (ModelTypes.VISUAL, ModelTypes.INERTIAL):
-            raise NotImplementedError(
-                f"Inference for {self.model_type.name} not yet implemented. "
-                "Currently only VISUAL and INERTIAL models are supported."
-            )
-
         self.model.eval()
 
         # Collect relative poses by processing consecutive frame pairs
         rel_positions = []
         rel_quaternions = []
 
+        frames = self.gt_poses["frames"]
+
         with torch.no_grad():
             if self.model_type == ModelTypes.VISUAL:
-                images = [self._load_image(int(fid)) for fid in self.gt_poses["frames"]]
+                images = [self._load_image(int(fid)) for fid in frames]
                 images = torch.stack(images, dim=0).unsqueeze(0).to(self.device)  # (1, N, 3, H, W)
                 batch = {"images": images}
-                pred_poses = self.model(batch).squeeze(0).cpu().numpy()  # (N-1, 7)
-            else:
+                pred_poses = self.model(batch).squeeze(0).cpu().numpy()  # (N-1, 6)
+
+                # Split [dx, dy, qw, qx, qy, qz] into translation and quaternion
+                # Note: dz=0 for ground plane motion
+                for i in range(pred_poses.shape[0]):
+                    rel_positions.append(np.array([pred_poses[i, 0], pred_poses[i, 1], 0.0], dtype=np.float64))
+                    rel_quaternions.append(pred_poses[i, 2:].astype(np.float64))  # [qw, qx, qy, qz]
+
+            elif self.model_type == ModelTypes.INERTIAL:
                 imu = self._load_aligned_imu()
+                print(f"DEBUG: Loaded IMU shape: {imu.shape}")
+                print(f"DEBUG: First 3 IMU samples:\n{imu[:3]}")
+                
                 imu = torch.from_numpy(imu).unsqueeze(0).to(self.device)  # (1, N, 6)
                 batch = {"imu": imu}
                 pred_poses = self.model(batch).squeeze(0).cpu().numpy()  # (N-1, 7)
+                
+                print(f"\nDEBUG: pred_poses shape: {pred_poses.shape}")
+                print(f"DEBUG: First 3 predictions:\n{pred_poses[:3]}")
+                
+                # Compute GT using InertialDataset's method
+                print(f"\nDEBUG: Ground truth (7D) first 3 relative poses:")
+                from Datasets import InertialDataset
+                for i in range(min(3, len(self.gt_poses["positions"]) - 1)):
+                    gt_t0 = self.gt_poses["positions"][i]
+                    gt_q0 = self.gt_poses["quaternions"][i]
+                    gt_t1 = self.gt_poses["positions"][i + 1]
+                    gt_q1 = self.gt_poses["quaternions"][i + 1]
+                    gt_rel = InertialDataset._relative_pose_7d(gt_t0, gt_q0, gt_t1, gt_q1)
+                    print(f"  GT {i}: {gt_rel}")
+                print()
 
-            # Split [dx, dy, dz, qw, qx, qy, qz] into translation and quaternion
-            for i in range(pred_poses.shape[0]):
-                rel_positions.append(pred_poses[i, :3])
-                rel_quaternions.append(pred_poses[i, 3:])
+                # Split [dx, dy, dz, qw, qx, qy, qz] into translation and quaternion
+                for i in range(pred_poses.shape[0]):
+                    rel_positions.append(pred_poses[i, :3])
+                    rel_quaternions.append(pred_poses[i, 3:])
+
+            elif self.model_type == ModelTypes.VISUAL_INERTIAL:
+                # Load high-rate IMU data for VI inference
+                imu_values, imu_frame_ids = self._load_vi_imu()
+
+                for i in tqdm(range(len(frames) - 1), desc="  VI inference", leave=False):
+                    frame_t = int(frames[i])
+                    frame_tp1 = int(frames[i + 1])
+
+                    # Load image pair
+                    img_t = self._load_image(frame_t).unsqueeze(0).to(self.device)    # (1, 3, H, W)
+                    img_tp1 = self._load_image(frame_tp1).unsqueeze(0).to(self.device)  # (1, 3, H, W)
+
+                    # Slice IMU samples in range [frame_t, frame_tp1)
+                    mask = (imu_frame_ids >= frame_t) & (imu_frame_ids < frame_tp1)
+                    imu_slice = imu_values[mask]
+                    if len(imu_slice) == 0:
+                        imu_slice = np.zeros((1, 6), dtype=np.float32)
+                    imu_tensor = torch.from_numpy(imu_slice).unsqueeze(0).to(self.device)  # (1, N_imu, 6)
+
+                    batch = {"image_t": img_t, "image_tp1": img_tp1, "imu_seq": imu_tensor}
+                    pred = self.model(batch).squeeze(0).cpu().numpy()  # (6,) [dx, dy, qw, qx, qy, qz]
+
+                    # VI model predicts 2D translation [dx, dy]; pad dz=0 for 3D accumulation
+                    rel_positions.append(np.array([pred[0], pred[1], 0.0], dtype=np.float64))
+                    rel_quaternions.append(pred[2:].astype(np.float64))  # [qw, qx, qy, qz]
+
+            else:
+                raise NotImplementedError(f"Inference for {self.model_type.name} is not implemented.")
 
         # Stack all predictions
         rel_positions = np.stack(rel_positions, axis=0)  # (N-1, 3)
@@ -750,18 +841,17 @@ def load_model(
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
-    # Load checkpoint
+    # Load checkpoint first so we can inspect it before building the model
     checkpoint = torch.load(checkpoint_path, map_location=device)
 
     # Handle torch.compile() prefix (_orig_mod.) if present
     state_dict = checkpoint["model_state_dict"]
     if any(key.startswith("_orig_mod.") for key in state_dict.keys()):
-        # Remove _orig_mod. prefix from all keys
         state_dict = {
             key.replace("_orig_mod.", ""): value for key, value in state_dict.items()
         }
 
-    # Create model architecture with hyperparameters inferred from checkpoint
+    # Create model architecture
     if model_type == ModelTypes.VISUAL:
         from Models import VisualModel, LSTMVisualModel
 
@@ -792,7 +882,13 @@ def load_model(
     elif model_type == ModelTypes.VISUAL_INERTIAL:
         from Models import VisualInertialModel
 
-        model = VisualInertialModel()
+        # Infer lstm_hidden_size from the checkpoint's LSTM weight shape so the
+        # architecture matches what was saved, regardless of training defaults.
+        lstm_key = next((k for k in state_dict if "lstm.weight_hh_l0" in k), None)
+        lstm_hidden_size = int(state_dict[lstm_key].shape[1]) if lstm_key else 256
+        model = VisualInertialModel(
+            feature_size=256, hidden_size=512, lstm_hidden_size=lstm_hidden_size
+        )
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 
