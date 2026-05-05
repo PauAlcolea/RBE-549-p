@@ -12,13 +12,14 @@ import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from torch.amp import autocast, GradScaler
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from tqdm import tqdm
 from argparse import ArgumentParser
 from enum import Enum
 from pathlib import Path
 
 from Datasets import VisualDataset, InertialDataset, VisualInertialDataset
-from Models import VisualModel, InertialModel, VisualInertialModel
+from Models import VisualModel, InertialModel, VisualInertialModel, LSTMVisualModel
 
 current_dir = Path(__file__).parent
 output_dir = current_dir.parent / "Output" / "Training"
@@ -36,33 +37,60 @@ class Pipeline:
         model_type,
         train_dir,
         val_dir,
-        sequence_length,
-        lstm_hidden,
         image_height,
         image_width,
+        use_augmentation,
+        use_lstm=False,
+        sequence_length=8,
+        stride=1,
+        lstm_hidden=256,
+        lstm_layers=2,
     ):
         self.model_type = model_type
+        self.use_lstm = use_lstm
 
         if model_type == ModelTypes.VISUAL:
-            self.train_dataset = VisualDataset(
-                train_dir,
-                mode="sequences",
-                sequence_length=sequence_length,
-                image_height=image_height,
-                image_width=image_width,
-            )
-            self.val_dataset = VisualDataset(
-                val_dir,
-                mode="sequences",
-                sequence_length=sequence_length,
-                image_height=image_height,
-                image_width=image_width,
-            )
-            self.model = VisualModel(
-                lstm_hidden_size=lstm_hidden,
-                image_height=image_height,
-                image_width=image_width,
-            )
+            if use_lstm:
+                # LSTM mode: sequence dataset
+                self.train_dataset = VisualDataset(
+                    train_dir,
+                    mode="sequences",
+                    image_height=image_height,
+                    image_width=image_width,
+                    use_augmentation=use_augmentation,
+                    sequence_length=sequence_length,
+                    stride=stride,
+                )
+                self.val_dataset = VisualDataset(
+                    val_dir,
+                    mode="sequences",
+                    image_height=image_height,
+                    image_width=image_width,
+                    use_augmentation=False,
+                    sequence_length=sequence_length,
+                    stride=stride,
+                )
+                self.model = LSTMVisualModel(
+                    lstm_hidden=lstm_hidden,
+                    lstm_layers=lstm_layers,
+                )
+            else:
+                # Frame-pair mode
+                self.train_dataset = VisualDataset(
+                    train_dir,
+                    mode="pairs",
+                    image_height=image_height,
+                    image_width=image_width,
+                    use_augmentation=use_augmentation,
+                )
+                self.val_dataset = VisualDataset(
+                    val_dir,
+                    mode="pairs",
+                    image_height=image_height,
+                    image_width=image_width,
+                    use_augmentation=False,
+                )
+                self.model = VisualModel()
         elif model_type == ModelTypes.INERTIAL:
             self.train_dataset = InertialDataset(train_dir)
             self.val_dataset = InertialDataset(val_dir)
@@ -222,15 +250,23 @@ def train(
     num_workers=2,
     checkpoint_dir=Path(output_dir) / "checkpoints",
     model=ModelTypes.VISUAL,
-    sequence_length=10,
-    lstm_hidden=1000,
     image_height=360,
     image_width=480,
+    use_augmentation=False,
+    use_lstm=False,
+    sequence_length=8,
+    stride=1,
+    lstm_hidden=256,
+    lstm_layers=2,
     plot_every=5,
 ):
     # specify log and checkpoint directories by model type to avoid conflicts
     log_dir = log_dir / model.name
     checkpoint_dir = checkpoint_dir / model.name
+    
+    if use_lstm:
+        log_dir = log_dir / "lstm"
+        checkpoint_dir = checkpoint_dir / "lstm"
     plot_dir = Path(output_dir) / "plots" / model.name
 
     # clear contents of current model type's log_dir
@@ -255,10 +291,14 @@ def train(
         model,
         train_data_dir,
         val_data_dir,
-        sequence_length=sequence_length,
-        lstm_hidden=lstm_hidden,
         image_height=image_height,
         image_width=image_width,
+        use_augmentation=use_augmentation,
+        use_lstm=use_lstm,
+        sequence_length=sequence_length,
+        stride=stride,
+        lstm_hidden=lstm_hidden,
+        lstm_layers=lstm_layers,
     )
     train_dataset = pipeline.train_dataset
     val_dataset = pipeline.val_dataset
@@ -282,6 +322,7 @@ def train(
 
     model = torch.compile(pipeline.model.to(device))
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=5, min_lr=1e-7)
 
     # mixed precision scaler
     scaler = GradScaler(enabled=(torch.cuda.is_available() and "cuda" in str(device)))
@@ -304,10 +345,16 @@ def train(
 
             # Back propagation and optimizer step with GradScaler
             scaler.scale(loss).backward()
+            
+            # Gradient clipping to prevent explosion
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            
             scaler.step(optimizer)
             scaler.update()
 
-            current_batch_size = batch["target_rel_poses"].shape[0]
+            # Get batch size from first tensor in batch
+            current_batch_size = next(iter(batch.values())).shape[0]
             train_loss += loss.item() * current_batch_size
 
             # Logging
@@ -326,10 +373,11 @@ def train(
                 batch = _move_batch_to_device(batch, device)
 
                 loss = model.compute_loss(batch)
-                current_batch_size = batch["target_rel_poses"].shape[0]
+                current_batch_size = next(iter(batch.values())).shape[0]
                 val_loss += loss.item() * current_batch_size
 
         val_loss /= max(1, num_val_samples)
+        scheduler.step(val_loss)
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             checkpoint_path = checkpoint_dir / f"best_model.pth"
@@ -349,7 +397,7 @@ def train(
             )
 
         # logging
-        writer.add_scalar("Loss/Val", val_loss, epoch)
+        writer.add_scalar("Loss/Val", val_loss, global_step)
         print(
             f"Epoch {epoch}: Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}"
         )
@@ -402,6 +450,42 @@ def _parse_args():
         help="Image width for training (original: 640)",
     )
     parser.add_argument(
+        "--use_augmentation",
+        action="store_true",
+        help="Enable data augmentation (brightness, contrast, noise) for training",
+    )
+    
+    # LSTM-specific arguments
+    parser.add_argument(
+        "--use_lstm",
+        action="store_true",
+        help="Use LSTM model for temporal sequence processing (better trajectory generalization)",
+    )
+    parser.add_argument(
+        "--sequence_length",
+        type=int,
+        default=8,
+        help="Number of frames in each sequence (for LSTM mode)",
+    )
+    parser.add_argument(
+        "--stride",
+        type=int,
+        default=1,
+        help="Stride for sequence sampling (1=dense, >1=skip frames)",
+    )
+    parser.add_argument(
+        "--lstm_hidden",
+        type=int,
+        default=256,
+        help="LSTM hidden size",
+    )
+    parser.add_argument(
+        "--lstm_layers",
+        type=int,
+        default=2,
+        help="Number of LSTM layers",
+    )
+    parser.add_argument(
         "--plot_every",
         type=int,
         default=5,
@@ -422,11 +506,12 @@ def _parse_args():
 def main():
     args = _parse_args()
 
-    model_type = (
-        ModelTypes.VISUAL
-        if args.v
-        else (ModelTypes.INERTIAL if args.i else ModelTypes.VISUAL_INERTIAL)
-    )
+    if args.v:
+        model_type = ModelTypes.VISUAL
+    elif args.i:
+        model_type = ModelTypes.INERTIAL
+    else:
+        model_type = ModelTypes.VISUAL_INERTIAL
 
     train(
         train_data_dir=args.train_data_dir,
@@ -437,6 +522,12 @@ def main():
         model=model_type,
         image_height=args.image_height,
         image_width=args.image_width,
+        use_augmentation=args.use_augmentation,
+        use_lstm=args.use_lstm,
+        sequence_length=args.sequence_length,
+        stride=args.stride,
+        lstm_hidden=args.lstm_hidden,
+        lstm_layers=args.lstm_layers,
         plot_every=args.plot_every,
     )
 

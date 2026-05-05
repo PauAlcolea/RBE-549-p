@@ -750,22 +750,6 @@ def load_model(
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
-    # Create model architecture
-    if model_type == ModelTypes.VISUAL:
-        from Models import VisualModel
-
-        model = VisualModel()
-    elif model_type == ModelTypes.INERTIAL:
-        from Models import InertialModel
-
-        model = InertialModel()
-    elif model_type == ModelTypes.VISUAL_INERTIAL:
-        from Models import VisualInertialModel
-
-        model = VisualInertialModel()
-    else:
-        raise ValueError(f"Unknown model type: {model_type}")
-
     # Load checkpoint
     checkpoint = torch.load(checkpoint_path, map_location=device)
 
@@ -777,6 +761,41 @@ def load_model(
             key.replace("_orig_mod.", ""): value for key, value in state_dict.items()
         }
 
+    # Create model architecture with hyperparameters inferred from checkpoint
+    if model_type == ModelTypes.VISUAL:
+        from Models import VisualModel, LSTMVisualModel
+
+        # Detect if this is an LSTM model by checking for lstm layers in state_dict
+        is_lstm = any("lstm." in key for key in state_dict.keys())
+
+        if is_lstm:
+            # Infer LSTM hyperparameters from state_dict
+            params = _infer_lstm_params(state_dict)
+            print(
+                f"Detected LSTM model with params: feature_size={params['feature_size']}, "
+                f"lstm_hidden={params['lstm_hidden']}, lstm_layers={params['lstm_layers']}"
+            )
+            model = LSTMVisualModel(
+                feature_size=params["feature_size"],
+                lstm_hidden=params["lstm_hidden"],
+                lstm_layers=params["lstm_layers"],
+            )
+        else:
+            # Regular VisualModel (frame-pair)
+            print("Detected frame-pair Visual model")
+            model = VisualModel()
+
+    elif model_type == ModelTypes.INERTIAL:
+        from Models import InertialModel
+
+        model = InertialModel()
+    elif model_type == ModelTypes.VISUAL_INERTIAL:
+        from Models import VisualInertialModel
+
+        model = VisualInertialModel()
+    else:
+        raise ValueError(f"Unknown model type: {model_type}")
+
     model.load_state_dict(state_dict)
     model.to(device)
     model.eval()
@@ -787,6 +806,40 @@ def load_model(
     )
 
     return model
+
+
+def _infer_lstm_params(state_dict: dict) -> dict:
+    """
+    Infer LSTMVisualModel hyperparameters from state_dict.
+
+    Args:
+        state_dict: Model state dictionary
+
+    Returns:
+        Dictionary with inferred parameters
+    """
+    params = {}
+
+    # Infer feature_size from feature_proj.weight shape: (feature_size, 256)
+    if "feature_proj.weight" in state_dict:
+        params["feature_size"] = state_dict["feature_proj.weight"].shape[0]
+    else:
+        params["feature_size"] = 256  # default
+
+    # Infer lstm_hidden from fc1.weight shape: (128, lstm_hidden)
+    if "fc1.weight" in state_dict:
+        params["lstm_hidden"] = state_dict["fc1.weight"].shape[1]
+    else:
+        params["lstm_hidden"] = 128  # default
+
+    # Infer lstm_layers by counting lstm weight layers
+    lstm_layer_count = 0
+    for key in state_dict.keys():
+        if key.startswith("lstm.weight_ih_l"):
+            lstm_layer_count += 1
+    params["lstm_layers"] = lstm_layer_count if lstm_layer_count > 0 else 2  # default
+
+    return params
 
 
 def get_test_sequences(
