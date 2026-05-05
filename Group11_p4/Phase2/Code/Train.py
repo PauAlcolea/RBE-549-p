@@ -21,7 +21,7 @@ from pathlib import Path
 from collections import Counter
 
 from Datasets import VisualDataset, InertialDataset, VisualInertialDataset
-from Models import VisualModel, InertialModel, VisualInertialModel, LSTMVisualModel
+from Models import VisualModel, InertialModel, VisualInertialModel
 
 current_dir = Path(__file__).parent
 output_dir = current_dir.parent / "Output" / "Training"

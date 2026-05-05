@@ -2,7 +2,6 @@ import argparse
 import csv
 import math
 from pathlib import Path
-from typing import List, Tuple
 import matplotlib.pyplot as plt
 import os
 import numpy as np

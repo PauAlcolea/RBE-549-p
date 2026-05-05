@@ -23,10 +23,6 @@ LR=0.0001
 IMAGE_HEIGHT=240
 IMAGE_WIDTH=320
 
-# LSTM parameters - optimized for better temporal learning
-# For frame-pair mode, comment out LSTM_MODE and restore BATCH_SIZE=24, LR=0.00001
-LSTM_MODE="--use_lstm --sequence_length 8 --lstm_hidden 256 --lstm_layers 2 --stride 1"
-
 # Run training
 # -i makes it so that it runs the inertial model instead of the visual one
 python Train.py \
