@@ -17,6 +17,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import csv
+import math
 import subprocess
 import sys
 from pathlib import Path
@@ -73,6 +75,79 @@ def check_sequence_status(seq_dir: Path, target_hz: float = 1000.0) -> dict:
         "has_poses": poses_csv.exists(),
         "has_poses_upsampled": poses_1000hz_csv.exists(),
         "has_imu": imu_gt.exists() and imu_noisy.exists(),
+    }
+
+
+def _quat_normalize(q: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+    n = math.sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3])
+    if n < 1e-12:
+        return (1.0, 0.0, 0.0, 0.0)
+    return (q[0] / n, q[1] / n, q[2] / n, q[3] / n)
+
+
+def rotation_label_stats(seq_dir: Path, small_rot_thresh_rad: float = 1e-4) -> dict:
+    """
+    Compute rotation-label quality stats from consecutive pose quaternions.
+
+    Returns:
+        dict with keys: valid, num_pairs, pct_small_rot, median_rot_deg, max_rot_deg
+    """
+    poses_csv = seq_dir / "poses.csv"
+    if not poses_csv.exists():
+        return {
+            "valid": False,
+            "num_pairs": 0,
+            "pct_small_rot": 1.0,
+            "median_rot_deg": 0.0,
+            "max_rot_deg": 0.0,
+        }
+
+    quats: list[tuple[float, float, float, float]] = []
+    with poses_csv.open("r", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            q = (
+                float(row["qw"]),
+                float(row["qx"]),
+                float(row["qy"]),
+                float(row["qz"]),
+            )
+            quats.append(_quat_normalize(q))
+
+    if len(quats) < 2:
+        return {
+            "valid": False,
+            "num_pairs": 0,
+            "pct_small_rot": 1.0,
+            "median_rot_deg": 0.0,
+            "max_rot_deg": 0.0,
+        }
+
+    rot_angles_rad: list[float] = []
+    small_count = 0
+    for i in range(len(quats) - 1):
+        q0 = quats[i]
+        q1 = quats[i + 1]
+        dot = abs(q0[0] * q1[0] + q0[1] * q1[1] + q0[2] * q1[2] + q0[3] * q1[3])
+        dot = max(-1.0, min(1.0, dot))
+        angle = 2.0 * math.acos(dot)
+        rot_angles_rad.append(angle)
+        if angle < small_rot_thresh_rad:
+            small_count += 1
+
+    rot_angles_rad.sort()
+    mid = len(rot_angles_rad) // 2
+    if len(rot_angles_rad) % 2 == 0:
+        median_rot = 0.5 * (rot_angles_rad[mid - 1] + rot_angles_rad[mid])
+    else:
+        median_rot = rot_angles_rad[mid]
+
+    return {
+        "valid": True,
+        "num_pairs": len(rot_angles_rad),
+        "pct_small_rot": small_count / len(rot_angles_rad),
+        "median_rot_deg": math.degrees(median_rot),
+        "max_rot_deg": math.degrees(max(rot_angles_rad)),
     }
 
 
@@ -195,6 +270,7 @@ def process_sequences(
     skipped = 0
     failed_upsample = []
     successful_upsample = []
+    degenerate_rotation = []
     
     print(f"\n[VI Dataset Generation]")
     print(f"  Sequences: {total}")
@@ -223,6 +299,21 @@ def process_sequences(
             successful_upsample.append(seq_dir)
             skipped += 1
             continue
+
+        rot_stats = rotation_label_stats(seq_dir)
+        if rot_stats["valid"]:
+            print(
+                "  [ROT] "
+                f"median={rot_stats['median_rot_deg']:.6f} deg, "
+                f"max={rot_stats['max_rot_deg']:.6f} deg, "
+                f"small<{1e-4:.0e}rad={100.0 * rot_stats['pct_small_rot']:.1f}%"
+            )
+            if rot_stats["pct_small_rot"] >= 0.98:
+                print(
+                    "  [WARNING] Degenerate rotation supervision detected "
+                    "(>=98% near-zero consecutive rotations)."
+                )
+                degenerate_rotation.append(seq_dir)
         
         # Run upsampling
         success = run_upsample_trajectory(seq_dir, original_hz, target_hz, validate)
@@ -241,6 +332,16 @@ def process_sequences(
         print("\nFailed upsampling:")
         for seq_dir in failed_upsample:
             print(f"  - {seq_dir.name}")
+        print()
+
+    if degenerate_rotation:
+        print("[WARNING] Sequences with degenerate rotation labels:")
+        for seq_dir in degenerate_rotation:
+            print(f"  - {seq_dir.name}")
+        print(
+            "[WARNING] Regenerate poses upstream with non-constant heading "
+            "(e.g., tangent heading and/or non-zero heading spin)."
+        )
         print()
     
     if not successful_upsample:

@@ -11,7 +11,8 @@ TEXTURE_CHOICE="playrug"
 print_usage() {
 	cat <<'EOF'
 Usage: ./run_blender.sh [--shape SHAPE] [--height METERS] [--texture NAME]
-                        [--split SPLIT] [--seq-id ID] [--seed N]
+						[--split SPLIT] [--seq-id ID] [--seed N]
+						[--heading-mode MODE] [--spin-dps DEG_PER_SEC]
 
 Options:
 	-s, --shape SHAPE   Trajectory shape: square | figure8 | circle
@@ -20,6 +21,8 @@ Options:
 	--split SPLIT       Dataset split label (default: train)
 	--seq-id ID         Sequence id for output folder (e.g. seq_000123)
 	--seed N            Optional generation seed tag for metadata/manifest
+	--heading-mode MODE Heading policy: tangent | fixed (default: tangent)
+	--spin-dps VALUE    Extra yaw spin rate in deg/s (default: 0)
 	-h, --help          Show this help message
 
 Environment:
@@ -32,6 +35,8 @@ HEIGHT_OVERRIDE=""
 SPLIT_OVERRIDE="train"
 SEQ_ID_OVERRIDE=""
 SEED_OVERRIDE=""
+HEADING_MODE_OVERRIDE="tangent"
+SPIN_DPS_OVERRIDE="0"
 while [[ $# -gt 0 ]]; do
 	case "$1" in
 		-s|--shape)
@@ -86,6 +91,24 @@ while [[ $# -gt 0 ]]; do
 				exit 2
 			fi
 			SEED_OVERRIDE="$2"
+			shift 2
+			;;
+		--heading-mode)
+			if [[ $# -lt 2 ]]; then
+				echo "[run_blender] ERROR: --heading-mode requires a value." >&2
+				print_usage
+				exit 2
+			fi
+			HEADING_MODE_OVERRIDE="$2"
+			shift 2
+			;;
+		--spin-dps)
+			if [[ $# -lt 2 ]]; then
+				echo "[run_blender] ERROR: --spin-dps requires a value." >&2
+				print_usage
+				exit 2
+			fi
+			SPIN_DPS_OVERRIDE="$2"
 			shift 2
 			;;
 		-h|--help)
@@ -145,6 +168,8 @@ fi
 if [[ -n "$SEED_OVERRIDE" ]]; then
 	echo "[run_blender] Using seed tag: $SEED_OVERRIDE"
 fi
+echo "[run_blender] Using heading mode: $HEADING_MODE_OVERRIDE"
+echo "[run_blender] Using heading spin: $SPIN_DPS_OVERRIDE deg/s"
 echo "[run_blender] Using base blend file: $(basename "$BASE_BLEND")"
 echo "[run_blender] Using texture image: $(basename "$TEXTURE_FILE")"
 
@@ -162,6 +187,8 @@ fi
 if [[ -n "$SEED_OVERRIDE" ]]; then
 	env_cmd+=("DRONE_DATASET_SEED=$SEED_OVERRIDE")
 fi
+env_cmd+=("DRONE_HEADING_MODE=$HEADING_MODE_OVERRIDE")
+env_cmd+=("DRONE_HEADING_SPIN_DPS=$SPIN_DPS_OVERRIDE")
 env_cmd+=("DRONE_TEXTURE_NAME=${TEXTURE_CHOICE%.blend}")
 env_cmd+=("DRONE_TEXTURE_FILE=$TEXTURE_FILE")
 

@@ -72,6 +72,18 @@ def quat_mul(a,b):
 def quat_dot(a, b):
     return a[0]*b[0] + a[1]*b[1] + a[2]*b[2] + a[3]*b[3]
 
+
+def yaw_to_quat(yaw):
+    half = 0.5 * yaw
+    return (math.cos(half), 0.0, 0.0, math.sin(half))
+
+
+def quat_to_yaw(q):
+    w, x, y, z = quat_normalize(q)
+    siny_cosp = 2.0 * (w * z + x * y)
+    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+    return math.atan2(siny_cosp, cosy_cosp)
+
 # rotate a vector v with q
 def quat_rotate(q, v):
     """Rotate vector v by quaternion q"""
@@ -126,6 +138,69 @@ def diff_quat(quats, dt):
             rv = quat_to_rotvec(dq)
             omega[i] = tuple(v/(2*dt) for v in rv)
     return omega
+
+
+def compute_tangent_quats(pos):
+    """Build yaw-only quaternions from XY trajectory tangents."""
+    n = len(pos)
+    if n == 0:
+        return []
+
+    quats = []
+    prev_yaw = 0.0
+    for i in range(n):
+        if n == 1:
+            dx, dy = 0.0, 0.0
+        elif i == 0:
+            dx = pos[1][0] - pos[0][0]
+            dy = pos[1][1] - pos[0][1]
+        elif i == n - 1:
+            dx = pos[-1][0] - pos[-2][0]
+            dy = pos[-1][1] - pos[-2][1]
+        else:
+            dx = pos[i + 1][0] - pos[i - 1][0]
+            dy = pos[i + 1][1] - pos[i - 1][1]
+
+        if abs(dx) < 1e-12 and abs(dy) < 1e-12:
+            yaw = prev_yaw
+        else:
+            yaw = math.atan2(dy, dx)
+
+        quats.append(yaw_to_quat(yaw))
+        prev_yaw = yaw
+
+    return quats
+
+
+def should_use_tangent_heading_from_pose(quat):
+    """Auto-detect when pose quaternions are effectively fixed-heading."""
+    if len(quat) < 2:
+        return False
+
+    yaws = [quat_to_yaw(q) for q in quat]
+    yaws_unwrapped = np.unwrap(np.asarray(yaws, dtype=np.float64))
+    yaw_span = float(np.max(yaws_unwrapped) - np.min(yaws_unwrapped))
+
+    # If yaw barely changes over the whole sequence, pose quats cannot provide
+    # a tangent-heading body frame.
+    return yaw_span < 1e-3
+
+
+def resolve_body_quaternions(pos, quat, heading_source):
+    mode = heading_source.lower()
+    if mode not in {"pose", "tangent", "auto"}:
+        raise ValueError(
+            f"Unknown heading_source '{heading_source}'. Use pose|tangent|auto."
+        )
+
+    if mode == "pose":
+        return [quat_normalize(q) for q in quat], "pose"
+    if mode == "tangent":
+        return compute_tangent_quats(pos), "tangent"
+
+    if should_use_tangent_heading_from_pose(quat):
+        return compute_tangent_quats(pos), "tangent(auto)"
+    return [quat_normalize(q) for q in quat], "pose(auto)"
 
 
 def diff_vec_periodic(samples, dt):
@@ -192,14 +267,14 @@ def compute_world_kinematics(pos, quat, dt):
     return acc_world, omega_world
 
 
-def rotate_world_to_body(acc_world, omega_world, quat, fixed_heading=False):
+def rotate_world_to_body(acc_world, omega_world, body_quat, fixed_heading=False):
     acc_body = []
     omega_body = []
 
-    q_ref = quat_normalize(quat[0]) if fixed_heading else None
+    q_ref = quat_normalize(body_quat[0]) if fixed_heading else None
 
     for i in range(len(acc_world)):
-        q = q_ref if fixed_heading else quat_normalize(quat[i])
+        q = q_ref if fixed_heading else quat_normalize(body_quat[i])
         a_b = quat_rotate(quat_conj(q), acc_world[i])
         w_b = quat_rotate(quat_conj(q), omega_world[i])
         acc_body.append(a_b)
@@ -322,16 +397,17 @@ def save_imu_plot_with_name(acc, omega, dt, output_dir, file_name, title, acc_gt
     print(f"[PLOT SAVED] {save_path}")
 
 # this is the big file that gets called
-def process_file(pose_path, hz, noise_profile, noise_seed, acc_vib, gyro_vib):
+def process_file(pose_path, hz, noise_profile, noise_seed, acc_vib, gyro_vib, heading_source):
     dt = 1.0 / hz
 
     frames, pos, quat = read_poses(pose_path)
-    acc_world, omega_world = compute_world_kinematics(pos, quat, dt)
+    body_quat, heading_tag = resolve_body_quaternions(pos, quat, heading_source)
+    acc_world, omega_world = compute_world_kinematics(pos, body_quat, dt)
 
     # Tangent-heading body frame (current/default behavior).
-    acc_gt, omega_gt = rotate_world_to_body(acc_world, omega_world, quat, fixed_heading=False)
+    acc_gt, omega_gt = rotate_world_to_body(acc_world, omega_world, body_quat, fixed_heading=False)
     # Fixed-heading body frame (uses first pose orientation for all frames).
-    acc_gt_fixed, omega_gt_fixed = rotate_world_to_body(acc_world, omega_world, quat, fixed_heading=True)
+    acc_gt_fixed, omega_gt_fixed = rotate_world_to_body(acc_world, omega_world, body_quat, fixed_heading=True)
 
     acc_noisy, omega_noisy = add_imu_noise(
         acc_gt,
@@ -398,6 +474,7 @@ def process_file(pose_path, hz, noise_profile, noise_seed, acc_vib, gyro_vib):
         f"[OK] {pose_path} -> {imu_gt_path}, {imu_noisy_path}, "
         f"{imu_gt_fixed_path}, {imu_noisy_fixed_path}"
     )
+    print(f"[INFO] Heading source for {seq_name}: {heading_tag}")
 
 def main():
     parser = argparse.ArgumentParser()
@@ -407,13 +484,31 @@ def main():
     parser.add_argument("--noise-seed", type=int, default=None)
     parser.add_argument("--acc-vib", type=str, default=None, help="e.g. '[0.03 0.01 0.01]-random'")
     parser.add_argument("--gyro-vib", type=str, default=None, help="e.g. '[0.2 0.2 0.1]d-1Hz-sinusoidal'")
+    parser.add_argument(
+        "--heading-source",
+        type=str,
+        default="auto",
+        choices=["auto", "pose", "tangent"],
+        help=(
+            "Body heading source for IMU generation: "
+            "'pose' uses pose quaternions, 'tangent' derives heading from trajectory, "
+            "'auto' uses tangent if pose yaw is effectively constant."
+        ),
+    )
     args = parser.parse_args()
 
-    # Prefer high-rate upsampled trajectories first, then standard poses.
-    pose_files = sorted(args.data_root.rglob("poses_1000hz.csv"))
+    # Use pose files that match the requested IMU rate to keep dt consistent.
+    if int(args.hz) == 100:
+        pose_pattern = "poses.csv"
+    else:
+        pose_pattern = f"poses_{int(args.hz)}hz.csv"
+
+    pose_files = sorted(args.data_root.rglob(pose_pattern))
     if not pose_files:
-        # Backward compatibility with older generated data.
-        pose_files = sorted(args.data_root.rglob("poses.csv"))
+        raise FileNotFoundError(
+            f"No '{pose_pattern}' files found under {args.data_root}. "
+            "Generate or upsample matching poses before running IMU generation."
+        )
 
     for p in pose_files:
         process_file(
@@ -423,6 +518,7 @@ def main():
             args.noise_seed,
             args.acc_vib,
             args.gyro_vib,
+            args.heading_source,
         )
 
 if __name__ == "__main__":

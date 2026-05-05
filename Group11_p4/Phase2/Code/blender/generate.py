@@ -55,6 +55,8 @@ SIM_HZ = 100  # simulated sample rate (Hz) for both cam & IMU GT
 
 # --- Camera ---
 CAMERA_YAW_DEG = 0.0  # yaw of the drone body (0 = +X forward in image)
+CAMERA_HEADING_MODE = os.environ.get("DRONE_HEADING_MODE", "tangent").strip().lower()
+CAMERA_SPIN_DPS = float(os.environ.get("DRONE_HEADING_SPIN_DPS", "0.0"))
 IMG_WIDTH = 640  # pixels
 IMG_HEIGHT = 480  # pixels
 FOCAL_MM = 50  # millimetres — equivalent lens focal length
@@ -560,12 +562,62 @@ def interpolate_positions(waypoints, speed, fps):
     return positions
 
 
+def compute_tangent_yaws(positions, yaw_offset_rad):
+    """Estimate heading from trajectory tangent and apply a yaw offset."""
+    yaws = []
+    prev = yaw_offset_rad
+    n = len(positions)
+
+    for i in range(n):
+        if n == 1:
+            dx, dy = 0.0, 0.0
+        elif i == 0:
+            dx = positions[1].x - positions[0].x
+            dy = positions[1].y - positions[0].y
+        elif i == n - 1:
+            dx = positions[-1].x - positions[-2].x
+            dy = positions[-1].y - positions[-2].y
+        else:
+            dx = positions[i + 1].x - positions[i - 1].x
+            dy = positions[i + 1].y - positions[i - 1].y
+
+        if abs(dx) < 1e-12 and abs(dy) < 1e-12:
+            yaw = prev
+        else:
+            yaw = math.atan2(dy, dx) + yaw_offset_rad
+
+        yaws.append(yaw)
+        prev = yaw
+
+    return yaws
+
+
+def build_heading_yaws(positions, heading_mode, yaw_offset_rad, spin_dps):
+    """Build one heading yaw per frame from fixed or tangent mode."""
+    mode = str(heading_mode).strip().lower()
+    if mode not in {"fixed", "tangent"}:
+        raise ValueError(
+            f"DRONE_HEADING_MODE='{heading_mode}' is invalid. Choose one of ['fixed', 'tangent']."
+        )
+
+    if mode == "fixed":
+        yaws = [yaw_offset_rad] * len(positions)
+    else:
+        yaws = compute_tangent_yaws(positions, yaw_offset_rad)
+
+    if abs(spin_dps) > 1e-12 and len(yaws) > 0:
+        spin_rad_per_frame = math.radians(spin_dps) / SIM_HZ
+        yaws = [yaw + i * spin_rad_per_frame for i, yaw in enumerate(yaws)]
+
+    return yaws
+
+
 # ───────────────────────────────────────────────────────────────────────────
 #  ④ KEYFRAME INSERTION
 # ───────────────────────────────────────────────────────────────────────────
 
 
-def setup_keyframes(cam_obj, positions, yaw_rad):
+def setup_keyframes(cam_obj, positions, yaws_rad):
     """
     Insert one keyframe per simulated timestep.
 
@@ -575,16 +627,19 @@ def setup_keyframes(cam_obj, positions, yaw_rad):
       • We apply a yaw around world Z to set the drone heading.
       • Roll and Pitch are kept at 0 (< 45° constraint from the spec).
 
-    If your renders look sideways, try changing the base_rot to
-      Euler((math.radians(90), 0.0, yaw_rad), 'XYZ')
+        If your renders look sideways, try changing the base_rot to
+            Euler((math.radians(90), 0.0, yaw), 'XYZ')
     """
     scene = bpy.context.scene
     scene.frame_start = 1
     scene.frame_end = len(positions)
     scene.render.fps = SIM_HZ
 
-    # Downward-facing rotation:  pitch 0°, roll 0°, yaw = yaw_rad
-    base_rot = Euler((0.0, 0.0, yaw_rad), "XYZ")
+    if len(yaws_rad) != len(positions):
+        raise ValueError(
+            f"Heading length mismatch: got {len(yaws_rad)} yaws for "
+            f"{len(positions)} positions."
+        )
 
     # Clear previous animation data
     cam_obj.animation_data_clear()
@@ -593,7 +648,7 @@ def setup_keyframes(cam_obj, positions, yaw_rad):
         frame = idx + 1
         scene.frame_set(frame)
         cam_obj.location = pos
-        cam_obj.rotation_euler = base_rot
+        cam_obj.rotation_euler = Euler((0.0, 0.0, yaws_rad[idx]), "XYZ")
         cam_obj.keyframe_insert(data_path="location", frame=frame)
         cam_obj.keyframe_insert(data_path="rotation_euler", frame=frame)
 
@@ -787,6 +842,9 @@ def main():
     shape_summary, meta = trajectory_descriptor(shape_name, common_cfg, shape_cfg)
     meta["texture"] = texture_name
     meta["texture_image_file"] = os.path.basename(texture_image_path)
+    meta["heading_mode"] = CAMERA_HEADING_MODE
+    meta["yaw_offset_deg"] = CAMERA_YAW_DEG
+    meta["heading_spin_dps"] = CAMERA_SPIN_DPS
     meta["split"] = split_name
     meta["sequence_id"] = sequence_id
     meta["seed"] = seed_tag
@@ -804,12 +862,22 @@ def main():
         f"Texture={texture_name}"
     )
     print(
+        f"[DroneGen] Heading mode={CAMERA_HEADING_MODE}  |  "
+        f"yaw_offset={CAMERA_YAW_DEG:.2f} deg  |  spin={CAMERA_SPIN_DPS:.2f} deg/s"
+    )
+    print(
         f"[DroneGen] {len(positions)} frames  |  "
         f"{len(positions)/SIM_HZ:.2f} s @ {SIM_HZ} Hz"
     )
 
     # ── Keyframes ───────────────────────────────────────────
-    setup_keyframes(cam, positions, math.radians(CAMERA_YAW_DEG))
+    heading_yaws = build_heading_yaws(
+        positions,
+        CAMERA_HEADING_MODE,
+        math.radians(CAMERA_YAW_DEG),
+        CAMERA_SPIN_DPS,
+    )
+    setup_keyframes(cam, positions, heading_yaws)
 
     # ── Export meta-data ─────────────────────────────────────
     export_poses(cam, len(positions), output_dir)

@@ -84,20 +84,22 @@ if ! [[ "$JOBS" =~ ^[0-9]+$ ]] || (( JOBS < 1 )); then
 fi
 
 # Sweep configuration. Edit these lists for your dataset recipe.
-SHAPES=(square figure8 circle)
+SHAPES=(square figure8 circle triangle)
 TEXTURES=(playrug newyork ispy leaves toys)
 HEIGHTS=(1.0 1.5 2.0)
 REPEATS=1
 START_SEQ_NUM=1
 SEED_BASE=1000
+HEADING_MODE="tangent"
+HEADING_SPIN_DPS="3"
 
 # Expected location for generated outputs (matches generate.py OUTPUT_DIR).
 DATASET_ROOT="$SCRIPT_DIR/../../Data/Generated"
 
 # Split percentages (must sum to 100)
-TRAIN_PCT=70
-VAL_PCT=20
-TEST_PCT=10
+TRAIN_PCT=80
+VAL_PCT=15
+TEST_PCT=5
 
 if (( TRAIN_PCT + VAL_PCT + TEST_PCT != 100 )); then
   echo "[dataset_sweep] ERROR: TRAIN_PCT + VAL_PCT + TEST_PCT must equal 100." >&2
@@ -202,6 +204,8 @@ launch_sequence() {
         --shape "$shape" \
         --texture "$texture" \
         --height "$height" \
+        --heading-mode "$HEADING_MODE" \
+        --spin-dps "$HEADING_SPIN_DPS" \
         --split "$split" \
         --seq-id "$seq_id" \
         --seed "$seed"
@@ -223,6 +227,8 @@ launch_sequence() {
       --shape "$shape" \
       --texture "$texture" \
       --height "$height" \
+      --heading-mode "$HEADING_MODE" \
+      --spin-dps "$HEADING_SPIN_DPS" \
       --split "$split" \
       --seq-id "$seq_id" \
       --seed "$seed" &
@@ -250,6 +256,7 @@ if (( IMU_MODE )); then
   echo "[dataset_sweep] Mode: IMU trajectory-only (trajectory_imu.py)"
 else
   echo "[dataset_sweep] Mode: Blender visual generation (run_blender.sh)"
+  echo "[dataset_sweep] Heading: mode=$HEADING_MODE spin=${HEADING_SPIN_DPS}deg/s"
 fi
 
 combo_idx=0
