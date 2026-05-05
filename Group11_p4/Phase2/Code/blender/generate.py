@@ -5,17 +5,12 @@ import os
 import json
 import fcntl
 from datetime import datetime, timezone
-from mathutils import Vector, Euler, Matrix, Quaternion
+from mathutils import Vector, Euler
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  ① CONFIGURATION  — edit these values before running
-# ═══════════════════════════════════════════════════════════════════════════
-
-# --- Trajectory ---
 # Shape selector. Add future shapes by extending SHAPE_PARAMS and
 # build_path_waypoints().
 TRAJECTORY_SHAPE = os.environ.get("DRONE_TRAJECTORY_SHAPE", "square")
-# one of: "square", "figure8", "circle"
+# one of: "square", "figure8", "circle", "triangle"
 
 # Common motion settings used by every trajectory shape.
 COMMON_TRAJECTORY_CFG = {
@@ -25,53 +20,44 @@ COMMON_TRAJECTORY_CFG = {
     "speed": 0.5,  # m/s     — realistic slow drone cruising speed
 }
 
-# Shape-specific parameters. Keep each shape payload focused and explicit.
+# Shape-specific parameters
 SHAPE_PARAMS = {
     "square": {
-        "side": 2.0,  # meters
+        "side": 2.0,
     },
     "figure8": {
-        "width": 3.0,  # meters (span along X)
-        "length": 2.0,  # meters (span along Y)
-        "samples_per_lap": 400,  # control-point density before interpolation
+        "width": 3.0,
+        "length": 2.0,
+        "samples_per_lap": 400,
     },
     "circle": {
         "radius": 1.0,  # meters
-        "samples_per_lap": 360,  # control-point density before interpolation
+        "samples_per_lap": 360,
     },
     "triangle": {
         "side": 2.0,  # meters
-        "samples_per_lap": 360,  # control-point density before interpolation
+        "samples_per_lap": 360,
     },
 }
 
-# --- Data rate ---
-# The project asks for 1000 Hz data; every 10th frame is the "camera" image.
-# Keep SIM_HZ high so pose derivatives give good IMU ground truth.
-# For quick tests lower it to 100; for final data use 1000.
-SIM_HZ = 100  # simulated sample rate (Hz) for both cam & IMU GT
-# NOTE: for the real submission set SIM_HZ = 1000 and use every 10th frame
-#       as camera input, all frames as IMU ground truth.
 
-# --- Camera ---
-CAMERA_YAW_DEG = 0.0  # yaw of the drone body (0 = +X forward in image)
+SIM_HZ = 1000
+
+# camera
+CAMERA_YAW_DEG = 0.0
 CAMERA_HEADING_MODE = os.environ.get("DRONE_HEADING_MODE", "tangent").strip().lower()
 CAMERA_SPIN_DPS = float(os.environ.get("DRONE_HEADING_SPIN_DPS", "0.0"))
-IMG_WIDTH = 640  # pixels
-IMG_HEIGHT = 480  # pixels
-FOCAL_MM = 50  # millimetres — equivalent lens focal length
+IMG_WIDTH = 640
+IMG_HEIGHT = 480
+FOCAL_MM = 50
 
-# --- Output ---
-OUTPUT_DIR = "//../../Data/Generated"  # "//" = relative to the .blend file
-RENDER_IMAGES = True  # False = export poses only (much faster)
-IMAGE_PREFIX = "frame_"  # frames will be frame_0001.png etc.
+# output
+OUTPUT_DIR = "//../../Data/Generated"
+RENDER_IMAGES = True
+IMAGE_PREFIX = "frame_"
 
 ALLOWED_SPLITS = {"train", "val", "test"}
 ALLOWED_TEXTURE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff")
-
-# ═══════════════════════════════════════════════════════════════════════════
-#  ② HELPERS
-# ═══════════════════════════════════════════════════════════════════════════
 
 
 def get_or_create_camera():
@@ -89,10 +75,6 @@ def get_or_create_camera():
 
 
 def configure_camera_optics(cam_obj):
-    """
-    Set focal length so the K matrix is known and fixed.
-    The sensor size is set to match the render resolution aspect ratio.
-    """
     cam_data = cam_obj.data
     cam_data.lens = FOCAL_MM  # focal length in mm
     cam_data.sensor_fit = "HORIZONTAL"
@@ -102,10 +84,6 @@ def configure_camera_optics(cam_obj):
 
 
 def compute_K(cam_obj):
-    """
-    Return the 3×3 intrinsic matrix K as a nested list.
-    Uses Blender's camera data + current render resolution.
-    """
     scene = bpy.context.scene
     cam = cam_obj.data
     W, H = scene.render.resolution_x, scene.render.resolution_y
@@ -128,8 +106,7 @@ def compute_K(cam_obj):
 
 def validate_trajectory_config():
     """
-    Validate and normalize trajectory configuration.
-    Returns (shape_name, common_cfg, shape_cfg) with clean value types.
+    validate and normalize trajectory configuration.
     """
     allowed_shapes = {"square", "figure8", "circle", "triangle"}
 
@@ -253,7 +230,6 @@ def trajectory_descriptor(shape_name, common_cfg, shape_cfg):
 
 
 def validate_dataset_split(split_name):
-    """Validate split label and normalize to lowercase."""
     split = str(split_name).strip().lower()
     if split not in ALLOWED_SPLITS:
         raise ValueError(
@@ -264,7 +240,6 @@ def validate_dataset_split(split_name):
 
 
 def infer_texture_name():
-    """Resolve texture/domain tag from env first, then active .blend filename."""
     texture_from_env = os.environ.get("DRONE_TEXTURE_NAME", "").strip()
     if texture_from_env:
         return texture_from_env
@@ -276,7 +251,7 @@ def infer_texture_name():
 
 
 def resolve_texture_image_path(texture_name):
-    """Resolve runtime texture image from env override or //textures folder."""
+    """resolve runtime texture image from env override or //textures folder."""
     texture_file_env = os.environ.get("DRONE_TEXTURE_FILE", "").strip()
     if texture_file_env:
         candidate = bpy.path.abspath(texture_file_env)
@@ -314,7 +289,6 @@ def resolve_texture_image_path(texture_name):
 
 
 def apply_texture_image(texture_image_path):
-    """Load one image and assign it to all TEX_IMAGE nodes in materials."""
     image = bpy.data.images.load(texture_image_path, check_existing=True)
     assigned = 0
     for mat in bpy.data.materials:
@@ -338,7 +312,6 @@ def apply_texture_image(texture_image_path):
 
 
 def resolve_sequence_output_dir(base_output_dir, split_name, requested_sequence_id):
-    """Create split/sequence output directory and return identifiers + paths."""
     split_dir = os.path.join(base_output_dir, split_name)
     os.makedirs(split_dir, exist_ok=True)
 
@@ -359,7 +332,6 @@ def resolve_sequence_output_dir(base_output_dir, split_name, requested_sequence_
 
 
 def write_sequence_metadata(output_dir, metadata):
-    """Persist sequence metadata for reproducibility and dataset indexing."""
     metadata_path = os.path.join(output_dir, "metadata.json")
     with open(metadata_path, "w") as f:
         json.dump(metadata, f, indent=2, sort_keys=True)
@@ -367,7 +339,6 @@ def write_sequence_metadata(output_dir, metadata):
 
 
 def append_dataset_manifest(base_output_dir, row):
-    """Append one sequence record to top-level dataset index.csv."""
     manifest_path = os.path.join(base_output_dir, "index.csv")
     lock_path = manifest_path + ".lock"
     fieldnames = [
@@ -399,19 +370,7 @@ def append_dataset_manifest(base_output_dir, row):
     print(f"[DroneGen] Manifest → {manifest_path}")
 
 
-# ───────────────────────────────────────────────────────────────────────────
-#  ③ TRAJECTORY BUILDERS
-# ───────────────────────────────────────────────────────────────────────────
-
-
 def build_square_waypoints(side, height, n_laps):
-    """
-    Returns corner waypoints for n_laps of a square centred at the origin.
-    The last waypoint closes the loop back to the start.
-
-    Corner order (CCW from bottom-left when viewed from above):
-        BL → BR → TR → TL → BL …
-    """
     h = side / 2.0
     corners = [
         Vector((-h, -h, height)),  # bottom-left
@@ -427,7 +386,6 @@ def build_square_waypoints(side, height, n_laps):
 
 
 def _repeat_closed_loop(base_loop, n_laps):
-    """Repeat a closed loop polyline for n_laps without duplicate joins."""
     if n_laps < 1:
         return []
     if not base_loop:
@@ -443,10 +401,6 @@ def _repeat_closed_loop(base_loop, n_laps):
 
 
 def build_figure8_waypoints(width, length, height, n_laps, samples_per_lap):
-    """
-    Build a centered figure-8 using a deterministic parametric curve:
-      x = a * sin(t),  y = b * sin(t) * cos(t),  t in [0, 2π]
-    """
     a = width / 2.0
     b = length / 2.0
 
@@ -462,7 +416,6 @@ def build_figure8_waypoints(width, length, height, n_laps, samples_per_lap):
 
 
 def build_circle_waypoints(radius, height, n_laps, samples_per_lap):
-    """Build a centered circular closed loop sampled uniformly in angle."""
     base_loop = []
     for i in range(samples_per_lap):
         t = 2.0 * math.pi * (i / samples_per_lap)
@@ -473,13 +426,8 @@ def build_circle_waypoints(radius, height, n_laps, samples_per_lap):
 
     return _repeat_closed_loop(base_loop, n_laps)
 
+
 def build_triangle_waypoints(side, height, n_laps, samples_per_lap):
-    """
-    Build a centered equilateral triangle with dense sampling between corners.
-    
-    Corner order (CCW from bottom when viewed from above):
-        BL → TR → BR → BL …
-    """
     h = side / 2.0
     r = side * math.sin(math.radians(60))  # radius of circumscribed circle
     corners = [
@@ -487,30 +435,26 @@ def build_triangle_waypoints(side, height, n_laps, samples_per_lap):
         Vector((0, 2 * r / 3, height)),  # top
         Vector((h, -r / 3, height)),  # bottom-right
     ]
-    
+
     # Create densely sampled triangle by interpolating along edges
     samples_per_edge = samples_per_lap // 3
     base_loop = []
-    
+
     for i in range(3):
         start_corner = corners[i]
         end_corner = corners[(i + 1) % 3]
-        
+
         for j in range(samples_per_edge):
             t = j / samples_per_edge
             point = start_corner.lerp(end_corner, t)
             base_loop.append(point)
-    
+
     base_loop.append(corners[0].copy())  # close the loop
-    
+
     return _repeat_closed_loop(base_loop, n_laps)
 
 
 def build_path_waypoints(shape_name, common_cfg, shape_cfg):
-    """
-    Shape dispatcher that returns a closed-loop waypoint list.
-    Add future shapes by inserting a new branch here and in SHAPE_PARAMS.
-    """
     if shape_name == "square":
         return build_square_waypoints(
             shape_cfg["side"],
@@ -543,10 +487,6 @@ def build_path_waypoints(shape_name, common_cfg, shape_cfg):
 
 
 def interpolate_positions(waypoints, speed, fps):
-    """
-    Linear interpolation between waypoints at constant speed.
-    Returns a list of Vector positions, one per simulated frame.
-    """
     positions = []
     for i in range(len(waypoints) - 1):
         p0 = waypoints[i]
@@ -563,7 +503,6 @@ def interpolate_positions(waypoints, speed, fps):
 
 
 def compute_tangent_yaws(positions, yaw_offset_rad):
-    """Estimate heading from trajectory tangent and apply a yaw offset."""
     yaws = []
     prev = yaw_offset_rad
     n = len(positions)
@@ -593,7 +532,6 @@ def compute_tangent_yaws(positions, yaw_offset_rad):
 
 
 def build_heading_yaws(positions, heading_mode, yaw_offset_rad, spin_dps):
-    """Build one heading yaw per frame from fixed or tangent mode."""
     mode = str(heading_mode).strip().lower()
     if mode not in {"fixed", "tangent"}:
         raise ValueError(
@@ -612,24 +550,7 @@ def build_heading_yaws(positions, heading_mode, yaw_offset_rad, spin_dps):
     return yaws
 
 
-# ───────────────────────────────────────────────────────────────────────────
-#  ④ KEYFRAME INSERTION
-# ───────────────────────────────────────────────────────────────────────────
-
-
 def setup_keyframes(cam_obj, positions, yaws_rad):
-    """
-    Insert one keyframe per simulated timestep.
-
-    Camera orientation:
-      • In Blender, rotation (0, 0, 0) points the camera straight DOWN
-        along world –Z (camera local –Z = world –Z).
-      • We apply a yaw around world Z to set the drone heading.
-      • Roll and Pitch are kept at 0 (< 45° constraint from the spec).
-
-        If your renders look sideways, try changing the base_rot to
-            Euler((math.radians(90), 0.0, yaw), 'XYZ')
-    """
     scene = bpy.context.scene
     scene.frame_start = 1
     scene.frame_end = len(positions)
@@ -673,23 +594,7 @@ def setup_keyframes(cam_obj, positions, yaws_rad):
     )
 
 
-# ───────────────────────────────────────────────────────────────────────────
-#  ⑤ POSE EXPORT
-# ───────────────────────────────────────────────────────────────────────────
-
-
 def export_poses(cam_obj, n_frames, output_dir):
-    """
-    Walk through every simulated frame and write the camera world pose.
-
-    CSV columns:
-        frame   – 1-indexed frame number
-        tx ty tz – world-frame position (metres)
-        qw qx qy qz – orientation as unit quaternion (w-first convention)
-
-    The relative pose between consecutive frames is what the network learns.
-    Dead-reckoning these incremental poses gives the full odometry trajectory.
-    """
     scene = bpy.context.scene
     csv_path = os.path.join(output_dir, "poses.csv")
 
@@ -719,7 +624,6 @@ def export_poses(cam_obj, n_frames, output_dir):
 
 
 def export_camera_K(cam_obj, output_dir):
-    """Save the camera intrinsic matrix K to a human-readable text file."""
     K, W, H = compute_K(cam_obj)
     k_path = os.path.join(output_dir, "camera_K.txt")
     with open(k_path, "w") as f:
@@ -737,7 +641,6 @@ def export_camera_K(cam_obj, output_dir):
 
 
 def export_trajectory_summary(waypoints, positions, output_dir, meta):
-    """Save a human-readable description of the planned trajectory."""
     t_path = os.path.join(output_dir, "trajectory.txt")
     with open(t_path, "w") as f:
         f.write("=== Drone Trajectory Summary ===\n\n")
@@ -767,17 +670,7 @@ def export_trajectory_summary(waypoints, positions, output_dir, meta):
     print(f"[DroneGen] Summary  → {t_path}")
 
 
-# ───────────────────────────────────────────────────────────────────────────
-#  ⑥ RENDER SETTINGS & IMAGE EXPORT
-# ───────────────────────────────────────────────────────────────────────────
-
-
 def setup_render(output_dir):
-    """
-    Configure Blender's render pipeline for fast, consistent output.
-    Uses EEVEE (material-preview equivalent) as the spec allows skipping
-    photorealistic lighting since sim2real transfer is not required.
-    """
     scene = bpy.context.scene
     rd = scene.render
 
@@ -805,11 +698,6 @@ def setup_render(output_dir):
     rd.fps = SIM_HZ
 
 
-# ───────────────────────────────────────────────────────────────────────────
-#  ⑦ MAIN
-# ───────────────────────────────────────────────────────────────────────────
-
-
 def main():
     print("\n" + "═" * 60)
     print("  DroneGen  –  Phase 2 VIO Data Generation")
@@ -831,12 +719,10 @@ def main():
         requested_sequence_id,
     )
 
-    # ── Camera ──────────────────────────────────────────────
     cam = get_or_create_camera()
     configure_camera_optics(cam)
     apply_texture_image(texture_image_path)
 
-    # ── Trajectory ──────────────────────────────────────────
     waypoints = build_path_waypoints(shape_name, common_cfg, shape_cfg)
     positions = interpolate_positions(waypoints, common_cfg["speed"], SIM_HZ)
     shape_summary, meta = trajectory_descriptor(shape_name, common_cfg, shape_cfg)
@@ -870,7 +756,6 @@ def main():
         f"{len(positions)/SIM_HZ:.2f} s @ {SIM_HZ} Hz"
     )
 
-    # ── Keyframes ───────────────────────────────────────────
     heading_yaws = build_heading_yaws(
         positions,
         CAMERA_HEADING_MODE,
@@ -879,7 +764,6 @@ def main():
     )
     setup_keyframes(cam, positions, heading_yaws)
 
-    # ── Export meta-data ─────────────────────────────────────
     export_poses(cam, len(positions), output_dir)
     export_camera_K(cam, output_dir)
     export_trajectory_summary(waypoints, positions, output_dir, meta)
@@ -925,7 +809,6 @@ def main():
         },
     )
 
-    # ── Render ───────────────────────────────────────────────
     if RENDER_IMAGES:
         setup_render(output_dir)
         print(f"[DroneGen] Rendering {len(positions)} frames → {frames_dir}")
@@ -938,7 +821,6 @@ def main():
     print("\n[DroneGen] ✅  All done!  Output directory:")
     print(f"           {output_dir}\n")
 
-    # Reminder about the 1-in-10 camera subsampling the spec requires
     print("─" * 60)
     print("  REMINDER (Phase 2 spec):")
     print("  Use every 10th frame as camera input.")
