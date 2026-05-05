@@ -1184,7 +1184,7 @@ def test_batch(
 
 
 def parse_args():
-    parser = ArgumentParser(description="Test DL-based odometry models")
+    parser = ArgumentParser(description="Test odometry model")
 
     parser.add_argument(
         "--checkpoint",
