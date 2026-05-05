@@ -14,15 +14,9 @@ class VisualDataset(Dataset):
 
     Modes:
     - Frame-pair mode (sequence_length=None): Returns (t, t+1) pairs
-    - Sequence mode (sequence_length>1): Returns sequences for LSTM
 
-    Output format (pair mode):
+    Output format:
     - {'image_t', 'image_tp1', 'target_rel_pose': [dx, dy, qw, qx, qy, qz]}
-    
-    Output format (sequence mode):
-    - {'image_seq': (seq_len, 3, H, W), 'target_poses': (seq_len-1, 6)}
-    
-    Note: dz is excluded for ground plane motion assumption
     """
 
     def __init__(
@@ -33,7 +27,6 @@ class VisualDataset(Dataset):
         image_height: int = 360,
         image_width: int = 480,
         use_augmentation: bool = False,
-        sequence_length: Optional[int] = None,
         stride: int = 1,
     ):
         self.data_dir = Path(data_dir)
@@ -41,11 +34,8 @@ class VisualDataset(Dataset):
         self.image_height = image_height
         self.image_width = image_width
         self.use_augmentation = use_augmentation
-        self.sequence_length = sequence_length
         self.stride = stride
-        self.is_sequence_mode = sequence_length is not None and sequence_length > 1
 
-        # Initialize augmentation if enabled
         self.augmentation = None
         if self.use_augmentation:
             from Augmentation import VisualOdometryAugmentation, PairAugmentation
@@ -57,7 +47,6 @@ class VisualDataset(Dataset):
                 apply_prob=0.8,
             )
             self.augmentation = PairAugmentation(base_aug)
-
 
         self.generated_root, self.split = self._resolve_generated_root_and_split(
             self.data_dir, split
@@ -111,15 +100,8 @@ class VisualDataset(Dataset):
             seq_idx = len(self.sequences)
             self.sequences.append(seq)
 
-            if self.is_sequence_mode:
-                # Sequence mode: create sliding windows
-                num_frames = len(seq["frame_paths"])
-                for start_idx in range(0, num_frames - self.sequence_length * self.stride + 1, self.stride):
-                    self.samples.append((seq_idx, start_idx))
-            else:
-                # Frame-pair mode: each consecutive pair
-                for local_idx in range(seq["num_samples"]):
-                    self.samples.append((seq_idx, local_idx))
+            for local_idx in range(seq["num_samples"]):
+                self.samples.append((seq_idx, local_idx))
 
     def _load_sequence(self, row: Dict[str, str]) -> Dict:
         seq_id = row["sequence_id"]
@@ -304,7 +286,6 @@ class VisualDataset(Dataset):
             (self.image_width, self.image_height), resample=Image.BILINEAR
         )
         arr = np.array(image, dtype=np.float32) / 255.0
-        # HWC -> CHW
         arr = np.transpose(arr, (2, 0, 1))
         return torch.from_numpy(arr)
 
@@ -317,50 +298,8 @@ class VisualDataset(Dataset):
 
         seq_idx, local_idx = self.samples[idx]
         seq = self.sequences[seq_idx]
-        
-        if self.is_sequence_mode:
-            return self._get_sequence_sample(seq, local_idx)
-        else:
-            return self._get_pair_sample(seq, local_idx)
-    
-    def _get_sequence_sample(self, seq: Dict, start_idx: int) -> Dict:
-        """Get a sequence of frames for LSTM training."""
-        images = []
-        target_poses = []
-        
-        for i in range(self.sequence_length):
-            frame_idx = start_idx + i * self.stride
-            image = self._load_image_as_tensor(seq["frame_paths"][frame_idx])
-            
-            if self.transform is not None:
-                image = self.transform(image)
-            
-            images.append(image)
-            
-            # Compute relative pose for consecutive pairs
-            if i < self.sequence_length - 1:
-                next_frame_idx = start_idx + (i + 1) * self.stride
-                t0 = seq["t_abs"][frame_idx]
-                q0 = seq["q_abs"][frame_idx]
-                t1 = seq["t_abs"][next_frame_idx]
-                q1 = seq["q_abs"][next_frame_idx]
-                
-                rel_pose = torch.from_numpy(self._relative_pose(t0, q0, t1, q1))
-                target_poses.append(rel_pose)
-        
-        # Stack into tensors
-        image_seq = torch.stack(images, dim=0)  # (seq_len, 3, H, W)
-        target_poses = torch.stack(target_poses, dim=0)  # (seq_len-1, 6)
-        
-        return {
-            "image_seq": image_seq,
-            "target_poses": target_poses,
-            "sequence_id": seq["sequence_id"],
-            "start_frame": int(seq["frame_ids"][start_idx]),
-            "shape": seq["shape"],
-            "texture": seq["texture"],
-            "height_m": float(seq["height_m"]),
-        }
+
+        return self._get_pair_sample(seq, local_idx)
 
     def _get_pair_sample(self, seq: Dict, local_idx: int) -> Dict:
         """Get a single frame pair sample."""
@@ -374,7 +313,6 @@ class VisualDataset(Dataset):
             image_t = self.transform(image_t)
             image_tp1 = self.transform(image_tp1)
 
-        # Apply augmentation to both images with same parameters
         if self.augmentation is not None:
             image_t, image_tp1 = self.augmentation(image_t, image_tp1)
 
@@ -426,8 +364,8 @@ class InertialDataset:
         if sequence_length < 2:
             raise ValueError(f"sequence_length must be >= 2, got {sequence_length}")
 
-        self.generated_root, self.split = VisualDataset._resolve_generated_root_and_split(
-            self.data_dir, split
+        self.generated_root, self.split = (
+            VisualDataset._resolve_generated_root_and_split(self.data_dir, split)
         )
         self.index_path = self.generated_root / "index.csv"
 
@@ -483,7 +421,9 @@ class InertialDataset:
 
         pose_frame_to_idx = {int(fid): i for i, fid in enumerate(poses["frame_ids"])}
         imu_frame_to_idx = {int(fid): i for i, fid in enumerate(imu["frame_ids"])}
-        common_frames = sorted(set(pose_frame_to_idx.keys()) & set(imu_frame_to_idx.keys()))
+        common_frames = sorted(
+            set(pose_frame_to_idx.keys()) & set(imu_frame_to_idx.keys())
+        )
 
         if len(common_frames) < 2:
             msg = f"Sequence {seq_id} has fewer than 2 aligned IMU/pose frames."
@@ -563,7 +503,7 @@ class InertialDataset:
     ) -> np.ndarray:
         """
         Compute 7D relative pose in local frame.
-        
+
         Returns:
             7D array: [dx, dy, dz, qw, qx, qy, qz]
         """
@@ -597,7 +537,10 @@ class InertialDataset:
         target_rel_poses = []
         for i in range(start_idx, end_idx - 1):
             rel_pose = InertialDataset._relative_pose_7d(
-                seq["t_abs"][i], seq["q_abs"][i], seq["t_abs"][i + 1], seq["q_abs"][i + 1]
+                seq["t_abs"][i],
+                seq["q_abs"][i],
+                seq["t_abs"][i + 1],
+                seq["q_abs"][i + 1],
             )
             target_rel_poses.append(rel_pose)
         target_rel_poses_tensor = torch.from_numpy(np.stack(target_rel_poses, axis=0))
@@ -617,10 +560,10 @@ class InertialDataset:
 class VisualInertialDataset(Dataset):
     """
     Dataset for visual-inertial odometry combining images and IMU data.
-    
+
     Images are sampled at 100Hz, IMU at 1000Hz.
     Returns image pairs with corresponding IMU sequences between frames.
-    
+
     Output format:
     {
         'image_t': (3, H, W),
@@ -647,7 +590,6 @@ class VisualInertialDataset(Dataset):
         self.use_augmentation = use_augmentation
         self.imu_hz = imu_hz
 
-        # Initialize augmentation if enabled
         self.augmentation = None
         if self.use_augmentation:
             from Augmentation import VisualOdometryAugmentation, PairAugmentation
@@ -660,8 +602,8 @@ class VisualInertialDataset(Dataset):
             )
             self.augmentation = PairAugmentation(base_aug)
 
-        self.generated_root, self.split = VisualDataset._resolve_generated_root_and_split(
-            self.data_dir, split
+        self.generated_root, self.split = (
+            VisualDataset._resolve_generated_root_and_split(self.data_dir, split)
         )
         self.index_path = self.generated_root / "index.csv"
 
@@ -710,16 +652,15 @@ class VisualInertialDataset(Dataset):
                 print(f"Warning: Missing path for {seq_id}: {req_path}")
                 return self._empty_sequence(row, seq_path)
 
-        # Read poses (100 Hz)
+        # Read poses
         poses = VisualDataset._read_poses(poses_path)
         frames = poses["frame_ids"]
         t_abs = poses["translations"]
         q_abs = poses["quaternions"]
 
-        # Read IMU data (1000 Hz)
+        # Read IMU data
         imu_data = self._read_imu(imu_path)
 
-        # Verify frames exist
         frame_paths = []
         for frame_id in frames:
             frame_path = frames_dir / f"frame_{frame_id:04d}.png"
@@ -810,29 +751,18 @@ class VisualInertialDataset(Dataset):
         self, seq: Dict, frame_idx_t: int, frame_idx_tp1: int
     ) -> np.ndarray:
         """
-        Get IMU samples between two consecutive image frames.
-        
-        Args:
-            seq: Sequence dictionary
-            frame_idx_t: Index of frame t in the sequence
-            frame_idx_tp1: Index of frame t+1 in the sequence
-        
-        Returns:
-            IMU values between the two frames, shape (N, 6)
+        get IMU samples between two consecutive image frames.
         """
         frame_id_t = seq["frame_ids"][frame_idx_t]
         frame_id_tp1 = seq["frame_ids"][frame_idx_tp1]
 
         # Find IMU samples with frame IDs in range [frame_id_t, frame_id_tp1)
-        # The IMU CSV has frame IDs matching the image frame IDs
         imu_frame_ids = seq["imu_frame_ids"]
         mask = (imu_frame_ids >= frame_id_t) & (imu_frame_ids < frame_id_tp1)
         imu_samples = seq["imu_values"][mask]
 
         # If no samples found, return empty array
         if len(imu_samples) == 0:
-            # Fallback: return zeros to avoid breaking the training
-            # In practice, this shouldn't happen if data is properly generated
             return np.zeros((1, 6), dtype=np.float32)
 
         return imu_samples
@@ -847,7 +777,7 @@ class VisualInertialDataset(Dataset):
         seq_idx, local_idx = self.samples[idx]
         seq = self.sequences[seq_idx]
 
-        # Load images
+        # load images
         frame_t_path = seq["frame_paths"][local_idx]
         frame_tp1_path = seq["frame_paths"][local_idx + 1]
 
@@ -858,23 +788,20 @@ class VisualInertialDataset(Dataset):
             image_t = self.transform(image_t)
             image_tp1 = self.transform(image_tp1)
 
-        # Apply augmentation to both images with same parameters
         if self.augmentation is not None:
             image_t, image_tp1 = self.augmentation(image_t, image_tp1)
 
-        # Get IMU sequence between the two frames
+        # get IMU sequence between the two frames
         imu_seq = self._get_imu_between_frames(seq, local_idx, local_idx + 1)
         imu_seq_tensor = torch.from_numpy(imu_seq)
 
-        # Compute relative pose (6D: dx, dy, qw, qx, qy, qz)
+        # compute relative pose (6D: dx, dy, qw, qx, qy, qz)
         t0 = seq["t_abs"][local_idx]
         q0 = seq["q_abs"][local_idx]
         t1 = seq["t_abs"][local_idx + 1]
         q1 = seq["q_abs"][local_idx + 1]
 
-        target_rel_pose = torch.from_numpy(
-            VisualDataset._relative_pose(t0, q0, t1, q1)
-        )
+        target_rel_pose = torch.from_numpy(VisualDataset._relative_pose(t0, q0, t1, q1))
 
         return {
             "image_t": image_t,
