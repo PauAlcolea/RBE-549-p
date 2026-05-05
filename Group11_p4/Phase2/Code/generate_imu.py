@@ -28,49 +28,48 @@ def read_poses(path):
         for row in r:
             frames.append(int(row["frame"]))
             pos.append((float(row["tx"]), float(row["ty"]), float(row["tz"])))
-            quat.append((float(row["qw"]), float(row["qx"]), float(row["qy"]), float(row["qz"])))
+            quat.append(
+                (float(row["qw"]), float(row["qx"]), float(row["qy"]), float(row["qz"]))
+            )
     return frames, pos, quat
+
 
 # make the file with the imu data
 def write_imu(path, frames, acc, omega, dt):
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["frame","t","ax","ay","az","wx","wy","wz"])
+        w.writerow(["frame", "t", "ax", "ay", "az", "wx", "wy", "wz"])
         for i in range(len(frames)):
-            w.writerow([
-                frames[i],
-                i*dt,
-                *acc[i],
-                *omega[i]
-            ])
-
-
+            w.writerow([frames[i], i * dt, *acc[i], *omega[i]])
 
 
 # to make sure that the quaternion has a length of 1
 def quat_normalize(q):
-    w,x,y,z = q
-    n = math.sqrt(w*w+x*x+y*y+z*z)
-    return (w/n, x/n, y/n, z/n)
+    w, x, y, z = q
+    n = math.sqrt(w * w + x * x + y * y + z * z)
+    return (w / n, x / n, y / n, z / n)
+
 
 # to invert rotation to go "backwards" framewise
 def quat_conj(q):
-    w,x,y,z = q
-    return (w,-x,-y,-z)
+    w, x, y, z = q
+    return (w, -x, -y, -z)
+
 
 # multiplication
-def quat_mul(a,b):
-    aw,ax,ay,az = a
-    bw,bx,by,bz = b
+def quat_mul(a, b):
+    aw, ax, ay, az = a
+    bw, bx, by, bz = b
     return (
-        aw*bw - ax*bx - ay*by - az*bz,
-        aw*bx + ax*bw + ay*bz - az*by,
-        aw*by - ax*bz + ay*bw + az*bx,
-        aw*bz + ax*by - ay*bx + az*bw
+        aw * bw - ax * bx - ay * by - az * bz,
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
     )
 
+
 def quat_dot(a, b):
-    return a[0]*b[0] + a[1]*b[1] + a[2]*b[2] + a[3]*b[3]
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]
 
 
 def yaw_to_quat(yaw):
@@ -84,6 +83,7 @@ def quat_to_yaw(q):
     cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
     return math.atan2(siny_cosp, cosy_cosp)
 
+
 # rotate a vector v with q
 def quat_rotate(q, v):
     """Rotate vector v by quaternion q"""
@@ -91,52 +91,50 @@ def quat_rotate(q, v):
     return quat_mul(quat_mul(q, qv), quat_conj(q))[1:]
 
 
-
-
-
-
 # get velocity or acceleration from a position or a velocity vector
 def diff_vec(samples, dt):
     n = len(samples)
-    out = [(0,0,0)]*n
+    out = [(0, 0, 0)] * n
     for i in range(n):
         if i == 0:
-            d = [(samples[1][j]-samples[0][j])/dt for j in range(3)]
-        elif i == n-1:
-            d = [(samples[-1][j]-samples[-2][j])/dt for j in range(3)]
+            d = [(samples[1][j] - samples[0][j]) / dt for j in range(3)]
+        elif i == n - 1:
+            d = [(samples[-1][j] - samples[-2][j]) / dt for j in range(3)]
         else:
-            d = [(samples[i+1][j]-samples[i-1][j])/(2*dt) for j in range(3)]
+            d = [(samples[i + 1][j] - samples[i - 1][j]) / (2 * dt) for j in range(3)]
         out[i] = tuple(d)
     return out
 
+
 # quaternion form to axis and angle
 def quat_to_rotvec(q):
-    w,x,y,z = quat_normalize(q)
+    w, x, y, z = quat_normalize(q)
     if w < 0:
-        w,x,y,z = -w,-x,-y,-z
-    angle = 2*math.acos(max(-1,min(1,w)))
-    s = math.sqrt(1-w*w)
+        w, x, y, z = -w, -x, -y, -z
+    angle = 2 * math.acos(max(-1, min(1, w)))
+    s = math.sqrt(1 - w * w)
     if s < 1e-8:
-        return (0,0,0)
-    return (x/s*angle, y/s*angle, z/s*angle)
+        return (0, 0, 0)
+    return (x / s * angle, y / s * angle, z / s * angle)
+
 
 # for angular velocity
 def diff_quat(quats, dt):
     n = len(quats)
-    omega = [(0,0,0)]*n
+    omega = [(0, 0, 0)] * n
     for i in range(n):
         if i == 0:
             dq = quat_mul(quat_conj(quats[0]), quats[1])
             rv = quat_to_rotvec(dq)
-            omega[i] = tuple(v/dt for v in rv)
-        elif i == n-1:
+            omega[i] = tuple(v / dt for v in rv)
+        elif i == n - 1:
             dq = quat_mul(quat_conj(quats[-2]), quats[-1])
             rv = quat_to_rotvec(dq)
-            omega[i] = tuple(v/dt for v in rv)
+            omega[i] = tuple(v / dt for v in rv)
         else:
-            dq = quat_mul(quat_conj(quats[i-1]), quats[i+1])
+            dq = quat_mul(quat_conj(quats[i - 1]), quats[i + 1])
             rv = quat_to_rotvec(dq)
-            omega[i] = tuple(v/(2*dt) for v in rv)
+            omega[i] = tuple(v / (2 * dt) for v in rv)
     return omega
 
 
@@ -205,11 +203,11 @@ def resolve_body_quaternions(pos, quat, heading_source):
 
 def diff_vec_periodic(samples, dt):
     n = len(samples)
-    out = [(0,0,0)]*n
+    out = [(0, 0, 0)] * n
     for i in range(n):
         im1 = (i - 1) % n
         ip1 = (i + 1) % n
-        d = [(samples[ip1][j]-samples[im1][j])/(2*dt) for j in range(3)]
+        d = [(samples[ip1][j] - samples[im1][j]) / (2 * dt) for j in range(3)]
         out[i] = tuple(d)
     return out
 
@@ -217,7 +215,7 @@ def diff_vec_periodic(samples, dt):
 def diff_quat_periodic(quats, dt):
     n = len(quats)
     qn = [quat_normalize(q) for q in quats]
-    omega = [(0,0,0)]*n
+    omega = [(0, 0, 0)] * n
     for i in range(n):
         im1 = (i - 1) % n
         ip1 = (i + 1) % n
@@ -227,7 +225,7 @@ def diff_quat_periodic(quats, dt):
             q_next = tuple(-v for v in q_next)
         dq = quat_mul(quat_conj(q_prev), q_next)
         rv = quat_to_rotvec(dq)
-        omega[i] = tuple(v/(2*dt) for v in rv)
+        omega[i] = tuple(v / (2 * dt) for v in rv)
     return omega
 
 
@@ -238,7 +236,7 @@ def is_closed_loop(pos, quat):
     dx = pos[-1][0] - pos[0][0]
     dy = pos[-1][1] - pos[0][1]
     dz = pos[-1][2] - pos[0][2]
-    pos_gap = math.sqrt(dx*dx + dy*dy + dz*dz)
+    pos_gap = math.sqrt(dx * dx + dy * dy + dz * dz)
     if pos_gap > 1e-9:
         return False
 
@@ -302,7 +300,9 @@ def get_noise_params(profile):
     raise ValueError(f"Unknown noise profile '{profile}'. Use low|mid|high.")
 
 
-def add_imu_noise(acc_gt, omega_gt, hz, profile="mid", seed=None, acc_vib=None, gyro_vib=None):
+def add_imu_noise(
+    acc_gt, omega_gt, hz, profile="mid", seed=None, acc_vib=None, gyro_vib=None
+):
     if seed is not None:
         np.random.seed(seed)
 
@@ -320,7 +320,9 @@ def add_imu_noise(acc_gt, omega_gt, hz, profile="mid", seed=None, acc_vib=None, 
 
 
 # visualization for the data
-def save_imu_plot(acc, omega, dt, output_dir, sequence_name, acc_gt=None, omega_gt=None):
+def save_imu_plot(
+    acc, omega, dt, output_dir, sequence_name, acc_gt=None, omega_gt=None
+):
 
     t = [i * dt for i in range(len(acc))]
 
@@ -341,12 +343,12 @@ def save_imu_plot(acc, omega, dt, output_dir, sequence_name, acc_gt=None, omega_
 
     # Bottom 3 angular velocity
     for i in range(3):
-        axs[i+3].plot(t, [w[i] for w in omega], label="noisy")
+        axs[i + 3].plot(t, [w[i] for w in omega], label="noisy")
         if has_gt:
-            axs[i+3].plot(t, [w[i] for w in omega_gt], "--", label="gt", alpha=0.85)
-        axs[i+3].set_ylabel(f"ω_{labels[i]} (rad/s)")
-        axs[i+3].grid()
-        axs[i+3].legend(loc="upper right", fontsize=8)
+            axs[i + 3].plot(t, [w[i] for w in omega_gt], "--", label="gt", alpha=0.85)
+        axs[i + 3].set_ylabel(f"ω_{labels[i]} (rad/s)")
+        axs[i + 3].grid()
+        axs[i + 3].legend(loc="upper right", fontsize=8)
 
     axs[-1].set_xlabel("Time (s)")
 
@@ -361,11 +363,17 @@ def save_imu_plot(acc, omega, dt, output_dir, sequence_name, acc_gt=None, omega_
     print(f"[PLOT SAVED] {save_path}")
 
 
-def save_imu_plot_with_name(acc, omega, dt, output_dir, file_name, title, acc_gt=None, omega_gt=None):
+def save_imu_plot_with_name(
+    acc, omega, dt, output_dir, file_name, title, acc_gt=None, omega_gt=None
+):
     # Remove first/last samples in plots to avoid edge-derivative artifacts that
     # often appear as sharp vertical lines at the boundaries.
     start_idx = 2 if len(acc) > 4 else (1 if len(acc) > 2 else 0)
-    end_idx = len(acc) - start_idx if len(acc) > 4 else (len(acc) - 1 if len(acc) > 2 else len(acc))
+    end_idx = (
+        len(acc) - start_idx
+        if len(acc) > 4
+        else (len(acc) - 1 if len(acc) > 2 else len(acc))
+    )
     t = [i * dt for i in range(start_idx, end_idx)]
     fig, axs = plt.subplots(6, 1, figsize=(10, 12), sharex=True)
     labels = ["x", "y", "z"]
@@ -374,18 +382,30 @@ def save_imu_plot_with_name(acc, omega, dt, output_dir, file_name, title, acc_gt
     for i in range(3):
         axs[i].plot(t, [a[i] for a in acc[start_idx:end_idx]], label="signal")
         if has_gt:
-            axs[i].plot(t, [a[i] for a in acc_gt[start_idx:end_idx]], "--", label="gt", alpha=0.85)
+            axs[i].plot(
+                t,
+                [a[i] for a in acc_gt[start_idx:end_idx]],
+                "--",
+                label="gt",
+                alpha=0.85,
+            )
         axs[i].set_ylabel(f"a_{labels[i]} (m/s²)")
         axs[i].grid()
         axs[i].legend(loc="upper right", fontsize=8)
 
     for i in range(3):
-        axs[i+3].plot(t, [w[i] for w in omega[start_idx:end_idx]], label="signal")
+        axs[i + 3].plot(t, [w[i] for w in omega[start_idx:end_idx]], label="signal")
         if has_gt:
-            axs[i+3].plot(t, [w[i] for w in omega_gt[start_idx:end_idx]], "--", label="gt", alpha=0.85)
-        axs[i+3].set_ylabel(f"ω_{labels[i]} (rad/s)")
-        axs[i+3].grid()
-        axs[i+3].legend(loc="upper right", fontsize=8)
+            axs[i + 3].plot(
+                t,
+                [w[i] for w in omega_gt[start_idx:end_idx]],
+                "--",
+                label="gt",
+                alpha=0.85,
+            )
+        axs[i + 3].set_ylabel(f"ω_{labels[i]} (rad/s)")
+        axs[i + 3].grid()
+        axs[i + 3].legend(loc="upper right", fontsize=8)
 
     axs[-1].set_xlabel("Time (s)")
     fig.suptitle(title, fontsize=14)
@@ -396,8 +416,11 @@ def save_imu_plot_with_name(acc, omega, dt, output_dir, file_name, title, acc_gt
     plt.close(fig)
     print(f"[PLOT SAVED] {save_path}")
 
+
 # this is the big file that gets called
-def process_file(pose_path, hz, noise_profile, noise_seed, acc_vib, gyro_vib, heading_source):
+def process_file(
+    pose_path, hz, noise_profile, noise_seed, acc_vib, gyro_vib, heading_source
+):
     dt = 1.0 / hz
 
     frames, pos, quat = read_poses(pose_path)
@@ -405,9 +428,13 @@ def process_file(pose_path, hz, noise_profile, noise_seed, acc_vib, gyro_vib, he
     acc_world, omega_world = compute_world_kinematics(pos, body_quat, dt)
 
     # Tangent-heading body frame (current/default behavior).
-    acc_gt, omega_gt = rotate_world_to_body(acc_world, omega_world, body_quat, fixed_heading=False)
+    acc_gt, omega_gt = rotate_world_to_body(
+        acc_world, omega_world, body_quat, fixed_heading=False
+    )
     # Fixed-heading body frame (uses first pose orientation for all frames).
-    acc_gt_fixed, omega_gt_fixed = rotate_world_to_body(acc_world, omega_world, body_quat, fixed_heading=True)
+    acc_gt_fixed, omega_gt_fixed = rotate_world_to_body(
+        acc_world, omega_world, body_quat, fixed_heading=True
+    )
 
     acc_noisy, omega_noisy = add_imu_noise(
         acc_gt,
@@ -431,7 +458,7 @@ def process_file(pose_path, hz, noise_profile, noise_seed, acc_vib, gyro_vib, he
 
     seq_dir = pose_path.parent
     seq_name = seq_dir.name
-    
+
     # Determine output suffix based on sampling rate
     hz_suffix = f"_{int(hz)}hz" if hz != 100 else ""
 
@@ -476,14 +503,24 @@ def process_file(pose_path, hz, noise_profile, noise_seed, acc_vib, gyro_vib, he
     )
     print(f"[INFO] Heading source for {seq_name}: {heading_tag}")
 
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--hz", type=float, default=100)
-    parser.add_argument("--noise-profile", type=str, default="mid", choices=["low", "mid", "high"])
+    parser.add_argument(
+        "--noise-profile", type=str, default="mid", choices=["low", "mid", "high"]
+    )
     parser.add_argument("--noise-seed", type=int, default=None)
-    parser.add_argument("--acc-vib", type=str, default=None, help="e.g. '[0.03 0.01 0.01]-random'")
-    parser.add_argument("--gyro-vib", type=str, default=None, help="e.g. '[0.2 0.2 0.1]d-1Hz-sinusoidal'")
+    parser.add_argument(
+        "--acc-vib", type=str, default=None, help="e.g. '[0.03 0.01 0.01]-random'"
+    )
+    parser.add_argument(
+        "--gyro-vib",
+        type=str,
+        default=None,
+        help="e.g. '[0.2 0.2 0.1]d-1Hz-sinusoidal'",
+    )
     parser.add_argument(
         "--heading-source",
         type=str,
@@ -520,6 +557,7 @@ def main():
             args.gyro_vib,
             args.heading_source,
         )
+
 
 if __name__ == "__main__":
     main()

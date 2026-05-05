@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
 """
-Batch generate visual-inertial dataset: upsample trajectories and add IMU data.
+generate visual-inertial dataset: upsample trajectories and add IMU data.
 
-This script orchestrates the full VI dataset generation pipeline:
 1. Upsample existing 100 Hz poses to 1000 Hz (upsample_trajectory.py)
 2. Generate IMU measurements from 1000 Hz poses (generate_imu.py)
-
-Processes all sequences in specified splits (train/val/test) under Data/Generated.
 
 Usage:
     python generate_vi_dataset.py --data-root Data/Generated --splits train val test
@@ -26,51 +23,41 @@ from typing import List, Set
 
 
 def find_sequences(data_root: Path, splits: List[str]) -> List[Path]:
-    """
-    Find all sequence directories in specified splits.
-    
-    Args:
-        data_root: Path to Generated/ directory
-        splits: List of split names (train, val, test)
-    
-    Returns:
-        List of sequence directory paths
-    """
     sequences = []
-    
+
     for split in splits:
         split_dir = data_root / split
         if not split_dir.exists():
             print(f"[WARNING] Split directory not found: {split_dir}")
             continue
-        
+
         # Find all subdirectories that look like sequences (contain poses.csv)
         for seq_dir in sorted(split_dir.iterdir()):
             if not seq_dir.is_dir():
                 continue
-            
+
             poses_csv = seq_dir / "poses.csv"
             if poses_csv.exists():
                 sequences.append(seq_dir)
-    
+
     return sequences
 
 
 def check_sequence_status(seq_dir: Path, target_hz: float = 1000.0) -> dict:
     """
-    Check which files exist for a sequence.
-    
+    check which files exist for a sequence.
+
     Returns:
         dict with boolean flags: has_poses, has_poses_upsampled, has_imu
     """
     poses_csv = seq_dir / "poses.csv"
     poses_1000hz_csv = seq_dir / "poses_1000hz.csv"
-    
+
     # IMU files with hz suffix
     hz_suffix = f"_{int(target_hz)}hz" if target_hz != 100 else ""
     imu_gt = seq_dir / f"imu_gt{hz_suffix}.csv"
     imu_noisy = seq_dir / f"{seq_dir.name}_imu{hz_suffix}.csv"
-    
+
     return {
         "has_poses": poses_csv.exists(),
         "has_poses_upsampled": poses_1000hz_csv.exists(),
@@ -78,7 +65,9 @@ def check_sequence_status(seq_dir: Path, target_hz: float = 1000.0) -> dict:
     }
 
 
-def _quat_normalize(q: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+def _quat_normalize(
+    q: tuple[float, float, float, float],
+) -> tuple[float, float, float, float]:
     n = math.sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3])
     if n < 1e-12:
         return (1.0, 0.0, 0.0, 0.0)
@@ -87,7 +76,7 @@ def _quat_normalize(q: tuple[float, float, float, float]) -> tuple[float, float,
 
 def rotation_label_stats(seq_dir: Path, small_rot_thresh_rad: float = 1e-4) -> dict:
     """
-    Compute rotation-label quality stats from consecutive pose quaternions.
+    compute rotation-label quality stats from consecutive pose quaternions.
 
     Returns:
         dict with keys: valid, num_pairs, pct_small_rot, median_rot_deg, max_rot_deg
@@ -159,17 +148,14 @@ def run_upsample_trajectory(
 ) -> bool:
     """
     Run upsample_trajectory.py on a sequence.
-    
-    Returns:
-        True if successful, False otherwise
     """
     script_dir = Path(__file__).parent
     upsample_script = script_dir / "upsample_trajectory.py"
-    
+
     if not upsample_script.exists():
         print(f"[ERROR] upsample_trajectory.py not found at {upsample_script}")
         return False
-    
+
     cmd = [
         sys.executable,
         str(upsample_script),
@@ -180,12 +166,12 @@ def run_upsample_trajectory(
         "--target-hz",
         str(target_hz),
     ]
-    
+
     if validate:
         cmd.append("--validate")
     else:
         cmd.append("--no-validate")
-    
+
     try:
         result = subprocess.run(cmd, check=True, capture_output=True, text=True)
         # Print output for visibility
@@ -207,17 +193,14 @@ def run_generate_imu(
 ) -> bool:
     """
     Run generate_imu.py on all sequences in data_root.
-    
-    Returns:
-        True if successful, False otherwise
     """
     script_dir = Path(__file__).parent
     imu_script = script_dir / "generate_imu.py"
-    
+
     if not imu_script.exists():
         print(f"[ERROR] generate_imu.py not found at {imu_script}")
         return False
-    
+
     cmd = [
         sys.executable,
         str(imu_script),
@@ -228,10 +211,10 @@ def run_generate_imu(
         "--noise-profile",
         noise_profile,
     ]
-    
+
     if noise_seed is not None:
         cmd.extend(["--noise-seed", str(noise_seed)])
-    
+
     try:
         result = subprocess.run(cmd, check=True, capture_output=True, text=True)
         # Print output for visibility
@@ -256,7 +239,7 @@ def process_sequences(
 ) -> None:
     """
     Process all sequences: upsample + generate IMU.
-    
+
     Args:
         sequences: List of sequence directories
         original_hz: Original sampling rate
@@ -271,29 +254,29 @@ def process_sequences(
     failed_upsample = []
     successful_upsample = []
     degenerate_rotation = []
-    
+
     print(f"\n[VI Dataset Generation]")
     print(f"  Sequences: {total}")
     print(f"  Original: {original_hz} Hz → Target: {target_hz} Hz")
     print(f"  Noise: {noise_profile}")
     print(f"  Resume: {resume}")
     print()
-    
+
     # Phase 1: Upsample trajectories
     print("=" * 70)
     print("PHASE 1: Upsampling Trajectories")
     print("=" * 70)
-    
+
     for i, seq_dir in enumerate(sequences, 1):
         print(f"\n[{i}/{total}] {seq_dir.name}")
-        
+
         status = check_sequence_status(seq_dir, target_hz)
-        
+
         if not status["has_poses"]:
             print(f"  [SKIP] No poses.csv found")
             skipped += 1
             continue
-        
+
         if resume and status["has_poses_upsampled"]:
             print(f"  [SKIP] poses_1000hz.csv already exists (resume mode)")
             successful_upsample.append(seq_dir)
@@ -314,20 +297,22 @@ def process_sequences(
                     "(>=98% near-zero consecutive rotations)."
                 )
                 degenerate_rotation.append(seq_dir)
-        
+
         # Run upsampling
         success = run_upsample_trajectory(seq_dir, original_hz, target_hz, validate)
-        
+
         if success:
             successful_upsample.append(seq_dir)
         else:
             failed_upsample.append(seq_dir)
-    
+
     print()
     print("=" * 70)
-    print(f"Phase 1 Complete: {len(successful_upsample)} upsampled, {len(failed_upsample)} failed, {skipped} skipped")
+    print(
+        f"Phase 1 Complete: {len(successful_upsample)} upsampled, {len(failed_upsample)} failed, {skipped} skipped"
+    )
     print("=" * 70)
-    
+
     if failed_upsample:
         print("\nFailed upsampling:")
         for seq_dir in failed_upsample:
@@ -343,21 +328,23 @@ def process_sequences(
             "(e.g., tangent heading and/or non-zero heading spin)."
         )
         print()
-    
+
     if not successful_upsample:
-        print("\n[WARNING] No sequences were successfully upsampled. Skipping IMU generation.")
+        print(
+            "\n[WARNING] No sequences were successfully upsampled. Skipping IMU generation."
+        )
         return
-    
+
     # Phase 2: Generate IMU data
     print("\n" + "=" * 70)
     print("PHASE 2: Generating IMU Data")
     print("=" * 70)
     print()
-    
+
     # Run IMU generation once on the data root (it finds all poses_1000hz.csv files)
     data_root = sequences[0].parent.parent
     success = run_generate_imu(data_root, target_hz, noise_profile, noise_seed)
-    
+
     if success:
         print("\n" + "=" * 70)
         print("VI Dataset Generation Complete!")
@@ -371,14 +358,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Batch generate visual-inertial dataset from existing sequences"
     )
-    
+
     parser.add_argument(
         "--data-root",
         type=Path,
         required=True,
         help="Path to Generated/ directory containing train/val/test splits",
     )
-    
+
     split_group = parser.add_mutually_exclusive_group(required=True)
     split_group.add_argument(
         "--splits",
@@ -391,7 +378,7 @@ def main() -> None:
         action="store_true",
         help="Process all splits (train, val, test)",
     )
-    
+
     parser.add_argument(
         "--original-hz",
         type=float,
@@ -424,27 +411,27 @@ def main() -> None:
         action="store_true",
         help="Skip validation of upsampling accuracy",
     )
-    
+
     args = parser.parse_args()
-    
+
     # Validate data root
     if not args.data_root.exists():
         print(f"[ERROR] Data root not found: {args.data_root}")
         sys.exit(1)
-    
+
     # Determine splits to process
     if args.all_splits:
         splits = ["train", "val", "test"]
     else:
         splits = args.splits
-    
+
     # Find sequences
     sequences = find_sequences(args.data_root, splits)
-    
+
     if not sequences:
         print(f"[ERROR] No sequences found in splits: {splits}")
         sys.exit(1)
-    
+
     # Process sequences
     process_sequences(
         sequences,

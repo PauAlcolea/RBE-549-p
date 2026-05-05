@@ -160,9 +160,32 @@ def plot_trajectory_3d(trajectory, title="Trajectory", save_path=None, dpi=300):
     fig = plt.figure(figsize=(9, 7))
     ax = fig.add_subplot(111, projection="3d")
 
-    ax.plot(trajectory[:, 0], trajectory[:, 1], trajectory[:, 2], "b-", linewidth=2, label="Path")
-    ax.scatter(trajectory[0, 0], trajectory[0, 1], trajectory[0, 2], color="green", s=90, label="Start", marker="o")
-    ax.scatter(trajectory[-1, 0], trajectory[-1, 1], trajectory[-1, 2], color="red", s=90, label="End", marker="s")
+    ax.plot(
+        trajectory[:, 0],
+        trajectory[:, 1],
+        trajectory[:, 2],
+        "b-",
+        linewidth=2,
+        label="Path",
+    )
+    ax.scatter(
+        trajectory[0, 0],
+        trajectory[0, 1],
+        trajectory[0, 2],
+        color="green",
+        s=90,
+        label="Start",
+        marker="o",
+    )
+    ax.scatter(
+        trajectory[-1, 0],
+        trajectory[-1, 1],
+        trajectory[-1, 2],
+        color="red",
+        s=90,
+        label="End",
+        marker="s",
+    )
 
     ax.set_xlabel("X (m)")
     ax.set_ylabel("Y (m)")
@@ -188,8 +211,22 @@ def plot_all_trajectories(trajectories_dict, save_path=None, dpi=300):
     for idx, (shape_name, trajectory) in enumerate(trajectories_dict.items(), 1):
         ax = fig.add_subplot(2, 2, idx, projection="3d")
         ax.plot(trajectory[:, 0], trajectory[:, 1], trajectory[:, 2], "b-", linewidth=2)
-        ax.scatter(trajectory[0, 0], trajectory[0, 1], trajectory[0, 2], color="green", s=80, marker="o")
-        ax.scatter(trajectory[-1, 0], trajectory[-1, 1], trajectory[-1, 2], color="red", s=80, marker="s")
+        ax.scatter(
+            trajectory[0, 0],
+            trajectory[0, 1],
+            trajectory[0, 2],
+            color="green",
+            s=80,
+            marker="o",
+        )
+        ax.scatter(
+            trajectory[-1, 0],
+            trajectory[-1, 1],
+            trajectory[-1, 2],
+            color="red",
+            s=80,
+            marker="s",
+        )
 
         # ax.set_title(shape_name.capitalize(), fontsize=12, fontweight="bold", pad=2, y=0.95)
         ax.grid(True, alpha=0.3)
@@ -197,7 +234,6 @@ def plot_all_trajectories(trajectories_dict, save_path=None, dpi=300):
         _hide_z_axis_labels(ax)
 
     plt.tight_layout(h_pad=0.2)
-
 
     if save_path is not None:
         save_path = Path(save_path)
@@ -208,10 +244,27 @@ def plot_all_trajectories(trajectories_dict, save_path=None, dpi=300):
 
 
 def _parse_args():
-    parser = argparse.ArgumentParser(description="Generate 3D trajectory plots for all supported drone paths.")
-    parser.add_argument("--save-dir", type=Path, default=Path("plots"), help="Directory to save generated plots.")
-    parser.add_argument("--height", type=float, default=DEFAULT_COMMON_CFG["height"], help="Trajectory altitude in meters.")
-    parser.add_argument("--laps", type=int, default=DEFAULT_COMMON_CFG["laps"], help="Number of closed-loop laps.")
+    parser = argparse.ArgumentParser(
+        description="Generate 3D trajectory plots for all supported drone paths."
+    )
+    parser.add_argument(
+        "--save-dir",
+        type=Path,
+        default=Path("plots"),
+        help="Directory to save generated plots.",
+    )
+    parser.add_argument(
+        "--height",
+        type=float,
+        default=DEFAULT_COMMON_CFG["height"],
+        help="Trajectory altitude in meters.",
+    )
+    parser.add_argument(
+        "--laps",
+        type=int,
+        default=DEFAULT_COMMON_CFG["laps"],
+        help="Number of closed-loop laps.",
+    )
     parser.add_argument(
         "--samples",
         type=int,
@@ -219,7 +272,11 @@ def _parse_args():
         help="Optional shared samples-per-lap override for figure8/circle/triangle.",
     )
     parser.add_argument("--dpi", type=int, default=300, help="Saved image DPI.")
-    parser.add_argument("--no-show", action="store_true", help="Skip interactive display and only save plots.")
+    parser.add_argument(
+        "--no-show",
+        action="store_true",
+        help="Skip interactive display and only save plots.",
+    )
     return parser.parse_args()
 
 
