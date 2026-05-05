@@ -71,3 +71,31 @@ options:
   -i                    Use Inertial Model
   -vi                   Use Visual-Inertial Model
 ```
+# Test a Model
+```
+usage: Test.py [-h] --checkpoint CHECKPOINT --data-dir DATA_DIR [--split {train,val,test}] [--sequence-id SEQUENCE_ID] [--output-dir OUTPUT_DIR]
+               [--image-height IMAGE_HEIGHT] [--image-width IMAGE_WIDTH] (-v | -i | -vi) [--show-plots] [--device DEVICE]
+
+Test odometry model
+
+options:
+  -h, --help            show this help message and exit
+  --checkpoint CHECKPOINT
+                        Path to model checkpoint (.pth file)
+  --data-dir DATA_DIR   Path to data directory (contains train/val/test subdirectories or is a split directory)
+  --split {train,val,test}
+                        Which data split to evaluate on (default: test)
+  --sequence-id SEQUENCE_ID
+                        Specific sequence ID to evaluate (e.g., seq_000041). If not provided, evaluates all sequences in split.
+  --output-dir OUTPUT_DIR
+                        Output directory for results. Default: ../Output/Testing/{MODEL_TYPE}/
+  --image-height IMAGE_HEIGHT
+                        Image height used during training (default: 240)
+  --image-width IMAGE_WIDTH
+                        Image width used during training (default: 320)
+  -v                    Test Visual Model
+  -i                    Test Inertial Model
+  -vi                   Test Visual-Inertial Model
+  --show-plots          Display plots interactively
+  --device DEVICE       Device to run on (cuda/cpu/mps). Default: auto-detect
+```
