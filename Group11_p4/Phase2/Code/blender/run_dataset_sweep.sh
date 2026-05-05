@@ -7,39 +7,27 @@ IMU_SCRIPT="$SCRIPT_DIR/trajectory_imu.py"
 
 print_usage() {
   cat <<'EOF'
-Usage: ./run_dataset_sweep.sh [--resume] [--jobs N] [--imu] [--help]
+Usage: ./run_dataset_sweep.sh [--imu] [--resume] [--jobs N] [--help]
 
 Generate a dataset by sweeping combinations of:
   - trajectory shape
   - texture image
   - camera height
 
-By default this script calls run_blender.sh once per combination.
-With --imu it calls trajectory_imu.py directly (no Blender/rendering).
-
-How to configure:
-  Edit the sweep variables near the top of run_dataset_sweep.sh:
-    SHAPES, TEXTURES, HEIGHTS, REPEATS, START_SEQ_NUM, SEED_BASE,
-    TRAIN_PCT, VAL_PCT, TEST_PCT
-
-Sequence naming:
-  sequence_id = seq_XXXXXX, starting at START_SEQ_NUM and incrementing by 1.
-
-Split assignment:
-  Combinations are assigned train/val/test by percentile buckets in loop order
-  using TRAIN_PCT / VAL_PCT / TEST_PCT.
+This script calls run_blender.sh once per combination.
 
 Output:
-  Generated data written under Phase2/Data/Generated.
+  Generated data written to Data/Generated.
+
+IMU mode:
+  --imu generates trajectory-only sequences with IMU data using trajectory_imu.py
 
 Resume mode:
-  --resume will scan expected split/sequence folders and:
-    - skip sequences with complete outputs
-    - delete and regenerate incomplete sequences
-  This is useful if generation stopped mid-run.
+  --resume will:
+    - skip sequences with complete outputs and regenerate incomplete sequences
 
 Parallel mode:
-  --jobs N (or -j N) runs up to N generation processes concurrently.
+  --jobs N (or -j N) runs up to N Blender processes concurrently.
   Default is 1 (sequential).
 EOF
 }
