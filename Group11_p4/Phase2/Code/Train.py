@@ -7,7 +7,8 @@ import os
 import torch
 import numpy as np
 import matplotlib
-matplotlib.use("Agg")       # allows this to run headless 
+
+matplotlib.use("Agg")  # allows this to run headless
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 from torch.utils.data import WeightedRandomSampler
@@ -41,28 +42,18 @@ class Pipeline:
         val_dir,
         image_height,
         image_width,
-        use_augmentation,
-        use_lstm=False,
-        sequence_length=8,
-        stride=1,
         lstm_hidden=256,
-        lstm_layers=2,
     ):
         self.model_type = model_type
-        self.use_lstm = use_lstm
 
         if model_type == ModelTypes.VISUAL:
             self.train_dataset = VisualDataset(
                 train_dir,
-                mode="sequences",
-                sequence_length=sequence_length,
                 image_height=image_height,
                 image_width=image_width,
             )
             self.val_dataset = VisualDataset(
                 val_dir,
-                mode="sequences",
-                sequence_length=sequence_length,
                 image_height=image_height,
                 image_width=image_width,
             )
@@ -124,11 +115,11 @@ def _quat_to_rotmat_np(q):
 def _relative_poses_to_world_positions(rel_poses):
     """
     Convert relative local-frame poses into world XYZ path.
-    
+
     Supports both formats:
     - 6D: [dx, dy, qw, qx, qy, qz] (ground plane motion, dz=0)
     - 7D: [dx, dy, dz, qw, qx, qy, qz] (full 3D motion)
-    
+
     Returns (T, 3) positions, starting at the origin.
     """
     n = rel_poses.shape[0]
@@ -139,13 +130,15 @@ def _relative_poses_to_world_positions(rel_poses):
         # Handle both 6D and 7D pose formats
         if rel_poses.shape[1] == 6:
             # 6D format: [dx, dy, qw, qx, qy, qz]
-            d_local = np.array([rel_poses[i, 0], rel_poses[i, 1], 0.0], dtype=np.float64)
+            d_local = np.array(
+                [rel_poses[i, 0], rel_poses[i, 1], 0.0], dtype=np.float64
+            )
             q_rel = rel_poses[i, 2:]
         else:
             # 7D format: [dx, dy, dz, qw, qx, qy, qz]
             d_local = rel_poses[i, :3]
             q_rel = rel_poses[i, 3:]
-        
+
         q_rel = q_rel / max(np.linalg.norm(q_rel), 1e-12)
 
         r_world = _quat_to_rotmat_np(q_world)
@@ -163,20 +156,13 @@ def _save_val_trajectory_plot(model, val_loader, device, epoch, val_loss, writer
         for batch in val_loader:
             batch = _move_batch_to_device(batch, device)
             pred = model.forward(batch)
-            
+
             # Get ground truth and prediction for first sample in batch
             gt = batch["target_rel_pose"]
-            
-            # Handle both sequence mode (shape: B, T-1, D) and pair mode (shape: B, D)
-            if gt.ndim == 3:
-                # Sequence mode: multiple poses per sample
-                pred_np = pred[0].detach().cpu().numpy()
-                gt_np = gt[0].detach().cpu().numpy()
-            else:
-                # Pair mode: single pose per sample
-                pred_np = pred[0:1].detach().cpu().numpy()  # Keep as (1, 6) or (1, 7)
-                gt_np = gt[0:1].detach().cpu().numpy()
-            
+
+            pred_np = pred[0:1].detach().cpu().numpy()  # Keep as (1, 6) or (1, 7)
+            gt_np = gt[0:1].detach().cpu().numpy()
+
             seq_id = batch.get("sequence_id", ["unknown"])[0]
 
             pred_xyz = _relative_poses_to_world_positions(pred_np)
@@ -186,8 +172,20 @@ def _save_val_trajectory_plot(model, val_loader, device, epoch, val_loss, writer
 
             # 3D trajectory
             ax3d = fig.add_subplot(2, 2, 1, projection="3d")
-            ax3d.plot(gt_xyz[:, 0], gt_xyz[:, 1], gt_xyz[:, 2], label="Ground Truth", linewidth=2.0)
-            ax3d.plot(pred_xyz[:, 0], pred_xyz[:, 1], pred_xyz[:, 2], label="Prediction", linewidth=2.0)
+            ax3d.plot(
+                gt_xyz[:, 0],
+                gt_xyz[:, 1],
+                gt_xyz[:, 2],
+                label="Ground Truth",
+                linewidth=2.0,
+            )
+            ax3d.plot(
+                pred_xyz[:, 0],
+                pred_xyz[:, 1],
+                pred_xyz[:, 2],
+                label="Prediction",
+                linewidth=2.0,
+            )
             ax3d.set_title("3D")
             ax3d.set_xlabel("X [m]")
             ax3d.set_ylabel("Y [m]")
@@ -198,7 +196,9 @@ def _save_val_trajectory_plot(model, val_loader, device, epoch, val_loss, writer
             # XY plane
             ax_xy = fig.add_subplot(2, 2, 2)
             ax_xy.plot(gt_xyz[:, 0], gt_xyz[:, 1], linewidth=2.0, label="Ground Truth")
-            ax_xy.plot(pred_xyz[:, 0], pred_xyz[:, 1], linewidth=2.0, label="Prediction")
+            ax_xy.plot(
+                pred_xyz[:, 0], pred_xyz[:, 1], linewidth=2.0, label="Prediction"
+            )
             ax_xy.set_title("XY Plane")
             ax_xy.set_xlabel("X [m]")
             ax_xy.set_ylabel("Y [m]")
@@ -209,7 +209,9 @@ def _save_val_trajectory_plot(model, val_loader, device, epoch, val_loss, writer
             # YZ plane
             ax_yz = fig.add_subplot(2, 2, 3)
             ax_yz.plot(gt_xyz[:, 1], gt_xyz[:, 2], linewidth=2.0, label="Ground Truth")
-            ax_yz.plot(pred_xyz[:, 1], pred_xyz[:, 2], linewidth=2.0, label="Prediction")
+            ax_yz.plot(
+                pred_xyz[:, 1], pred_xyz[:, 2], linewidth=2.0, label="Prediction"
+            )
             ax_yz.set_title("YZ Plane")
             ax_yz.set_xlabel("Y [m]")
             ax_yz.set_ylabel("Z [m]")
@@ -220,7 +222,9 @@ def _save_val_trajectory_plot(model, val_loader, device, epoch, val_loss, writer
             # XZ plane
             ax_xz = fig.add_subplot(2, 2, 4)
             ax_xz.plot(gt_xyz[:, 0], gt_xyz[:, 2], linewidth=2.0, label="Ground Truth")
-            ax_xz.plot(pred_xyz[:, 0], pred_xyz[:, 2], linewidth=2.0, label="Prediction")
+            ax_xz.plot(
+                pred_xyz[:, 0], pred_xyz[:, 2], linewidth=2.0, label="Prediction"
+            )
             ax_xz.set_title("XZ Plane")
             ax_xz.set_xlabel("X [m]")
             ax_xz.set_ylabel("Z [m]")
@@ -307,8 +311,6 @@ def train(
     image_height=360,
     image_width=480,
     use_augmentation=False,
-    use_lstm=False,
-    sequence_length=8,
     stride=1,
     lstm_hidden=256,
     lstm_layers=2,
@@ -343,8 +345,6 @@ def train(
         image_height=image_height,
         image_width=image_width,
         use_augmentation=use_augmentation,
-        use_lstm=use_lstm,
-        sequence_length=sequence_length,
         stride=stride,
         lstm_hidden=lstm_hidden,
         lstm_layers=lstm_layers,
@@ -373,7 +373,9 @@ def train(
 
     model = torch.compile(pipeline.model.to(device))
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=5, min_lr=1e-7)
+    scheduler = ReduceLROnPlateau(
+        optimizer, mode="min", factor=0.5, patience=5, min_lr=1e-7
+    )
 
     # mixed precision scaler
     scaler = GradScaler(enabled=(torch.cuda.is_available() and "cuda" in str(device)))
@@ -398,36 +400,56 @@ def train(
 
             # Back propagation and optimizer step with GradScaler
             scaler.scale(loss).backward()
-            
+
             # Gradient clipping to prevent explosion
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            
+
             scaler.step(optimizer)
             scaler.update()
 
             # Get batch size from first tensor in batch
             current_batch_size = next(iter(batch.values())).shape[0]
             train_loss += loss.item() * current_batch_size
-            
+
             # Track component losses
             if isinstance(loss_dict, dict):
                 if "loss_translation" in loss_dict:
-                    train_trans_loss += loss_dict["loss_translation"].item() * current_batch_size
+                    train_trans_loss += (
+                        loss_dict["loss_translation"].item() * current_batch_size
+                    )
                 if "loss_rotation" in loss_dict:
-                    train_rot_loss += loss_dict["loss_rotation"].item() * current_batch_size
+                    train_rot_loss += (
+                        loss_dict["loss_rotation"].item() * current_batch_size
+                    )
 
             # Logging
             writer.add_scalar("Loss/Train", loss.item(), global_step)
             if isinstance(loss_dict, dict):
                 if "loss_translation" in loss_dict:
-                    writer.add_scalar("Loss/Train_Translation", loss_dict["loss_translation"].item(), global_step)
+                    writer.add_scalar(
+                        "Loss/Train_Translation",
+                        loss_dict["loss_translation"].item(),
+                        global_step,
+                    )
                 if "loss_rotation" in loss_dict:
-                    writer.add_scalar("Loss/Train_Rotation", loss_dict["loss_rotation"].item(), global_step)
+                    writer.add_scalar(
+                        "Loss/Train_Rotation",
+                        loss_dict["loss_rotation"].item(),
+                        global_step,
+                    )
                 if "rmse_translation_m" in loss_dict:
-                    writer.add_scalar("Metrics/Train_RMSE_m", loss_dict["rmse_translation_m"].item(), global_step)
+                    writer.add_scalar(
+                        "Metrics/Train_RMSE_m",
+                        loss_dict["rmse_translation_m"].item(),
+                        global_step,
+                    )
                 if "mean_angle_error_deg" in loss_dict:
-                    writer.add_scalar("Metrics/Train_AngleError_deg", loss_dict["mean_angle_error_deg"].item(), global_step)
+                    writer.add_scalar(
+                        "Metrics/Train_AngleError_deg",
+                        loss_dict["mean_angle_error_deg"].item(),
+                        global_step,
+                    )
             global_step += 1
 
         train_loss /= max(1, num_train_samples)
@@ -448,13 +470,17 @@ def train(
                 loss = model.compute_loss(batch)
                 current_batch_size = next(iter(batch.values())).shape[0]
                 val_loss += loss.item() * current_batch_size
-                
+
                 # Track component losses
                 if isinstance(loss_dict, dict):
                     if "loss_translation" in loss_dict:
-                        val_trans_loss += loss_dict["loss_translation"].item() * current_batch_size
+                        val_trans_loss += (
+                            loss_dict["loss_translation"].item() * current_batch_size
+                        )
                     if "loss_rotation" in loss_dict:
-                        val_rot_loss += loss_dict["loss_rotation"].item() * current_batch_size
+                        val_rot_loss += (
+                            loss_dict["loss_rotation"].item() * current_batch_size
+                        )
 
         val_loss /= max(1, num_val_samples)
         val_trans_loss /= max(1, num_val_samples)
@@ -482,7 +508,7 @@ def train(
         writer.add_scalar("Loss/Val", val_loss, global_step)
         writer.add_scalar("Loss/Val_Translation", val_trans_loss, epoch)
         writer.add_scalar("Loss/Val_Rotation", val_rot_loss, epoch)
-        
+
         print(
             f"Epoch {epoch}: "
             f"Train Loss = {train_loss:.6f} (trans={train_trans_loss:.6f}, rot={train_rot_loss:.6f}), "
@@ -535,25 +561,6 @@ def _parse_args():
         action="store_true",
         help="Enable data augmentation (brightness, contrast, noise) for training",
     )
-    
-    # LSTM-specific arguments
-    parser.add_argument(
-        "--use_lstm",
-        action="store_true",
-        help="Use LSTM model for temporal sequence processing (better trajectory generalization)",
-    )
-    parser.add_argument(
-        "--sequence_length",
-        type=int,
-        default=8,
-        help="Number of frames in each sequence (for LSTM mode)",
-    )
-    parser.add_argument(
-        "--stride",
-        type=int,
-        default=1,
-        help="Stride for sequence sampling (1=dense, >1=skip frames)",
-    )
     parser.add_argument(
         "--lstm_hidden",
         type=int,
@@ -604,8 +611,6 @@ def main():
         image_height=args.image_height,
         image_width=args.image_width,
         use_augmentation=args.use_augmentation,
-        use_lstm=args.use_lstm,
-        sequence_length=args.sequence_length,
         stride=args.stride,
         lstm_hidden=args.lstm_hidden,
         lstm_layers=args.lstm_layers,
