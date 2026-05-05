@@ -1,9 +1,7 @@
 #!/usr/bin/env python
 """
-Test.py - DL-based odometry model evaluation framework
-
-Evaluates trained visual/inertial/visual-inertial odometry models on test sequences.
-Computes ATE, RPE metrics and generates trajectory plots similar to Phase1's EVO evaluation.
+Evaluates models on test sequences.
+Computes ATE and generates trajectory plots
 """
 
 import sys
@@ -12,9 +10,7 @@ sys.dont_write_bytecode = True
 
 import csv
 import json
-import os
 from argparse import ArgumentParser
-from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 
@@ -24,7 +20,7 @@ import torch
 from PIL import Image
 from tqdm import tqdm
 
-from Train import ModelTypes, Pipeline
+from Train import ModelTypes
 
 current_dir = Path(__file__).parent
 output_dir = current_dir.parent / "Output" / "Testing"
@@ -201,10 +197,16 @@ class SequenceEvaluator:
                     raise ValueError(f"Missing IMU column '{col}' in {imu_path}")
             for row in reader:
                 frame_ids.append(int(row["frame"]))
-                values.append([
-                    float(row["ax"]), float(row["ay"]), float(row["az"]),
-                    float(row["wx"]), float(row["wy"]), float(row["wz"]),
-                ])
+                values.append(
+                    [
+                        float(row["ax"]),
+                        float(row["ay"]),
+                        float(row["az"]),
+                        float(row["wx"]),
+                        float(row["wy"]),
+                        float(row["wz"]),
+                    ]
+                )
 
         return (
             np.array(values, dtype=np.float32),
@@ -233,37 +235,48 @@ class SequenceEvaluator:
         with torch.no_grad():
             if self.model_type == ModelTypes.VISUAL:
                 images = [self._load_image(int(fid)) for fid in frames]
-                images = torch.stack(images, dim=0).unsqueeze(0).to(self.device)  # (1, N, 3, H, W)
+                images = (
+                    torch.stack(images, dim=0).unsqueeze(0).to(self.device)
+                )  # (1, N, 3, H, W)
                 batch = {"images": images}
                 pred_poses = self.model(batch).squeeze(0).cpu().numpy()  # (N-1, 6)
 
                 # Split [dx, dy, qw, qx, qy, qz] into translation and quaternion
                 # Note: dz=0 for ground plane motion
                 for i in range(pred_poses.shape[0]):
-                    rel_positions.append(np.array([pred_poses[i, 0], pred_poses[i, 1], 0.0], dtype=np.float64))
-                    rel_quaternions.append(pred_poses[i, 2:].astype(np.float64))  # [qw, qx, qy, qz]
+                    rel_positions.append(
+                        np.array(
+                            [pred_poses[i, 0], pred_poses[i, 1], 0.0], dtype=np.float64
+                        )
+                    )
+                    rel_quaternions.append(
+                        pred_poses[i, 2:].astype(np.float64)
+                    )  # [qw, qx, qy, qz]
 
             elif self.model_type == ModelTypes.INERTIAL:
                 imu = self._load_aligned_imu()
                 print(f"DEBUG: Loaded IMU shape: {imu.shape}")
                 print(f"DEBUG: First 3 IMU samples:\n{imu[:3]}")
-                
+
                 imu = torch.from_numpy(imu).unsqueeze(0).to(self.device)  # (1, N, 6)
                 batch = {"imu": imu}
                 pred_poses = self.model(batch).squeeze(0).cpu().numpy()  # (N-1, 7)
-                
+
                 print(f"\nDEBUG: pred_poses shape: {pred_poses.shape}")
                 print(f"DEBUG: First 3 predictions:\n{pred_poses[:3]}")
-                
+
                 # Compute GT using InertialDataset's method
                 print(f"\nDEBUG: Ground truth (7D) first 3 relative poses:")
                 from Datasets import InertialDataset
+
                 for i in range(min(3, len(self.gt_poses["positions"]) - 1)):
                     gt_t0 = self.gt_poses["positions"][i]
                     gt_q0 = self.gt_poses["quaternions"][i]
                     gt_t1 = self.gt_poses["positions"][i + 1]
                     gt_q1 = self.gt_poses["quaternions"][i + 1]
-                    gt_rel = InertialDataset._relative_pose_7d(gt_t0, gt_q0, gt_t1, gt_q1)
+                    gt_rel = InertialDataset._relative_pose_7d(
+                        gt_t0, gt_q0, gt_t1, gt_q1
+                    )
                     print(f"  GT {i}: {gt_rel}")
                 print()
 
@@ -276,30 +289,50 @@ class SequenceEvaluator:
                 # Load high-rate IMU data for VI inference
                 imu_values, imu_frame_ids = self._load_vi_imu()
 
-                for i in tqdm(range(len(frames) - 1), desc="  VI inference", leave=False):
+                for i in tqdm(
+                    range(len(frames) - 1), desc="  VI inference", leave=False
+                ):
                     frame_t = int(frames[i])
                     frame_tp1 = int(frames[i + 1])
 
                     # Load image pair
-                    img_t = self._load_image(frame_t).unsqueeze(0).to(self.device)    # (1, 3, H, W)
-                    img_tp1 = self._load_image(frame_tp1).unsqueeze(0).to(self.device)  # (1, 3, H, W)
+                    img_t = (
+                        self._load_image(frame_t).unsqueeze(0).to(self.device)
+                    )  # (1, 3, H, W)
+                    img_tp1 = (
+                        self._load_image(frame_tp1).unsqueeze(0).to(self.device)
+                    )  # (1, 3, H, W)
 
                     # Slice IMU samples in range [frame_t, frame_tp1)
                     mask = (imu_frame_ids >= frame_t) & (imu_frame_ids < frame_tp1)
                     imu_slice = imu_values[mask]
                     if len(imu_slice) == 0:
                         imu_slice = np.zeros((1, 6), dtype=np.float32)
-                    imu_tensor = torch.from_numpy(imu_slice).unsqueeze(0).to(self.device)  # (1, N_imu, 6)
+                    imu_tensor = (
+                        torch.from_numpy(imu_slice).unsqueeze(0).to(self.device)
+                    )  # (1, N_imu, 6)
 
-                    batch = {"image_t": img_t, "image_tp1": img_tp1, "imu_seq": imu_tensor}
-                    pred = self.model(batch).squeeze(0).cpu().numpy()  # (6,) [dx, dy, qw, qx, qy, qz]
+                    batch = {
+                        "image_t": img_t,
+                        "image_tp1": img_tp1,
+                        "imu_seq": imu_tensor,
+                    }
+                    pred = (
+                        self.model(batch).squeeze(0).cpu().numpy()
+                    )  # (6,) [dx, dy, qw, qx, qy, qz]
 
                     # VI model predicts 2D translation [dx, dy]; pad dz=0 for 3D accumulation
-                    rel_positions.append(np.array([pred[0], pred[1], 0.0], dtype=np.float64))
-                    rel_quaternions.append(pred[2:].astype(np.float64))  # [qw, qx, qy, qz]
+                    rel_positions.append(
+                        np.array([pred[0], pred[1], 0.0], dtype=np.float64)
+                    )
+                    rel_quaternions.append(
+                        pred[2:].astype(np.float64)
+                    )  # [qw, qx, qy, qz]
 
             else:
-                raise NotImplementedError(f"Inference for {self.model_type.name} is not implemented.")
+                raise NotImplementedError(
+                    f"Inference for {self.model_type.name} is not implemented."
+                )
 
         # Stack all predictions
         rel_positions = np.stack(rel_positions, axis=0)  # (N-1, 3)
