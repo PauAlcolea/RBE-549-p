@@ -1,15 +1,5 @@
 #!/bin/bash
 
-# =========================================================
-# Test DL-based Odometry Models
-# =========================================================
-# Usage examples:
-#   ./run_test.sh                    # Evaluate visual model on all test sequences
-#   ./run_test.sh --split train      # Evaluate on training set
-#   ./run_test.sh seq_000041         # Evaluate on specific sequence
-#   ./run_test.sh --show-plots       # Display plots interactively
-# =========================================================
-
 # Default configuration
 CHECKPOINT="../Output/Training/checkpoints/VISUAL/best_model.pth"
 DATA_DIR="../Data/Generated"

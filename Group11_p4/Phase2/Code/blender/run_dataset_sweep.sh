@@ -7,39 +7,27 @@ IMU_SCRIPT="$SCRIPT_DIR/trajectory_imu.py"
 
 print_usage() {
   cat <<'EOF'
-Usage: ./run_dataset_sweep.sh [--resume] [--jobs N] [--imu] [--help]
+Usage: ./run_dataset_sweep.sh [--imu] [--resume] [--jobs N] [--help]
 
 Generate a dataset by sweeping combinations of:
   - trajectory shape
   - texture image
   - camera height
 
-By default this script calls run_blender.sh once per combination.
-With --imu it calls trajectory_imu.py directly (no Blender/rendering).
-
-How to configure:
-  Edit the sweep variables near the top of run_dataset_sweep.sh:
-    SHAPES, TEXTURES, HEIGHTS, REPEATS, START_SEQ_NUM, SEED_BASE,
-    TRAIN_PCT, VAL_PCT, TEST_PCT
-
-Sequence naming:
-  sequence_id = seq_XXXXXX, starting at START_SEQ_NUM and incrementing by 1.
-
-Split assignment:
-  Combinations are assigned train/val/test by percentile buckets in loop order
-  using TRAIN_PCT / VAL_PCT / TEST_PCT.
+This script calls run_blender.sh once per combination.
 
 Output:
-  Generated data written under Phase2/Data/Generated.
+  Generated data written to Data/Generated.
+
+IMU mode:
+  --imu generates trajectory-only sequences with IMU data using trajectory_imu.py
 
 Resume mode:
-  --resume will scan expected split/sequence folders and:
-    - skip sequences with complete outputs
-    - delete and regenerate incomplete sequences
-  This is useful if generation stopped mid-run.
+  --resume will:
+    - skip sequences with complete outputs and regenerate incomplete sequences
 
 Parallel mode:
-  --jobs N (or -j N) runs up to N generation processes concurrently.
+  --jobs N (or -j N) runs up to N Blender processes concurrently.
   Default is 1 (sequential).
 EOF
 }
@@ -84,20 +72,22 @@ if ! [[ "$JOBS" =~ ^[0-9]+$ ]] || (( JOBS < 1 )); then
 fi
 
 # Sweep configuration. Edit these lists for your dataset recipe.
-SHAPES=(square figure8 circle)
+SHAPES=(square figure8 circle triangle)
 TEXTURES=(playrug newyork ispy leaves toys)
 HEIGHTS=(1.0 1.5 2.0)
 REPEATS=1
 START_SEQ_NUM=1
 SEED_BASE=1000
+HEADING_MODE="tangent"
+HEADING_SPIN_DPS="3"
 
 # Expected location for generated outputs (matches generate.py OUTPUT_DIR).
 DATASET_ROOT="$SCRIPT_DIR/../../Data/Generated"
 
 # Split percentages (must sum to 100)
-TRAIN_PCT=70
-VAL_PCT=20
-TEST_PCT=10
+TRAIN_PCT=80
+VAL_PCT=15
+TEST_PCT=5
 
 if (( TRAIN_PCT + VAL_PCT + TEST_PCT != 100 )); then
   echo "[dataset_sweep] ERROR: TRAIN_PCT + VAL_PCT + TEST_PCT must equal 100." >&2
@@ -202,6 +192,8 @@ launch_sequence() {
         --shape "$shape" \
         --texture "$texture" \
         --height "$height" \
+        --heading-mode "$HEADING_MODE" \
+        --spin-dps "$HEADING_SPIN_DPS" \
         --split "$split" \
         --seq-id "$seq_id" \
         --seed "$seed"
@@ -223,6 +215,8 @@ launch_sequence() {
       --shape "$shape" \
       --texture "$texture" \
       --height "$height" \
+      --heading-mode "$HEADING_MODE" \
+      --spin-dps "$HEADING_SPIN_DPS" \
       --split "$split" \
       --seq-id "$seq_id" \
       --seed "$seed" &
@@ -250,6 +244,7 @@ if (( IMU_MODE )); then
   echo "[dataset_sweep] Mode: IMU trajectory-only (trajectory_imu.py)"
 else
   echo "[dataset_sweep] Mode: Blender visual generation (run_blender.sh)"
+  echo "[dataset_sweep] Heading: mode=$HEADING_MODE spin=${HEADING_SPIN_DPS}deg/s"
 fi
 
 combo_idx=0

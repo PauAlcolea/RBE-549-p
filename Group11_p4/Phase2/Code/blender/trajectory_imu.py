@@ -1,12 +1,6 @@
 #!/usr/bin/env python3
 """
-Standalone trajectory/pose generator for IMU pipelines.
-
-This script intentionally avoids Blender/rendering. It generates smooth trajectory
-poses directly and writes IMU-only files in a sequence folder.
-
-Output columns:
-    frame, tx, ty, tz, qw, qx, qy, qz
+trajectory generator for IMU
 """
 
 from __future__ import annotations
@@ -17,6 +11,7 @@ import fcntl
 import json
 import math
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from dataclasses import dataclass
@@ -123,11 +118,15 @@ def sample_circle(common: CommonCfg, cfg: ShapeCfg) -> List[Tuple[float, float, 
         # th = omega * t
         # Parameterize by mornalized index so that the final sample closes exactly
         th = 2.0 * math.pi * common.laps * (k / n_steps)
-        pts.append((cfg.radius * math.cos(th), cfg.radius * math.sin(th), common.height))
+        pts.append(
+            (cfg.radius * math.cos(th), cfg.radius * math.sin(th), common.height)
+        )
     return pts
 
 
-def sample_figure8(common: CommonCfg, cfg: ShapeCfg) -> List[Tuple[float, float, float]]:
+def sample_figure8(
+    common: CommonCfg, cfg: ShapeCfg
+) -> List[Tuple[float, float, float]]:
     # Parametric figure-8 then arc-length resample for near-constant speed.
     a = cfg.width / 2.0
     b = cfg.length / 2.0
@@ -147,7 +146,32 @@ def sample_figure8(common: CommonCfg, cfg: ShapeCfg) -> List[Tuple[float, float,
 
 def sample_square(common: CommonCfg, cfg: ShapeCfg) -> List[Tuple[float, float, float]]:
     h = cfg.side / 2.0
-    corners = [(-h, -h, common.height), (h, -h, common.height), (h, h, common.height), (-h, h, common.height)]
+    corners = [
+        (-h, -h, common.height),
+        (h, -h, common.height),
+        (h, h, common.height),
+        (-h, h, common.height),
+    ]
+
+    loop: List[Tuple[float, float, float]] = []
+    for _ in range(common.laps):
+        loop.extend(corners)
+    loop.append(corners[0])
+
+    return resample_polyline_constant_speed(loop, common.speed, common.sim_hz)
+
+
+def sample_triangle(
+    common: CommonCfg, cfg: ShapeCfg
+) -> List[Tuple[float, float, float]]:
+    """Sample an equilateral triangle trajectory."""
+    h = cfg.side / 2.0
+    r = cfg.side * math.sin(math.radians(60))  # radius of circumscribed circle
+    corners = [
+        (-h, -r / 3, common.height),  # bottom-left
+        (0, 2 * r / 3, common.height),  # top
+        (h, -r / 3, common.height),  # bottom-right
+    ]
 
     loop: List[Tuple[float, float, float]] = []
     for _ in range(common.laps):
@@ -186,13 +210,17 @@ def compute_tangent_yaws(
     return yaws
 
 
-def generate_positions(common: CommonCfg, cfg: ShapeCfg) -> List[Tuple[float, float, float]]:
+def generate_positions(
+    common: CommonCfg, cfg: ShapeCfg
+) -> List[Tuple[float, float, float]]:
     if cfg.shape == "circle":
         return sample_circle(common, cfg)
     if cfg.shape == "figure8":
         return sample_figure8(common, cfg)
     if cfg.shape == "square":
         return sample_square(common, cfg)
+    if cfg.shape == "triangle":
+        return sample_triangle(common, cfg)
     raise ValueError(f"Unsupported shape '{cfg.shape}'")
 
 
@@ -273,7 +301,9 @@ def write_trajectory_summary(
         "texture": texture,
         "sequence_id": seq_id,
         "seed": seed,
-        "generated_utc": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "generated_utc": datetime.now(timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z"),
         "frames": n_frames,
         "duration_s": n_frames / common.sim_hz,
     }
@@ -283,6 +313,8 @@ def write_trajectory_summary(
         f.write(f"  Shape            : {cfg.shape}\n")
         if cfg.shape == "square":
             f.write(f"  Square side      : {cfg.side} m\n")
+        elif cfg.shape == "triangle":
+            f.write(f"  Triangle side    : {cfg.side} m\n")
         elif cfg.shape == "figure8":
             f.write(f"  Figure8 width    : {cfg.width} m\n")
             f.write(f"  Figure8 length   : {cfg.length} m\n")
@@ -378,13 +410,39 @@ def parse_args() -> argparse.Namespace:
             "visual generation (except frames/ rendering)."
         )
     )
-    parser.add_argument("--data-root", type=Path, default=Path(__file__).resolve().parents[2] / "Data" / "Generated")
-    parser.add_argument("--split", type=str, default="train", choices=["train", "val", "test"])
-    parser.add_argument("--seq-id", type=str, required=True, help="Sequence folder name, e.g. seq_000123")
-    parser.add_argument("--texture", type=str, default="playrug", help="Texture tag for metadata/manifest consistency")
-    parser.add_argument("--seed", type=str, default="", help="Optional seed tag for metadata/manifest consistency")
+    parser.add_argument(
+        "--data-root",
+        type=Path,
+        default=Path(__file__).resolve().parents[2] / "Data" / "Generated",
+    )
+    parser.add_argument(
+        "--split", type=str, default="train", choices=["train", "val", "test"]
+    )
+    parser.add_argument(
+        "--seq-id",
+        type=str,
+        required=True,
+        help="Sequence folder name, e.g. seq_000123",
+    )
+    parser.add_argument(
+        "--texture",
+        type=str,
+        default="playrug",
+        help="Texture tag for metadata/manifest consistency",
+    )
+    parser.add_argument(
+        "--seed",
+        type=str,
+        default="",
+        help="Optional seed tag for metadata/manifest consistency",
+    )
 
-    parser.add_argument("--shape", type=str, default="square", choices=["square", "figure8", "circle"])
+    parser.add_argument(
+        "--shape",
+        type=str,
+        default="square",
+        choices=["square", "figure8", "circle", "triangle"],
+    )
     parser.add_argument("--height", type=float, default=1.5)
     parser.add_argument("--laps", type=int, default=1)
     parser.add_argument("--speed", type=float, default=0.5)
@@ -395,8 +453,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--width", type=float, default=3.0)
     parser.add_argument("--length", type=float, default=2.0)
 
-    parser.add_argument("--heading-mode", type=str, default="tangent", choices=["tangent", "fixed"])
-    parser.add_argument("--yaw-deg", type=float, default=0.0, help="Yaw offset in degrees")
+    parser.add_argument(
+        "--heading-mode", type=str, default="tangent", choices=["tangent", "fixed"]
+    )
+    parser.add_argument(
+        "--yaw-deg", type=float, default=0.0, help="Yaw offset in degrees"
+    )
 
     return parser.parse_args()
 
@@ -413,11 +475,21 @@ def main() -> None:
     if args.sim_hz <= 0:
         raise ValueError("--sim-hz must be > 0")
 
-    common = CommonCfg(height=args.height, laps=args.laps, speed=args.speed, sim_hz=args.sim_hz)
-    cfg = ShapeCfg(shape=args.shape, side=args.side, radius=args.radius, width=args.width, length=args.length)
+    common = CommonCfg(
+        height=args.height, laps=args.laps, speed=args.speed, sim_hz=args.sim_hz
+    )
+    cfg = ShapeCfg(
+        shape=args.shape,
+        side=args.side,
+        radius=args.radius,
+        width=args.width,
+        length=args.length,
+    )
 
     if cfg.shape == "square" and cfg.side <= 0.0:
         raise ValueError("--side must be > 0 for square")
+    if cfg.shape == "triangle" and cfg.side <= 0.0:
+        raise ValueError("--side must be > 0 for triangle")
     if cfg.shape == "circle" and cfg.radius <= 0.0:
         raise ValueError("--radius must be > 0 for circle")
     if cfg.shape == "figure8" and (cfg.width <= 0.0 or cfg.length <= 0.0):
@@ -437,7 +509,9 @@ def main() -> None:
         yaws = [yaw_offset_rad] * len(positions)
 
     write_poses_csv(out_dir / "poses.csv", positions, yaws)
-    save_trajectory_plot(out_dir / "trajectory_3d.png", positions, args.seq_id, cfg.shape)
+    save_trajectory_plot(
+        out_dir / "trajectory_3d.png", positions, args.seq_id, cfg.shape
+    )
     write_camera_k(out_dir / "camera_K.txt")
     write_trajectory_summary(
         out_dir / "trajectory.txt",
@@ -451,7 +525,9 @@ def main() -> None:
     )
 
     rel_path = str((Path(split) / args.seq_id).as_posix())
-    generated_utc = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    generated_utc = (
+        datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    )
     metadata = {
         "sequence_id": args.seq_id,
         "split": split,
